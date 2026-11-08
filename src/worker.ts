@@ -99,8 +99,20 @@ export default {
           for (const inNote of incomingNotes) {
             if (deletedSet.has(inNote.id)) continue;
             const existing = noteMap.get(inNote.id);
-            if (!existing || (inNote.updatedAt || 0) >= (existing.updatedAt || 0)) {
+            if (!existing) {
               noteMap.set(inNote.id, inNote);
+            } else {
+              const inTime = inNote.updatedAt || 0;
+              const exTime = existing.updatedAt || 0;
+              if (inTime > exTime) {
+                noteMap.set(inNote.id, inNote);
+              } else if (inTime === exTime) {
+                const inStrokes = inNote.inkStrokes?.length || 0;
+                const exStrokes = existing.inkStrokes?.length || 0;
+                if (inStrokes >= exStrokes) {
+                  noteMap.set(inNote.id, inNote);
+                }
+              }
             }
           }
 

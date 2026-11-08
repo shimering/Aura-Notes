@@ -161,9 +161,22 @@ export function mergeNotes(
     if (!existing) {
       noteMap.set(rn.id, rn);
     } else {
-      // Pick the more recently updated note
-      if ((rn.updatedAt || 0) >= (existing.updatedAt || 0)) {
+      const rnTime = rn.updatedAt || 0;
+      const exTime = existing.updatedAt || 0;
+
+      if (rnTime > exTime) {
         noteMap.set(rn.id, rn);
+      } else if (rnTime === exTime) {
+        // Equal timestamps: never allow an empty-stroke or shorter note to overwrite drawn strokes!
+        const rnStrokes = rn.inkStrokes?.length || 0;
+        const exStrokes = existing.inkStrokes?.length || 0;
+        if (rnStrokes > exStrokes) {
+          noteMap.set(rn.id, rn);
+        } else if (rnStrokes === exStrokes) {
+          if ((rn.content?.length || 0) >= (existing.content?.length || 0)) {
+            noteMap.set(rn.id, rn);
+          }
+        }
       }
     }
   }

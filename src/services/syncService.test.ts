@@ -71,6 +71,46 @@ describe('Cross-Device Sync Service', () => {
     expect(merged.some((n) => n.id === 'note-3')).toBe(true);
   });
 
+  it('protects drawn ink strokes from being overwritten by equal-timestamp empty notes', () => {
+    const noteWithDrawing: Note = {
+      id: 'note-1',
+      title: 'Drawing Note',
+      content: '',
+      inkStrokes: [
+        {
+          id: 'stroke-1',
+          points: [{ x: 10, y: 10, pressure: 0.5, time: 100 }],
+          color: '#000000',
+          width: 4,
+          tool: 'pen'
+        }
+      ],
+      tags: [],
+      color: '#3b82f6',
+      createdAt: 1000,
+      updatedAt: 2000
+    };
+
+    const emptyNoteSameTime: Note = {
+      id: 'note-1',
+      title: 'Drawing Note',
+      content: '',
+      inkStrokes: [],
+      tags: [],
+      color: '#3b82f6',
+      createdAt: 1000,
+      updatedAt: 2000
+    };
+
+    // When remote has no strokes and same updatedAt, local drawings are preserved
+    const merged1 = mergeNotes([noteWithDrawing], [emptyNoteSameTime]);
+    expect(merged1[0].inkStrokes.length).toBe(1);
+
+    // Conversely, when remote has drawings and local has none, remote drawings win
+    const merged2 = mergeNotes([emptyNoteSameTime], [noteWithDrawing]);
+    expect(merged2[0].inkStrokes.length).toBe(1);
+  });
+
   it('filters out deleted notes using tombstones', () => {
     const noteA: Note = {
       id: 'note-to-delete',

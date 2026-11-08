@@ -78,7 +78,7 @@ export async function saveNote(note: Note): Promise<void> {
     const index = notes.findIndex((n) => n.id === note.id);
     const updatedNote = {
       ...note,
-      updatedAt: Date.now()
+      updatedAt: note.updatedAt || Date.now()
     };
 
     if (index >= 0) {

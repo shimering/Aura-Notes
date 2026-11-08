@@ -52,8 +52,20 @@ function devSyncApiPlugin(): Plugin {
                 for (const n of body.notes || []) {
                   if (deletedSet.has(n.id)) continue;
                   const prev = noteMap.get(n.id);
-                  if (!prev || (n.updatedAt || 0) >= (prev.updatedAt || 0)) {
+                  if (!prev) {
                     noteMap.set(n.id, n);
+                  } else {
+                    const inTime = n.updatedAt || 0;
+                    const prevTime = prev.updatedAt || 0;
+                    if (inTime > prevTime) {
+                      noteMap.set(n.id, n);
+                    } else if (inTime === prevTime) {
+                      const inStrokes = n.inkStrokes?.length || 0;
+                      const prevStrokes = prev.inkStrokes?.length || 0;
+                      if (inStrokes >= prevStrokes) {
+                        noteMap.set(n.id, n);
+                      }
+                    }
                   }
                 }
 

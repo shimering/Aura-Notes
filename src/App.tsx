@@ -44,6 +44,19 @@ export default function App() {
   const saveTimeoutRef = useRef<any>(null);
   const syncTimeoutRef = useRef<any>(null);
 
+  // Mutable refs to prevent stale closure race conditions
+  const notesRef = useRef<Note[]>(notes);
+  notesRef.current = notes;
+
+  const settingsRef = useRef<AppSettings>(settings);
+  settingsRef.current = settings;
+
+  const activeNoteIdRef = useRef<string | null>(activeNoteId);
+  activeNoteIdRef.current = activeNoteId;
+
+  const isSyncingRef = useRef<boolean>(false);
+  const lastLocalEditTimeRef = useRef<number>(0);
+
   // Capture beforeinstallprompt for PWA home screen install
   useEffect(() => {
     const handler = (e: any) => {
@@ -54,20 +67,59 @@ export default function App() {
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
 
-  // Sync execution helper
+  // Sync execution helper with active local edit protection
   const executeSync = useCallback(async (
     vaultKey: string,
     currentNotes: Note[],
     currentSettings: AppSettings
   ) => {
-    if (!vaultKey || isSyncing) return;
+    if (!vaultKey || isSyncingRef.current) return;
+    isSyncingRef.current = true;
     setIsSyncing(true);
     setSyncError(null);
+
     try {
       const res = await syncVaultWithCloud(vaultKey, currentNotes, currentSettings);
-      setNotes(res.notes);
-      await saveAllNotes(res.notes);
+      
+      // Safety guard against overwriting local in-flight edits:
+      const latestLocal = notesRef.current;
+      const mergedResult = res.notes.map((remoteNote) => {
+        const local = latestLocal.find((n) => n.id === remoteNote.id);
+        if (!local) return remoteNote;
+
+        // If local note was edited more recently, keep local
+        if ((local.updatedAt || 0) > (remoteNote.updatedAt || 0)) {
+          return local;
+        }
+
+        // If equal timestamps, never let an empty/shorter stroke list erase drawn strokes
+        if ((local.updatedAt || 0) === (remoteNote.updatedAt || 0)) {
+          const localStrokes = local.inkStrokes?.length || 0;
+          const remoteStrokes = remoteNote.inkStrokes?.length || 0;
+          if (localStrokes > remoteStrokes) return local;
+        }
+
+        // If user was actively drawing or editing in the last 2.5 seconds, protect active local note
+        if (Date.now() - (lastLocalEditTimeRef.current || 0) < 2500 && local.id === activeNoteIdRef.current) {
+          return local;
+        }
+
+        return remoteNote;
+      });
+
+      // Keep any new local notes created while sync was in flight
+      for (const local of latestLocal) {
+        if (!mergedResult.some((n) => n.id === local.id)) {
+          mergedResult.unshift(local);
+        }
+      }
+
+      setNotes(mergedResult);
+      notesRef.current = mergedResult;
+      await saveAllNotes(mergedResult);
+
       setSettings(res.settings);
+      settingsRef.current = res.settings;
 
       // Apply synced theme & view mode if enabled
       if (res.settings.syncThemeAndLayout) {
@@ -83,9 +135,10 @@ export default function App() {
       console.warn('Sync failed:', err);
       setSyncError(err.message || 'Unable to sync with cloud vault');
     } finally {
+      isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, [isSyncing]);
+  }, []);
 
   // Initialize and load notes + settings from local IndexedDB
   useEffect(() => {
@@ -94,6 +147,7 @@ export default function App() {
         // 1. Load settings
         const loadedSettings = await getSettings();
         setSettings(loadedSettings);
+        settingsRef.current = loadedSettings;
 
         // Apply theme from settings
         if (loadedSettings.theme === 'dark') {
@@ -114,13 +168,15 @@ export default function App() {
           activeVaultKey = querySyncKey.trim();
           const updated = await saveSettings({ syncVaultKey: activeVaultKey });
           setSettings(updated);
-          // Clean URL without reload
+          settingsRef.current = updated;
+          // Clean URL query param without reload
           window.history.replaceState({}, '', window.location.pathname);
         }
 
         // 3. Load notes
         const loadedNotes = await getAllNotes();
         setNotes(loadedNotes);
+        notesRef.current = loadedNotes;
 
         const lastActiveId = await getActiveNoteId();
         if (lastActiveId && loadedNotes.some((n) => n.id === lastActiveId)) {
@@ -140,22 +196,42 @@ export default function App() {
       }
     }
     loadData();
-  }, []);
+  }, [executeSync]);
 
-  // Auto-sync on window focus or returning to tab (mirror changes from other devices)
+  // Real-time background sync polling (every 3 seconds) so drawings appear on the other device automatically
   useEffect(() => {
-    const handleFocus = () => {
-      if (document.visibilityState === 'visible' && settings.syncVaultKey && settings.autoSyncEnabled && !isSyncing) {
-        executeSync(settings.syncVaultKey, notes, settings);
+    if (!settings.syncVaultKey || !settings.autoSyncEnabled) return;
+
+    const interval = setInterval(() => {
+      // Only poll if tab is visible, not currently syncing, and not actively drawing in the last 2.5s
+      if (
+        document.visibilityState === 'visible' &&
+        !isSyncingRef.current &&
+        Date.now() - (lastLocalEditTimeRef.current || 0) > 2500
+      ) {
+        executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [settings.syncVaultKey, settings.autoSyncEnabled, executeSync]);
+
+  // Auto-sync when switching back to tab
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (
+        document.visibilityState === 'visible' &&
+        settingsRef.current.syncVaultKey &&
+        settingsRef.current.autoSyncEnabled &&
+        !isSyncingRef.current &&
+        Date.now() - (lastLocalEditTimeRef.current || 0) > 2500
+      ) {
+        executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
       }
     };
-    window.addEventListener('visibilitychange', handleFocus);
-    window.addEventListener('focus', handleFocus);
-    return () => {
-      window.removeEventListener('visibilitychange', handleFocus);
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, [settings.syncVaultKey, settings.autoSyncEnabled, isSyncing, notes, settings, executeSync]);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [executeSync]);
 
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
 
@@ -166,70 +242,96 @@ export default function App() {
       clearTimeout(saveTimeoutRef.current);
     }
 
+    // Fast local save (150ms)
     saveTimeoutRef.current = setTimeout(async () => {
       try {
         await saveNote(noteToSave);
-
-        // Background auto-sync to cloud vault
-        if (settings.syncVaultKey && settings.autoSyncEnabled) {
-          if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-          syncTimeoutRef.current = setTimeout(() => {
-            executeSync(settings.syncVaultKey, notes, settings);
-          }, 1500);
-        }
       } catch (err) {
         console.error('Failed to auto-save note:', err);
       } finally {
         setIsSaving(false);
       }
-    }, 400);
-  }, [notes, settings, executeSync]);
+    }, 150);
 
-  // Update Note Title
+    // Fast background cloud push (600ms) with latest notesRef
+    if (settingsRef.current.syncVaultKey && settingsRef.current.autoSyncEnabled) {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = setTimeout(() => {
+        executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
+      }, 600);
+    }
+  }, [executeSync]);
+
+  // Update Note Title with timestamp
   const handleUpdateTitle = (title: string) => {
     if (!activeNote) return;
-    const updated = { ...activeNote, title };
-    setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+    const now = Date.now();
+    lastLocalEditTimeRef.current = now;
+    const updated = { ...activeNote, title, updatedAt: now };
+    setNotes((prev) => {
+      const next = prev.map((n) => (n.id === updated.id ? updated : n));
+      notesRef.current = next;
+      return next;
+    });
     scheduleSave(updated);
   };
 
-  // Update Note Text Content
+  // Update Note Text Content with timestamp
   const handleUpdateContent = (content: string) => {
     if (!activeNote) return;
-    const updated = { ...activeNote, content };
-    setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+    const now = Date.now();
+    lastLocalEditTimeRef.current = now;
+    const updated = { ...activeNote, content, updatedAt: now };
+    setNotes((prev) => {
+      const next = prev.map((n) => (n.id === updated.id ? updated : n));
+      notesRef.current = next;
+      return next;
+    });
     scheduleSave(updated);
   };
 
-  // Update Stylus Ink Strokes
+  // Update Stylus Ink Strokes with timestamp
   const handleUpdateStrokes = (strokes: Stroke[]) => {
     if (!activeNote) return;
-    const updated = { ...activeNote, inkStrokes: strokes };
-    setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+    const now = Date.now();
+    lastLocalEditTimeRef.current = now;
+    const updated: Note = { 
+      ...activeNote, 
+      inkStrokes: strokes, 
+      updatedAt: now 
+    };
+    setNotes((prev) => {
+      const next = prev.map((n) => (n.id === updated.id ? updated : n));
+      notesRef.current = next;
+      return next;
+    });
     scheduleSave(updated);
   };
 
   // Create New Note
   const handleCreateNote = async () => {
+    const now = Date.now();
+    lastLocalEditTimeRef.current = now;
     const newNote: Note = {
-      id: `note-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      id: `note-${now}-${Math.random().toString(36).substr(2, 6)}`,
       title: 'Untitled Note',
       content: '',
       inkStrokes: [],
       tags: [],
       color: '#3b82f6',
-      createdAt: Date.now(),
-      updatedAt: Date.now()
+      createdAt: now,
+      updatedAt: now
     };
 
-    const updatedNotes = [newNote, ...notes];
+    const updatedNotes = [newNote, ...notesRef.current];
     setNotes(updatedNotes);
+    notesRef.current = updatedNotes;
     setActiveNoteIdState(newNote.id);
     await setActiveNoteId(newNote.id);
     await saveNote(newNote);
 
-    if (settings.syncVaultKey && settings.autoSyncEnabled) {
-      executeSync(settings.syncVaultKey, updatedNotes, settings);
+    if (settingsRef.current.syncVaultKey && settingsRef.current.autoSyncEnabled) {
+      executeSync(settingsRef.current.syncVaultKey, updatedNotes, settingsRef.current);
     }
   };
 
@@ -245,8 +347,9 @@ export default function App() {
   // Delete Note
   const handleDeleteNote = async (id: string) => {
     await deleteNote(id);
-    const remaining = notes.filter((n) => n.id !== id);
+    const remaining = notesRef.current.filter((n) => n.id !== id);
     setNotes(remaining);
+    notesRef.current = remaining;
 
     if (activeNoteId === id) {
       const nextId = remaining.length > 0 ? remaining[0].id : null;
@@ -254,8 +357,8 @@ export default function App() {
       if (nextId) await setActiveNoteId(nextId);
     }
 
-    if (settings.syncVaultKey && settings.autoSyncEnabled) {
-      executeSync(settings.syncVaultKey, remaining, settings);
+    if (settingsRef.current.syncVaultKey && settingsRef.current.autoSyncEnabled) {
+      executeSync(settingsRef.current.syncVaultKey, remaining, settingsRef.current);
     }
   };
 
@@ -263,8 +366,14 @@ export default function App() {
   const handleTogglePin = (id: string) => {
     const target = notes.find((n) => n.id === id);
     if (!target) return;
-    const updated = { ...target, pinned: !target.pinned };
-    setNotes((prev) => prev.map((n) => (n.id === id ? updated : n)));
+    const now = Date.now();
+    lastLocalEditTimeRef.current = now;
+    const updated = { ...target, pinned: !target.pinned, updatedAt: now };
+    setNotes((prev) => {
+      const next = prev.map((n) => (n.id === id ? updated : n));
+      notesRef.current = next;
+      return next;
+    });
     scheduleSave(updated);
   };
 
@@ -273,12 +382,14 @@ export default function App() {
     setViewMode(mode);
     const updated = await saveSettings({ viewMode: mode });
     setSettings(updated);
+    settingsRef.current = updated;
   };
 
   // Update Settings
   const handleUpdateSettings = async (updates: Partial<AppSettings>) => {
     const updated = await saveSettings(updates);
     setSettings(updated);
+    settingsRef.current = updated;
 
     if (updates.theme) {
       if (updates.theme === 'dark') {
@@ -299,13 +410,16 @@ export default function App() {
   const handleManualSync = async (vaultKey: string) => {
     const updatedSettings = await saveSettings({ syncVaultKey: vaultKey });
     setSettings(updatedSettings);
-    await executeSync(vaultKey, notes, updatedSettings);
+    settingsRef.current = updatedSettings;
+    await executeSync(vaultKey, notesRef.current, updatedSettings);
   };
 
   // Import backup vault
   const handleImportVault = async (importedNotes: Note[], importedSettings?: Partial<AppSettings>) => {
-    const merged = [...importedNotes, ...notes.filter((n) => !importedNotes.some((inN) => inN.id === n.id))];
+    const current = notesRef.current;
+    const merged = [...importedNotes, ...current.filter((n) => !importedNotes.some((inN) => inN.id === n.id))];
     setNotes(merged);
+    notesRef.current = merged;
     await saveAllNotes(merged);
 
     if (importedSettings) {
@@ -323,13 +437,20 @@ export default function App() {
       : formattedInsert;
 
     const updatedStrokes = clearStrokes ? [] : activeNote.inkStrokes;
+    const now = Date.now();
+    lastLocalEditTimeRef.current = now;
     const updatedNote = {
       ...activeNote,
       content: updatedContent,
-      inkStrokes: updatedStrokes
+      inkStrokes: updatedStrokes,
+      updatedAt: now
     };
 
-    setNotes((prev) => prev.map((n) => (n.id === updatedNote.id ? updatedNote : n)));
+    setNotes((prev) => {
+      const next = prev.map((n) => (n.id === updatedNote.id ? updatedNote : n));
+      notesRef.current = next;
+      return next;
+    });
     scheduleSave(updatedNote);
   };
 
