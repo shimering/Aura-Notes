@@ -1,0 +1,225 @@
+import React from 'react';
+import { 
+  Pen, 
+  Feather, 
+  Highlighter, 
+  Eraser, 
+  Undo2, 
+  Redo2, 
+  Trash2, 
+  Wand2,
+  Sliders
+} from 'lucide-react';
+import { PenTool } from '../types/note';
+
+export const INK_PALETTE = [
+  { name: 'Charcoal', hex: '#1e293b' },
+  { name: 'Pure Black', hex: '#000000' },
+  { name: 'Ocean Blue', hex: '#2563eb' },
+  { name: 'Midnight Navy', hex: '#1e3a8a' },
+  { name: 'Emerald', hex: '#059669' },
+  { name: 'Crimson', hex: '#dc2626' },
+  { name: 'Violet', hex: '#7c3aed' },
+  { name: 'Amber', hex: '#d97706' },
+];
+
+export const HIGHLIGHTER_PALETTE = [
+  { name: 'Pastel Yellow', hex: '#fef08a' },
+  { name: 'Pastel Green', hex: '#86efac' },
+  { name: 'Pastel Blue', hex: '#93c5fd' },
+  { name: 'Pastel Purple', hex: '#d8b4fe' },
+  { name: 'Pastel Pink', hex: '#f472b6' },
+  { name: 'Pastel Orange', hex: '#fdba74' },
+];
+
+interface PenToolbarProps {
+  activeTool: PenTool;
+  onSelectTool: (tool: PenTool) => void;
+  color: string;
+  onChangeColor: (color: string) => void;
+  width: number;
+  onChangeWidth: (width: number) => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  onClear: () => void;
+  onScribbleToText: () => void;
+  hasStrokes: boolean;
+}
+
+export const PenToolbar: React.FC<PenToolbarProps> = ({
+  activeTool,
+  onSelectTool,
+  color,
+  onChangeColor,
+  width,
+  onChangeWidth,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onClear,
+  onScribbleToText,
+  hasStrokes
+}) => {
+  const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
+
+  return (
+    <div className="flex items-center flex-wrap gap-1.5 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark">
+      {/* Tool Selection */}
+      <div className="flex items-center gap-1 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
+        <button
+          type="button"
+          onClick={() => onSelectTool('fountain')}
+          title="Fountain Pen (Calligraphic, Pressure Sensitive)"
+          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
+            activeTool === 'fountain'
+              ? 'bg-violet-600 text-white shadow-md'
+              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+          }`}
+        >
+          <Feather className="w-4 h-4" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onSelectTool('pen')}
+          title="Ballpoint Pen (Smooth, Consistent)"
+          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
+            activeTool === 'pen'
+              ? 'bg-violet-600 text-white shadow-md'
+              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+          }`}
+        >
+          <Pen className="w-4 h-4" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onSelectTool('highlighter')}
+          title="Highlighter (Semi-transparent)"
+          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
+            activeTool === 'highlighter'
+              ? 'bg-amber-500 text-white shadow-md'
+              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+          }`}
+        >
+          <Highlighter className="w-4 h-4" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onSelectTool('eraser')}
+          title="Eraser (S Pen button also triggers eraser)"
+          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
+            activeTool === 'eraser'
+              ? 'bg-rose-500 text-white shadow-md'
+              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+          }`}
+        >
+          <Eraser className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Colors (only show if not eraser) */}
+      {activeTool !== 'eraser' && (
+        <div className="flex items-center gap-1.5 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
+          {currentPalette.map((item) => (
+            <button
+              key={item.hex}
+              type="button"
+              onClick={() => onChangeColor(item.hex)}
+              title={item.name}
+              className={`w-6 h-6 rounded-full border transition active:scale-90 ${
+                color === item.hex
+                  ? 'ring-2 ring-violet-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900 scale-110'
+                  : 'border-black/10 dark:border-white/10 opacity-80 hover:opacity-100'
+              }`}
+              style={{ backgroundColor: item.hex }}
+            />
+          ))}
+          {/* Custom color picker */}
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => onChangeColor(e.target.value)}
+            title="Custom Color"
+            className="w-6 h-6 rounded-full border-0 cursor-pointer bg-transparent"
+          />
+        </div>
+      )}
+
+      {/* Stroke Width Selector */}
+      <div className="flex items-center gap-1.5 px-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
+        {[2, 4, 7, 12].map((size) => (
+          <button
+            key={size}
+            type="button"
+            onClick={() => onChangeWidth(size)}
+            title={`Stroke width: ${size}px`}
+            className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
+              width === size
+                ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold'
+                : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
+            }`}
+          >
+            <div
+              className="rounded-full bg-current"
+              style={{ width: `${Math.min(14, size + 2)}px`, height: `${Math.min(14, size + 2)}px` }}
+            />
+          </button>
+        ))}
+      </div>
+
+      {/* Scribble to Text Feature Button */}
+      <button
+        type="button"
+        onClick={onScribbleToText}
+        disabled={!hasStrokes}
+        title="Convert handwritten scribbles to text"
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-sm transition active:scale-95 ${
+          hasStrokes
+            ? 'bg-gradient-to-r from-violet-600 via-indigo-600 to-pink-600 text-white hover:opacity-90'
+            : 'bg-surface-subtle-light dark:bg-surface-subtle-dark text-ink-muted-light/50 dark:text-ink-muted-dark/50 cursor-not-allowed'
+        }`}
+      >
+        <Wand2 className="w-3.5 h-3.5" />
+        <span>Scribble to Text</span>
+      </button>
+
+      {/* Undo, Redo, Clear */}
+      <div className="flex items-center gap-0.5 pl-1">
+        <button
+          type="button"
+          onClick={onUndo}
+          disabled={!canUndo}
+          title="Undo Stroke"
+          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark disabled:opacity-30 disabled:cursor-not-allowed transition"
+        >
+          <Undo2 className="w-4 h-4" />
+        </button>
+
+        <button
+          type="button"
+          onClick={onRedo}
+          disabled={!canRedo}
+          title="Redo Stroke"
+          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark disabled:opacity-30 disabled:cursor-not-allowed transition"
+        >
+          <Redo2 className="w-4 h-4" />
+        </button>
+
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={!hasStrokes}
+          title="Clear all inking"
+          className="p-1.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/30 text-ink-muted-light hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+};
