@@ -1,0 +1,243 @@
+import React, { useState } from 'react';
+import { Note } from '../types/note';
+import { 
+  Plus, 
+  Search, 
+  Pin, 
+  Trash2, 
+  PenTool as PenIcon, 
+  Tag, 
+  FileText,
+  ChevronLeft,
+  X
+} from 'lucide-react';
+
+interface SidebarProps {
+  notes: Note[];
+  activeNoteId: string | null;
+  onSelectNote: (id: string) => void;
+  onCreateNote: () => void;
+  onDeleteNote: (id: string) => void;
+  onTogglePin: (id: string) => void;
+  isOpen: boolean;
+  onToggleOpen: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({
+  notes,
+  activeNoteId,
+  onSelectNote,
+  onCreateNote,
+  onDeleteNote,
+  onTogglePin,
+  isOpen,
+  onToggleOpen,
+}) => {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+
+  // Extract all unique tags
+  const allTags = Array.from(
+    new Set(notes.flatMap((n) => n.tags || []))
+  );
+
+  const filteredNotes = notes.filter((note) => {
+    const matchesSearch =
+      note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      note.content.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesTag = selectedTag ? note.tags?.includes(selectedTag) : true;
+    return matchesSearch && matchesTag;
+  });
+
+  const stripHtml = (html: string) => {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || '';
+  };
+
+  const formatDate = (timestamp: number) => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  };
+
+  return (
+    <>
+      {/* Mobile Backdrop */}
+      {isOpen && (
+        <div 
+          onClick={onToggleOpen}
+          className="fixed inset-0 bg-black/40 backdrop-blur-sm z-30 md:hidden transition-opacity"
+        />
+      )}
+
+      <aside
+        className={`fixed md:static inset-y-0 left-0 z-40 w-80 md:w-80 flex-shrink-0 flex flex-col bg-surface-light dark:bg-surface-dark border-r border-surface-subtle-light dark:border-surface-subtle-dark transition-all duration-300 ease-in-out ${
+          isOpen ? 'translate-x-0' : '-translate-x-full md:w-0 md:border-r-0 md:overflow-hidden'
+        }`}
+      >
+        {/* Sidebar Header */}
+        <div className="p-4 border-b border-surface-subtle-light dark:border-surface-subtle-dark flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-violet-600 via-indigo-600 to-pink-500 flex items-center justify-center text-white shadow-sm">
+              <PenIcon className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-base tracking-tight text-ink-light dark:text-ink-dark">
+                Aura Notes
+              </h2>
+              <p className="text-xs text-ink-muted-light dark:text-ink-muted-dark">
+                {notes.length} {notes.length === 1 ? 'note' : 'notes'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onCreateNote}
+              title="Create New Note"
+              className="p-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition active:scale-95"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onToggleOpen}
+              className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark md:hidden"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Search Bar */}
+        <div className="p-3">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted-light dark:text-ink-muted-dark" />
+            <input
+              type="text"
+              placeholder="Search notes or scribbles..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-surface-subtle-light dark:bg-surface-subtle-dark border-none outline-none focus:ring-2 focus:ring-violet-500 text-ink-light dark:text-ink-dark placeholder-ink-muted-light dark:placeholder-ink-muted-dark transition"
+            />
+          </div>
+
+          {/* Tags row */}
+          {allTags.length > 0 && (
+            <div className="flex items-center gap-1.5 mt-2.5 overflow-x-auto pb-1 no-scrollbar text-xs">
+              <button
+                onClick={() => setSelectedTag(null)}
+                className={`px-2.5 py-1 rounded-lg font-medium transition whitespace-nowrap ${
+                  selectedTag === null
+                    ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300'
+                    : 'text-ink-muted-light dark:text-ink-muted-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+                }`}
+              >
+                All
+              </button>
+              {allTags.map((tag) => (
+                <button
+                  key={tag}
+                  onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
+                  className={`px-2.5 py-1 rounded-lg font-medium transition whitespace-nowrap flex items-center gap-1 ${
+                    selectedTag === tag
+                      ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300'
+                      : 'text-ink-muted-light dark:text-ink-muted-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+                  }`}
+                >
+                  <Tag className="w-3 h-3" />
+                  {tag}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Notes List */}
+        <div className="flex-1 overflow-y-auto px-2 space-y-1.5 pb-4">
+          {filteredNotes.length === 0 ? (
+            <div className="py-12 text-center text-sm text-ink-muted-light dark:text-ink-muted-dark">
+              No notes found
+            </div>
+          ) : (
+            filteredNotes.map((note) => {
+              const isActive = note.id === activeNoteId;
+              const preview = stripHtml(note.content).trim();
+              const hasInk = note.inkStrokes && note.inkStrokes.length > 0;
+
+              return (
+                <div
+                  key={note.id}
+                  onClick={() => onSelectNote(note.id)}
+                  className={`group relative p-3 rounded-xl cursor-pointer transition-all ${
+                    isActive
+                      ? 'bg-surface-subtle-light dark:bg-surface-subtle-dark shadow-sm border-l-4 border-violet-500'
+                      : 'hover:bg-surface-subtle-light/60 dark:hover:bg-surface-subtle-dark/60'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="font-medium text-sm text-ink-light dark:text-ink-dark truncate flex-1">
+                      {note.title || 'Untitled Note'}
+                    </h3>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onTogglePin(note.id);
+                        }}
+                        title={note.pinned ? 'Unpin' : 'Pin to top'}
+                        className={`p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 ${
+                          note.pinned ? 'text-amber-500' : 'text-ink-muted-light dark:text-ink-muted-dark'
+                        }`}
+                      >
+                        <Pin className="w-3.5 h-3.5 fill-current" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Delete "${note.title}"?`)) {
+                            onDeleteNote(note.id);
+                          }
+                        }}
+                        title="Delete note"
+                        className="p-1 rounded text-red-400 hover:text-red-500 hover:bg-black/5 dark:hover:bg-white/10"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-ink-muted-light dark:text-ink-muted-dark line-clamp-2 mt-1 leading-relaxed">
+                    {preview || (hasInk ? 'Handwritten note...' : 'Empty note')}
+                  </p>
+
+                  <div className="flex items-center justify-between mt-2 pt-1 text-[11px] text-ink-muted-light dark:text-ink-muted-dark">
+                    <span>{formatDate(note.updatedAt)}</span>
+                    <div className="flex items-center gap-1.5">
+                      {hasInk && (
+                        <span 
+                          title="Contains Apple Pencil / S Pen handwriting" 
+                          className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300 font-medium"
+                        >
+                          <PenIcon className="w-2.5 h-2.5" />
+                          Ink
+                        </span>
+                      )}
+                      {note.pinned && (
+                        <Pin className="w-3 h-3 text-amber-500 fill-amber-500" />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </aside>
+    </>
+  );
+};
