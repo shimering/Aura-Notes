@@ -6,13 +6,22 @@ import { PenTool } from '../types/note';
 
 /**
  * Checks if the pointer event has the barrel button (side button) or eraser button pressed.
- * - buttons & 2: W3C secondary / barrel button (standard on S Pen & Surface Pen)
+ * - buttons & 4: W3C auxiliary / middle button (Chromium on Android / Samsung Galaxy Tab S Pen mapping!)
+ * - buttons & 2: W3C secondary / barrel button (Windows / Wacom / Surface Pen)
  * - buttons & 32: W3C eraser tip / barrel eraser
- * - button === 2: secondary button click
- * - button === 5: eraser button click
+ * - button === 1: Android Chrome S Pen side button click
+ * - button === 2: Secondary button click
+ * - button === 5: Eraser button click
  */
 export function isSpenBarrelOrEraser(buttons: number, button?: number): boolean {
-  return (buttons & 2) !== 0 || (buttons & 32) !== 0 || button === 2 || button === 5;
+  return (
+    (buttons & 4) !== 0 ||
+    (buttons & 2) !== 0 ||
+    (buttons & 32) !== 0 ||
+    button === 1 ||
+    button === 2 ||
+    button === 5
+  );
 }
 
 /**

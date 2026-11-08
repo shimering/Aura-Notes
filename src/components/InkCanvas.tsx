@@ -4,7 +4,7 @@ import { renderStroke } from '../utils/inkSmoothing';
 import { isSpenBarrelOrEraser, toggleSpenHoverTool } from '../utils/spenDetection';
 import { PenToolbar } from './PenToolbar';
 import { SPenQuickMenu } from './SPenQuickMenu';
-import { Eraser, Sparkles, Feather, Pen as PenIcon, Check } from 'lucide-react';
+import { Eraser, Sparkles, Feather, Pen as PenIcon } from 'lucide-react';
 
 export interface InkCanvasRef {
   getCanvasElement: () => HTMLCanvasElement | null;
@@ -159,36 +159,67 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   /**
    * Triggers tool toggle specifically when S Pen button is pressed while HOVERING
    */
-  const triggerSpenHoverToggle = useCallback((clientX: number, clientY: number) => {
+  const triggerSpenHoverToggle = useCallback((clientX?: number, clientY?: number) => {
     const now = Date.now();
     // Debounce 300ms to avoid double trigger
     if (now - lastSpenHoverTimeRef.current < 300) return;
     lastSpenHoverTimeRef.current = now;
+
+    // Haptic feedback click on Samsung Galaxy Tab
+    try {
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate(40);
+      }
+    } catch {}
 
     setActiveTool((currTool) => {
       const toggleRes = toggleSpenHoverTool(currTool, priorToolBeforeHoldRef.current);
       priorToolBeforeHoldRef.current = toggleRes.savedPriorTool;
 
       const container = containerRef.current;
-      const rect = container ? container.getBoundingClientRect() : { left: 0, top: 0 };
-      const localX = clientX - rect.left;
-      const localY = clientY - rect.top;
+      const rect = container ? container.getBoundingClientRect() : { left: 0, top: 0, width: 600, height: 600 };
+      const localX = typeof clientX === 'number' ? clientX - rect.left : rect.width / 2;
+      const localY = typeof clientY === 'number' ? clientY - rect.top : 80;
 
       setHoverFeedback({
         label: toggleRes.label,
         tool: toggleRes.nextTool,
-        x: Math.max(80, Math.min(window.innerWidth - 120, localX)),
-        y: Math.max(60, localY - 40)
+        x: Math.max(100, Math.min(rect.width - 100, localX)),
+        y: Math.max(70, Math.min(rect.height - 70, localY - 35))
       });
 
       if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
       hoverFeedbackTimerRef.current = setTimeout(() => {
         setHoverFeedback(null);
-      }, 1400);
+      }, 1600);
 
       return toggleRes.nextTool;
     });
   }, []);
+
+  // Global capture for S Pen hardware button interrupts across the window
+  useEffect(() => {
+    const handleGlobalPointerCapture = (e: PointerEvent) => {
+      if (e.pointerType === 'pen' && isSpenBarrelOrEraser(e.buttons, e.button)) {
+        triggerSpenHoverToggle(e.clientX, e.clientY);
+      }
+    };
+
+    const handleGlobalAuxClick = (e: MouseEvent) => {
+      if ((e as any).pointerType === 'pen' || isSpenBarrelOrEraser(e.buttons, e.button)) {
+        e.preventDefault();
+        triggerSpenHoverToggle(e.clientX, e.clientY);
+      }
+    };
+
+    window.addEventListener('pointerdown', handleGlobalPointerCapture, { capture: true });
+    window.addEventListener('auxclick', handleGlobalAuxClick, { capture: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleGlobalPointerCapture, { capture: true });
+      window.removeEventListener('auxclick', handleGlobalAuxClick, { capture: true });
+      if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
+    };
+  }, [triggerSpenHoverToggle]);
 
   // Pointer Down (stylus touches screen)
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -210,9 +241,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       return; // Ignore finger/palm touch while pen is hovering/touching
     }
 
-    // S Pen button click while hovering or touching:
-    // On Android Galaxy Tab, S Pen button press dispatches button === 2 or buttons & 2
-    if (e.pointerType === 'pen' && (e.button === 2 || (e.buttons & 2) !== 0 || e.buttons === 32 || e.button === 5)) {
+    // S Pen button click check on touch:
+    // Android Chrome button 1 (auxiliary), button 2 (secondary), buttons & 4, buttons & 2, buttons & 32
+    if (e.pointerType === 'pen' && isSpenBarrelOrEraser(e.buttons, e.button)) {
       e.preventDefault();
       triggerSpenHoverToggle(e.clientX, e.clientY);
       return; // Do not draw an unwanted dot on button press!
@@ -314,6 +345,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     triggerSpenHoverToggle(e.clientX, e.clientY);
   };
 
+  const handleAuxClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    triggerSpenHoverToggle(e.clientX, e.clientY);
+  };
+
   // Undo / Redo / Clear handlers
   const handleUndo = () => {
     if (historyIndex > 0) {
@@ -367,6 +403,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       <div 
         ref={containerRef} 
         onContextMenu={handleContextMenu}
+        onAuxClick={handleAuxClick}
         className="flex-1 w-full h-full relative cursor-crosshair overflow-hidden touch-none"
       >
         <canvas
@@ -377,22 +414,23 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           onPointerCancel={handlePointerCancel}
           onPointerLeave={handlePointerCancel}
           onContextMenu={handleContextMenu}
+          onAuxClick={handleAuxClick}
           className="ink-canvas absolute inset-0 block w-full h-full"
         />
 
         {/* Dynamic S Pen Hover Toggle Notification Badge */}
         {hoverFeedback && (
           <div 
-            className="absolute z-20 pointer-events-none transform -translate-x-1/2 -translate-y-full transition-all duration-150 animate-in fade-in zoom-in-95"
+            className="absolute z-30 pointer-events-none transform -translate-x-1/2 -translate-y-full transition-all duration-150 animate-in fade-in zoom-in-95"
             style={{ left: `${hoverFeedback.x}px`, top: `${hoverFeedback.y}px` }}
           >
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-dark/90 text-white dark:bg-surface-light/95 dark:text-ink-light shadow-floating text-xs font-semibold backdrop-blur-md border border-white/20">
+            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-surface-dark/95 text-white dark:bg-surface-light/95 dark:text-ink-light shadow-floating text-xs font-semibold backdrop-blur-md border border-white/20">
               {hoverFeedback.tool === 'eraser' ? (
-                <Eraser className="w-3.5 h-3.5 text-rose-400" />
+                <Eraser className="w-4 h-4 text-rose-400" />
               ) : (
-                <Feather className="w-3.5 h-3.5 text-violet-400" />
+                <Feather className="w-4 h-4 text-violet-400" />
               )}
-              <span>{hoverFeedback.label}</span>
+              <span>S Pen: Switched to {hoverFeedback.label}</span>
             </div>
           </div>
         )}
@@ -406,19 +444,40 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           </div>
         )}
 
-        {/* Quick S Pen Floating Trigger Badge (Click to open quick palette on any device) */}
-        <button
-          type="button"
-          onClick={() => {
-            setQuickMenuPos(null);
-            setIsQuickMenuOpen(true);
-          }}
-          title="S Pen Quick Menu (or hover button)"
-          className="absolute bottom-4 right-4 z-10 flex items-center gap-2 px-3 py-2 rounded-2xl bg-surface-light/90 dark:bg-surface-dark/90 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating text-xs font-semibold text-violet-600 dark:text-violet-400 hover:scale-105 active:scale-95 transition"
-        >
-          <Sparkles className="w-4 h-4" />
-          <span className="hidden sm:inline">S Pen Tools</span>
-        </button>
+        {/* Quick S Pen Floating Trigger Badge (Click to toggle Pen / Eraser or open palette on any device) */}
+        <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2">
+          {/* 1-Tap Quick Tool Flip Pill */}
+          <button
+            type="button"
+            onClick={() => triggerSpenHoverToggle()}
+            title="Toggle between Pen and Eraser (or click S Pen button while hovering)"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating text-xs font-semibold text-ink-light dark:text-ink-dark hover:scale-105 active:scale-95 transition"
+          >
+            {activeTool === 'eraser' ? (
+              <>
+                <Feather className="w-3.5 h-3.5 text-violet-500" />
+                <span>Switch to Pen</span>
+              </>
+            ) : (
+              <>
+                <Eraser className="w-3.5 h-3.5 text-rose-500" />
+                <span>Switch to Eraser</span>
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setQuickMenuPos(null);
+              setIsQuickMenuOpen(true);
+            }}
+            title="S Pen Quick Menu (palette & styles)"
+            className="p-2.5 rounded-2xl bg-violet-600 hover:bg-violet-700 text-white shadow-floating hover:scale-105 active:scale-95 transition"
+          >
+            <Sparkles className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* S Pen Quick Menu Palette Modal */}
