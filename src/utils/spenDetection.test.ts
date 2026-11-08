@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { 
   isSpenBarrelOrEraser, 
-  isSpenHoverButtonPressed,
+  isSpenButtonPressed,
   isSpenHardwareKeyEvent,
   evaluateSpenButtonAction,
   toggleSpenHoverTool
@@ -27,16 +27,30 @@ describe('S Pen Detection Utilities', () => {
 
   it('detects S Pen button press while hovering in mid-air', () => {
     // Hovering with no button pressed
-    expect(isSpenHoverButtonPressed(0, -1, 0)).toBe(false);
-    expect(isSpenHoverButtonPressed(0, 0, 0)).toBe(false);
+    expect(isSpenButtonPressed(0, -1, 0)).toBe(false);
+    expect(isSpenButtonPressed(0, 0, 0)).toBe(false);
 
     // Hovering with barrel button pressed in the air
-    expect(isSpenHoverButtonPressed(4, -1, 0)).toBe(true);
-    expect(isSpenHoverButtonPressed(2, -1, 0)).toBe(true);
-    expect(isSpenHoverButtonPressed(32, -1, 0)).toBe(true);
-    expect(isSpenHoverButtonPressed(1, -1, 0)).toBe(true);
-    expect(isSpenHoverButtonPressed(0, 1, 0)).toBe(true);
-    expect(isSpenHoverButtonPressed(0, 2, 0)).toBe(true);
+    expect(isSpenButtonPressed(4, -1, 0)).toBe(true);
+    expect(isSpenButtonPressed(2, -1, 0)).toBe(true);
+    expect(isSpenButtonPressed(32, -1, 0)).toBe(true);
+    expect(isSpenButtonPressed(1, -1, 0)).toBe(true);
+    expect(isSpenButtonPressed(0, 1, 0)).toBe(true);
+    expect(isSpenButtonPressed(0, 2, 0)).toBe(true);
+  });
+
+  it('NEVER mistakes normal screen touch contact for an S Pen button press', () => {
+    // Normal touch inking on screen (pressure > 0.05, buttons = 1, button = 0)
+    expect(isSpenButtonPressed(1, 0, 0.4)).toBe(false);
+    expect(isSpenButtonPressed(1, 0, 0.8)).toBe(false);
+    expect(isSpenButtonPressed(1, -1, 0.5)).toBe(false);
+
+    // Screen contact WITH S Pen button held down
+    expect(isSpenButtonPressed(5, 0, 0.5)).toBe(true); // 1 (tip) | 4 (barrel)
+    expect(isSpenButtonPressed(3, 0, 0.5)).toBe(true); // 1 (tip) | 2 (secondary)
+    expect(isSpenButtonPressed(33, 0, 0.5)).toBe(true); // 1 (tip) | 32 (stylus primary)
+    expect(isSpenButtonPressed(1, 1, 0.5)).toBe(true); // button === 1
+    expect(isSpenButtonPressed(1, 2, 0.5)).toBe(true); // button === 2
   });
 
   it('identifies Android 14+ Stylus hardware key events', () => {
