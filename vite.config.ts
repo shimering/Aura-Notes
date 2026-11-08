@@ -101,21 +101,43 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'icon.svg', 'apple-touch-icon.png'],
+      includeAssets: ['favicon.ico', 'icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png'],
       manifest: {
         name: 'Aura Notes - Stylus & Scribble Note Studio',
         short_name: 'Aura Notes',
         description: 'Elegant note app with S Pen, Apple Pencil stylus support and scribble-to-text recognition',
         theme_color: '#ffffff',
         background_color: '#fbfbfa',
+        id: '/',
+        start_url: '/',
+        scope: '/',
         display: 'standalone',
         orientation: 'any',
+        categories: ['productivity', 'utilities'],
         icons: [
+          {
+            src: '/pwa-192x192.png',
+            sizes: '192x192',
+            type: 'image/png',
+            purpose: 'any'
+          },
+          {
+            src: '/pwa-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'any'
+          },
+          {
+            src: '/pwa-maskable-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable'
+          },
           {
             src: '/icon.svg',
             sizes: 'any',
             type: 'image/svg+xml',
-            purpose: 'any maskable'
+            purpose: 'any'
           }
         ]
       },

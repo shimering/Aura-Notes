@@ -3,20 +3,10 @@ import ReactDOM from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 
-// Auto-check and activate service worker updates immediately on page visit
+// Register service worker cleanly without aggressive auto-reload
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    for (const reg of registrations) {
-      reg.update();
-    }
-  });
-
-  let refreshing = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!refreshing) {
-      refreshing = true;
-      window.location.reload();
-    }
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+    console.warn('Service worker registration failed:', err);
   });
 }
 

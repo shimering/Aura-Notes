@@ -198,25 +198,7 @@ export default function App() {
     loadData();
   }, [executeSync]);
 
-  // Real-time background sync polling (every 3 seconds) so drawings appear on the other device automatically
-  useEffect(() => {
-    if (!settings.syncVaultKey || !settings.autoSyncEnabled) return;
-
-    const interval = setInterval(() => {
-      // Only poll if tab is visible, not currently syncing, and not actively drawing in the last 2.5s
-      if (
-        document.visibilityState === 'visible' &&
-        !isSyncingRef.current &&
-        Date.now() - (lastLocalEditTimeRef.current || 0) > 2500
-      ) {
-        executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
-      }
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [settings.syncVaultKey, settings.autoSyncEnabled, executeSync]);
-
-  // Auto-sync when switching back to tab
+  // Sync when switching back to tab
   useEffect(() => {
     const handleVisibility = () => {
       if (

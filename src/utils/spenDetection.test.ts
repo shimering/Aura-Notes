@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isSpenBarrelOrEraser, evaluateSpenButtonAction } from './spenDetection';
+import { 
+  isSpenBarrelOrEraser, 
+  evaluateSpenButtonAction,
+  toggleSpenHoverTool
+} from './spenDetection';
 
 describe('S Pen Detection Utilities', () => {
   it('correctly identifies S Pen barrel button bitmasks and button IDs', () => {
@@ -33,5 +37,16 @@ describe('S Pen Detection Utilities', () => {
 
     // Already marked as holding -> hold eraser
     expect(evaluateSpenButtonAction(100, false, true, 250)).toBe('hold-eraser');
+  });
+
+  it('toggles tool cleanly on S Pen hover button press', () => {
+    // When pen is active, clicking S Pen button while hovering switches to eraser
+    const toEraser = toggleSpenHoverTool('fountain', undefined);
+    expect(toEraser.nextTool).toBe('eraser');
+    expect(toEraser.savedPriorTool).toBe('fountain');
+
+    // When eraser is active, clicking S Pen button while hovering switches back to pen
+    const backToPen = toggleSpenHoverTool('eraser', 'fountain');
+    expect(backToPen.nextTool).toBe('fountain');
   });
 });

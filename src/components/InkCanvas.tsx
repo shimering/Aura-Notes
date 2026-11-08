@@ -1,10 +1,10 @@
 import React, { useRef, useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { Stroke, StrokePoint, PenTool } from '../types/note';
 import { renderStroke } from '../utils/inkSmoothing';
-import { isSpenBarrelOrEraser, evaluateSpenButtonAction } from '../utils/spenDetection';
+import { isSpenBarrelOrEraser, toggleSpenHoverTool } from '../utils/spenDetection';
 import { PenToolbar } from './PenToolbar';
 import { SPenQuickMenu } from './SPenQuickMenu';
-import { Eraser, Sparkles } from 'lucide-react';
+import { Eraser, Sparkles, Feather, Pen as PenIcon, Check } from 'lucide-react';
 
 export interface InkCanvasRef {
   getCanvasElement: () => HTMLCanvasElement | null;
@@ -35,17 +35,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [penWidth, setPenWidth] = useState<number>(4);
   const [isStylusOnly, setIsStylusOnly] = useState<boolean>(false);
 
-  // S Pen Button state machine
-  const [isHoldingEraser, setIsHoldingEraser] = useState<boolean>(false);
+  // S Pen Hover Feedback
+  const [hoverFeedback, setHoverFeedback] = useState<{ label: string; tool: PenTool; x: number; y: number } | null>(null);
   const [isQuickMenuOpen, setIsQuickMenuOpen] = useState<boolean>(false);
   const [quickMenuPos, setQuickMenuPos] = useState<{ x: number; y: number } | null>(null);
 
-  const spenButtonDownTimeRef = useRef<number | null>(null);
-  const spenButtonDownPosRef = useRef<{ x: number; y: number } | null>(null);
-  const isHoldingEraserRef = useRef<boolean>(false);
   const priorToolBeforeHoldRef = useRef<PenTool>('fountain');
-  const hasErasedOrMovedRef = useRef<boolean>(false);
-  const holdTimerRef = useRef<any>(null);
+  const lastSpenHoverTimeRef = useRef<number>(0);
+  const hoverFeedbackTimerRef = useRef<any>(null);
 
   // History for Undo/Redo
   const [historyIndex, setHistoryIndex] = useState<number>(strokes.length);
@@ -159,49 +156,38 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
   };
 
-  // Handle S-Pen button release: distinguish Keep Pressing (Hold) vs Press Once (Single Click)
-  const handleSpenButtonRelease = (pos?: { x: number; y: number }) => {
-    if (holdTimerRef.current) {
-      clearTimeout(holdTimerRef.current);
-      holdTimerRef.current = null;
-    }
+  /**
+   * Triggers tool toggle specifically when S Pen button is pressed while HOVERING
+   */
+  const triggerSpenHoverToggle = useCallback((clientX: number, clientY: number) => {
+    const now = Date.now();
+    // Debounce 300ms to avoid double trigger
+    if (now - lastSpenHoverTimeRef.current < 300) return;
+    lastSpenHoverTimeRef.current = now;
 
-    if (spenButtonDownTimeRef.current !== null) {
-      const duration = Date.now() - spenButtonDownTimeRef.current;
-      const action = evaluateSpenButtonAction(
-        duration,
-        hasErasedOrMovedRef.current,
-        isHoldingEraserRef.current,
-        250
-      );
+    setActiveTool((currTool) => {
+      const toggleRes = toggleSpenHoverTool(currTool, priorToolBeforeHoldRef.current);
+      priorToolBeforeHoldRef.current = toggleRes.savedPriorTool;
 
-      if (action === 'hold-eraser') {
-        // Was holding button to erase -> revert to normal pen
-        isHoldingEraserRef.current = false;
-        setIsHoldingEraser(false);
-      } else {
-        // Was a single quick press -> open the elegant pen & color menu!
-        setQuickMenuPos(pos || spenButtonDownPosRef.current || null);
-        setIsQuickMenuOpen((prev) => !prev);
-      }
+      const container = containerRef.current;
+      const rect = container ? container.getBoundingClientRect() : { left: 0, top: 0 };
+      const localX = clientX - rect.left;
+      const localY = clientY - rect.top;
 
-      spenButtonDownTimeRef.current = null;
-      hasErasedOrMovedRef.current = false;
-    }
-  };
+      setHoverFeedback({
+        label: toggleRes.label,
+        tool: toggleRes.nextTool,
+        x: Math.max(80, Math.min(window.innerWidth - 120, localX)),
+        y: Math.max(60, localY - 40)
+      });
 
-  // Global pointer up listener to guarantee button release is caught even off canvas
-  useEffect(() => {
-    const onGlobalPointerUp = (e: PointerEvent) => {
-      if (spenButtonDownTimeRef.current !== null) {
-        handleSpenButtonRelease({ x: e.clientX, y: e.clientY });
-      }
-    };
-    window.addEventListener('pointerup', onGlobalPointerUp);
-    return () => {
-      window.removeEventListener('pointerup', onGlobalPointerUp);
-      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
-    };
+      if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
+      hoverFeedbackTimerRef.current = setTimeout(() => {
+        setHoverFeedback(null);
+      }, 1400);
+
+      return toggleRes.nextTool;
+    });
   }, []);
 
   // Pointer Down (stylus touches screen)
@@ -224,78 +210,38 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       return; // Ignore finger/palm touch while pen is hovering/touching
     }
 
-    e.currentTarget.setPointerCapture(e.pointerId);
-
-    // Detect S Pen button press on touch down
-    const hasSpenButton = isSpenBarrelOrEraser(e.buttons, e.button);
-    if (hasSpenButton) {
-      if (spenButtonDownTimeRef.current === null) {
-        spenButtonDownTimeRef.current = Date.now();
-        spenButtonDownPosRef.current = { x: e.clientX, y: e.clientY };
-        if (activeTool !== 'eraser') {
-          priorToolBeforeHoldRef.current = activeTool;
-        }
-      }
-      hasErasedOrMovedRef.current = true;
-      isHoldingEraserRef.current = true;
-      setIsHoldingEraser(true);
+    // S Pen button click while hovering or touching:
+    // On Android Galaxy Tab, S Pen button press dispatches button === 2 or buttons & 2
+    if (e.pointerType === 'pen' && (e.button === 2 || (e.buttons & 2) !== 0 || e.buttons === 32 || e.button === 5)) {
+      e.preventDefault();
+      triggerSpenHoverToggle(e.clientX, e.clientY);
+      return; // Do not draw an unwanted dot on button press!
     }
 
-    const isHardwareEraser = 
-      isHoldingEraserRef.current ||
-      hasSpenButton ||
-      activeTool === 'eraser';
-
-    const effectiveTool: PenTool = isHardwareEraser ? 'eraser' : activeTool;
+    e.currentTarget.setPointerCapture(e.pointerId);
 
     const startPoint = getCanvasPoint(e);
     const newStroke: Stroke = {
       id: `stroke-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       points: [startPoint],
-      color: effectiveTool === 'eraser' ? '#ffffff' : penColor,
-      width: effectiveTool === 'eraser' ? Math.max(penWidth * 2.2, 12) : penWidth,
-      tool: effectiveTool,
-      opacity: effectiveTool === 'highlighter' ? 0.4 : 1.0
+      color: activeTool === 'eraser' ? '#ffffff' : penColor,
+      width: penWidth,
+      tool: activeTool,
+      opacity: activeTool === 'highlighter' ? 0.4 : 1.0
     };
 
     currentStrokeRef.current = newStroke;
     redraw();
   };
 
-  // Pointer Move (coalesced 120Hz events loop)
+  // Pointer Move (coalesced 120Hz events loop + S Pen Hover detection)
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // S Pen button detection during hover or drawing
-    if (e.pointerType === 'pen') {
-      const hasSpenButton = isSpenBarrelOrEraser(e.buttons);
-
+    // S Pen button detection WHILE HOVERING in the air (not touching screen)
+    if (e.pointerType === 'pen' && !currentStrokeRef.current) {
+      const hasSpenButton = isSpenBarrelOrEraser(e.buttons, e.button);
       if (hasSpenButton) {
-        if (spenButtonDownTimeRef.current === null) {
-          spenButtonDownTimeRef.current = Date.now();
-          spenButtonDownPosRef.current = { x: e.clientX, y: e.clientY };
-          if (activeTool !== 'eraser') {
-            priorToolBeforeHoldRef.current = activeTool;
-          }
-          // Set hold timer for 250ms
-          if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
-          holdTimerRef.current = setTimeout(() => {
-            isHoldingEraserRef.current = true;
-            setIsHoldingEraser(true);
-          }, 250);
-        }
-
-        // If moved more than 5px while button down -> activate eraser hold immediately
-        if (spenButtonDownPosRef.current) {
-          const dx = e.clientX - spenButtonDownPosRef.current.x;
-          const dy = e.clientY - spenButtonDownPosRef.current.y;
-          if (Math.hypot(dx, dy) > 5) {
-            hasErasedOrMovedRef.current = true;
-            isHoldingEraserRef.current = true;
-            setIsHoldingEraser(true);
-          }
-        }
-      } else if (spenButtonDownTimeRef.current !== null && !hasSpenButton) {
-        // Button was released while hovering/moving!
-        handleSpenButtonRelease({ x: e.clientX, y: e.clientY });
+        triggerSpenHoverToggle(e.clientX, e.clientY);
+        return;
       }
     }
 
@@ -340,10 +286,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     if (e.pointerType === 'pen') {
       isStylusActiveRef.current = false;
-      // If S Pen button was active, handle its release
-      if (spenButtonDownTimeRef.current !== null) {
-        handleSpenButtonRelease({ x: e.clientX, y: e.clientY });
-      }
     }
 
     if (currentStrokeRef.current) {
@@ -363,19 +305,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
     isStylusActiveRef.current = false;
     currentStrokeRef.current = null;
-    if (spenButtonDownTimeRef.current !== null) {
-      handleSpenButtonRelease();
-    }
     redraw();
   };
 
   // Prevent default browser context menu triggered by stylus barrel button or right-click
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    if (!isHoldingEraserRef.current && !hasErasedOrMovedRef.current) {
-      setQuickMenuPos({ x: e.clientX, y: e.clientY });
-      setIsQuickMenuOpen(true);
-    }
+    triggerSpenHoverToggle(e.clientX, e.clientY);
   };
 
   // Undo / Redo / Clear handlers
@@ -408,7 +344,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       <div className="p-3 flex items-center justify-center sticky top-0 z-10 pointer-events-none">
         <div className="pointer-events-auto">
           <PenToolbar
-            activeTool={isHoldingEraser ? 'eraser' : activeTool}
+            activeTool={activeTool}
             onSelectTool={setActiveTool}
             color={penColor}
             onChangeColor={setPenColor}
@@ -423,23 +359,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             hasStrokes={strokes.length > 0}
             isStylusOnly={isStylusOnly}
             onToggleStylusOnly={() => setIsStylusOnly(!isStylusOnly)}
-            onOpenSPenMenu={() => {
-              setQuickMenuPos(null);
-              setIsQuickMenuOpen(true);
-            }}
           />
         </div>
       </div>
-
-      {/* Floating Eraser Active Indicator banner when S-Pen button is kept pressed */}
-      {isHoldingEraser && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
-          <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-rose-600/95 text-white text-xs font-semibold shadow-xl backdrop-blur-md border border-rose-400/40">
-            <Eraser className="w-4 h-4 animate-pulse" />
-            <span>S Pen Eraser (Active while holding button)</span>
-          </div>
-        </div>
-      )}
 
       {/* Drawing Canvas Container */}
       <div 
@@ -458,10 +380,29 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           className="ink-canvas absolute inset-0 block w-full h-full"
         />
 
+        {/* Dynamic S Pen Hover Toggle Notification Badge */}
+        {hoverFeedback && (
+          <div 
+            className="absolute z-20 pointer-events-none transform -translate-x-1/2 -translate-y-full transition-all duration-150 animate-in fade-in zoom-in-95"
+            style={{ left: `${hoverFeedback.x}px`, top: `${hoverFeedback.y}px` }}
+          >
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-dark/90 text-white dark:bg-surface-light/95 dark:text-ink-light shadow-floating text-xs font-semibold backdrop-blur-md border border-white/20">
+              {hoverFeedback.tool === 'eraser' ? (
+                <Eraser className="w-3.5 h-3.5 text-rose-400" />
+              ) : (
+                <Feather className="w-3.5 h-3.5 text-violet-400" />
+              )}
+              <span>{hoverFeedback.label}</span>
+            </div>
+          </div>
+        )}
+
         {strokes.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-ink-muted-light/60 dark:text-ink-muted-dark/60 text-sm">
             <p className="font-medium">Write with S Pen or Apple Pencil</p>
-            <p className="text-xs mt-1">Hold S Pen button to erase • Tap button once to switch pen &amp; color</p>
+            <p className="text-xs mt-1">
+              Hover S Pen &amp; press button to toggle Eraser / Pen • 120Hz Coalesced
+            </p>
           </div>
         )}
 
@@ -472,11 +413,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             setQuickMenuPos(null);
             setIsQuickMenuOpen(true);
           }}
-          title="S Pen Quick Menu (or press S Pen button once)"
+          title="S Pen Quick Menu (or hover button)"
           className="absolute bottom-4 right-4 z-10 flex items-center gap-2 px-3 py-2 rounded-2xl bg-surface-light/90 dark:bg-surface-dark/90 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating text-xs font-semibold text-violet-600 dark:text-violet-400 hover:scale-105 active:scale-95 transition"
         >
           <Sparkles className="w-4 h-4" />
-          <span className="hidden sm:inline">S Pen Menu</span>
+          <span className="hidden sm:inline">S Pen Tools</span>
         </button>
       </div>
 

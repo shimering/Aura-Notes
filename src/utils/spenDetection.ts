@@ -1,3 +1,5 @@
+import { PenTool } from '../types/note';
+
 /**
  * Utilities for Samsung S Pen, Apple Pencil and Wacom Stylus pointer event handling
  */
@@ -16,11 +18,6 @@ export function isSpenBarrelOrEraser(buttons: number, button?: number): boolean 
 /**
  * Evaluates whether an S Pen button interaction was a "Keep Pressing" (Hold to Erase)
  * or a "Press Once" (Single Click to open Pen & Color Menu).
- *
- * @param pressDurationMs Duration in milliseconds that the button was down
- * @param hasErasedOrMoved Whether stylus drew or moved noticeably while button was down
- * @param isHolding Whether hold state was already triggered by timeout
- * @param holdThresholdMs Time threshold in ms (default 250ms)
  */
 export function evaluateSpenButtonAction(
   pressDurationMs: number,
@@ -32,4 +29,28 @@ export function evaluateSpenButtonAction(
     return 'hold-eraser';
   }
   return 'single-click-menu';
+}
+
+/**
+ * Toggles the active pen tool when the S Pen button is pressed while hovering.
+ * Seamlessly flips between the user's active pen (e.g. fountain or ballpoint) and eraser.
+ */
+export function toggleSpenHoverTool(
+  currentTool: PenTool,
+  priorTool?: PenTool
+): { nextTool: PenTool; savedPriorTool: PenTool; label: string } {
+  if (currentTool === 'eraser') {
+    const next = priorTool || 'fountain';
+    return {
+      nextTool: next,
+      savedPriorTool: next,
+      label: next === 'fountain' ? 'Fountain Pen' : next === 'highlighter' ? 'Highlighter' : 'Ballpoint Pen'
+    };
+  }
+
+  return {
+    nextTool: 'eraser',
+    savedPriorTool: currentTool,
+    label: 'Eraser'
+  };
 }
