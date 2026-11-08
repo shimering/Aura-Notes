@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { 
   isSpenBarrelOrEraser, 
+  isSpenHoverButtonPressed,
+  isSpenHardwareKeyEvent,
   evaluateSpenButtonAction,
   toggleSpenHoverTool
 } from './spenDetection';
@@ -21,6 +23,27 @@ describe('S Pen Detection Utilities', () => {
     // Eraser tip (buttons = 32 / button = 5)
     expect(isSpenBarrelOrEraser(32)).toBe(true);
     expect(isSpenBarrelOrEraser(0, 5)).toBe(true);
+  });
+
+  it('detects S Pen button press while hovering in mid-air', () => {
+    // Hovering with no button pressed
+    expect(isSpenHoverButtonPressed(0, -1, 0)).toBe(false);
+    expect(isSpenHoverButtonPressed(0, 0, 0)).toBe(false);
+
+    // Hovering with barrel button pressed in the air
+    expect(isSpenHoverButtonPressed(4, -1, 0)).toBe(true);
+    expect(isSpenHoverButtonPressed(2, -1, 0)).toBe(true);
+    expect(isSpenHoverButtonPressed(32, -1, 0)).toBe(true);
+    expect(isSpenHoverButtonPressed(1, -1, 0)).toBe(true);
+    expect(isSpenHoverButtonPressed(0, 1, 0)).toBe(true);
+    expect(isSpenHoverButtonPressed(0, 2, 0)).toBe(true);
+  });
+
+  it('identifies Android 14+ Stylus hardware key events', () => {
+    expect(isSpenHardwareKeyEvent({ keyCode: 308 } as KeyboardEvent)).toBe(true);
+    expect(isSpenHardwareKeyEvent({ keyCode: 309 } as KeyboardEvent)).toBe(true);
+    expect(isSpenHardwareKeyEvent({ code: 'StylusButtonPrimary' } as KeyboardEvent)).toBe(true);
+    expect(isSpenHardwareKeyEvent({ keyCode: 65 } as KeyboardEvent)).toBe(false);
   });
 
   it('correctly classifies "Keep pressing" hold vs "Press once" single click', () => {
