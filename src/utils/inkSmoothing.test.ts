@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getStrokesBoundingBox, getPressureWidth } from './inkSmoothing';
+import { getStrokesBoundingBox, getPressureWidth, eraseStrokesNearPoint, isPointNearStroke } from './inkSmoothing';
 import { Stroke } from '../types/note';
 
 describe('Ink Smoothing & Bounding Box', () => {
@@ -33,5 +33,34 @@ describe('Ink Smoothing & Bounding Box', () => {
     expect(bbox!.minY).toBeLessThanOrEqual(15);
     expect(bbox!.maxX).toBeGreaterThanOrEqual(120);
     expect(bbox!.maxY).toBeGreaterThanOrEqual(140);
+  });
+
+  it('erases strokes near an eraser point', () => {
+    const stroke1: Stroke = {
+      id: 'stroke-1',
+      points: [
+        { x: 100, y: 100, pressure: 0.5, time: 100 },
+        { x: 105, y: 105, pressure: 0.5, time: 110 }
+      ],
+      color: '#000000',
+      width: 4,
+      tool: 'fountain'
+    };
+    const stroke2: Stroke = {
+      id: 'stroke-2',
+      points: [
+        { x: 300, y: 300, pressure: 0.5, time: 100 },
+        { x: 305, y: 305, pressure: 0.5, time: 110 }
+      ],
+      color: '#000000',
+      width: 4,
+      tool: 'fountain'
+    };
+
+    // Erasing near stroke1 (at 102, 102 with radius 20)
+    const { remaining, hasErased } = eraseStrokesNearPoint([stroke1, stroke2], 102, 102, 20);
+    expect(hasErased).toBe(true);
+    expect(remaining.length).toBe(1);
+    expect(remaining[0].id).toBe('stroke-2');
   });
 });

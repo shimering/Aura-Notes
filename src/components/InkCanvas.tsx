@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { Stroke, StrokePoint, PenTool } from '../types/note';
-import { renderStroke } from '../utils/inkSmoothing';
+import { renderStroke, eraseStrokesNearPoint } from '../utils/inkSmoothing';
 import { 
   isSpenBarrelOrEraser, 
   isSpenButtonPressed, 
@@ -22,31 +22,38 @@ interface InkCanvasProps {
   onScribbleToText: () => void;
 }
 
-/**
- * Pleasant offline Web Audio API acoustic chime on tool transition
- */
+// Global AudioContext Singleton (prevents hardware exhaustion & browser crash)
+let sharedAudioCtx: AudioContext | null = null;
+
 function playToggleAudioFeedback(isEraser: boolean) {
   try {
+    if (typeof window === 'undefined') return;
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) return;
-    const ctx = new AudioContextClass();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+    if (!sharedAudioCtx || sharedAudioCtx.state === 'closed') {
+      sharedAudioCtx = new AudioContextClass();
+    }
+    if (sharedAudioCtx.state === 'suspended') {
+      sharedAudioCtx.resume().catch(() => {});
+    }
+
+    const osc = sharedAudioCtx.createOscillator();
+    const gain = sharedAudioCtx.createGain();
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(sharedAudioCtx.destination);
 
     // Eraser is a lower descending tone, Pen is a bright ascending chime
     const startFreq = isEraser ? 360 : 720;
     const endFreq = isEraser ? 200 : 980;
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(startFreq, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(endFreq, ctx.currentTime + 0.07);
+    osc.frequency.setValueAtTime(startFreq, sharedAudioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, sharedAudioCtx.currentTime + 0.07);
 
-    gain.gain.setValueAtTime(0.08, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.07);
+    gain.gain.setValueAtTime(0.08, sharedAudioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, sharedAudioCtx.currentTime + 0.07);
 
     osc.start();
-    osc.stop(ctx.currentTime + 0.07);
+    osc.stop(sharedAudioCtx.currentTime + 0.07);
   } catch {}
 }
 
@@ -72,21 +79,22 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // Detect dark mode for initial ink color
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
 
-  // Inking state: Selected primary tool by user (fountain, ballpoint, highlighter, or eraser)
+  // Primary user-selected tool (fountain, ballpoint, highlighter, or eraser)
   const [selectedTool, setSelectedTool] = useState<PenTool>('fountain');
   const [penColor, setPenColor] = useState<string>(isDarkMode ? '#ffffff' : '#1e293b');
   const [penWidth, setPenWidth] = useState<number>(4);
   const [isStylusOnly, setIsStylusOnly] = useState<boolean>(false);
 
-  // Momentary S Pen button state: active while holding button down, reverts on release
-  const [isSpenButtonHeld, setIsSpenButtonHeld] = useState<boolean>(false);
-  const isSpenButtonHeldRef = useRef<boolean>(false);
+  // S Pen Armed Eraser: Activated by S Pen side button (click or hold)
+  const [isSpenEraserArmed, setIsSpenEraserArmed] = useState<boolean>(false);
+  const isSpenEraserArmedRef = useRef<boolean>(false);
   const selectedToolRef = useRef<PenTool>('fountain');
+  const lastButtonTriggerTimeRef = useRef<number>(0);
+  const isEraserDrawingRef = useRef<boolean>(false);
 
-  // Effective tool: If S Pen button is held, temporarily switch to Eraser; otherwise use selectedTool
-  const activeTool: PenTool = isSpenButtonHeld ? 'eraser' : selectedTool;
+  // Effective tool: If S Pen eraser is armed, tool is 'eraser', else selectedTool
+  const activeTool: PenTool = isSpenEraserArmed ? 'eraser' : selectedTool;
 
-  // Keep ref in sync for event listeners
   useEffect(() => {
     selectedToolRef.current = selectedTool;
   }, [selectedTool]);
@@ -183,7 +191,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     redraw();
   }, [redraw]);
 
-  // Attach ResizeObserver to container to handle sidebar collapse and mode switches
+  // Attach ResizeObserver to container
   useEffect(() => {
     resizeCanvas();
     if (!containerRef.current) return;
@@ -229,28 +237,29 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   /**
-   * Updates momentary S Pen button held state:
-   * - While button is HELD: Eraser is active
-   * - When button is RELEASED: Reverts back to selected pen
-   * - Touching the screen NEVER toggles the tool!
+   * Arms S Pen Eraser mode when side button is pressed (click or hold).
+   * Will stay in Eraser mode while user erases on screen, then automatically returns to pen on lift!
    */
-  const updateSpenButtonHeld = useCallback((held: boolean, clientX?: number, clientY?: number, source: string = 'spen') => {
-    if (isSpenButtonHeldRef.current === held) return;
-    isSpenButtonHeldRef.current = held;
-    setIsSpenButtonHeld(held);
+  const triggerSpenButtonAction = useCallback((clientX?: number, clientY?: number, source: string = 'spen-button') => {
+    const now = Date.now();
+    // Debounce 200ms to avoid duplicate events from rapid repeat events
+    if (now - lastButtonTriggerTimeRef.current < 200) return;
+    lastButtonTriggerTimeRef.current = now;
 
-    const base = selectedToolRef.current;
+    const isCurrentlyArmed = isSpenEraserArmedRef.current;
+    const nextArmed = !isCurrentlyArmed;
 
-    // Haptic & Acoustic feedback on button transition
-    if (held) {
-      playToggleAudioFeedback(true);
+    isSpenEraserArmedRef.current = nextArmed;
+    setIsSpenEraserArmed(nextArmed);
+
+    // Audio & Haptic feedback
+    playToggleAudioFeedback(nextArmed);
+    if (nextArmed) {
       try {
         if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
           navigator.vibrate(35);
         }
       } catch {}
-    } else {
-      playToggleAudioFeedback(false);
     }
 
     const container = containerRef.current;
@@ -258,37 +267,35 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const localX = typeof clientX === 'number' ? clientX - rect.left : rect.width / 2;
     const localY = typeof clientY === 'number' ? clientY - rect.top : 80;
 
-    const label = held ? 'Eraser (Hold)' : `Switched back to ${getToolLabel(base)}`;
+    const base = selectedToolRef.current;
+    const label = nextArmed ? 'Eraser (Erase mistake & lift to write)' : `Switched back to ${getToolLabel(base)}`;
 
     setHoverFeedback({
       label,
-      tool: held ? 'eraser' : base,
+      tool: nextArmed ? 'eraser' : base,
       x: Math.max(100, Math.min(rect.width - 100, localX)),
       y: Math.max(70, Math.min(rect.height - 70, localY - 35))
     });
 
     setStylusTelemetry((prev) => ({
       ...prev,
-      lastTrigger: `${source}: ${held ? 'HELD (Eraser)' : 'RELEASED (Pen)'} (${new Date().toLocaleTimeString()})`
+      lastTrigger: `${source}: ${nextArmed ? 'ERASER ARMED' : 'BACK TO PEN'} (${new Date().toLocaleTimeString()})`
     }));
 
     if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
     hoverFeedbackTimerRef.current = setTimeout(() => {
       setHoverFeedback(null);
-    }, held ? 2500 : 1200);
+    }, nextArmed ? 2600 : 1200);
   }, []);
 
   // Global window listeners for capturing S Pen hardware button interrupts across all browser layers
   useEffect(() => {
-    // 1. Pointer Move & Pointer Raw Update (Tracks button state in mid-air and on glass)
     const handleGlobalPointerMove = (e: PointerEvent) => {
       if (e.pointerType === 'pen') {
         lastStylusActiveTimeRef.current = Date.now();
         lastStylusHoverPosRef.current = { x: e.clientX, y: e.clientY };
 
         const isHovering = e.pressure <= 0.05;
-        const isPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
-
         setStylusTelemetry((prev) => ({
           ...prev,
           status: isHovering ? 'hovering' : 'drawing',
@@ -297,27 +304,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           pressure: e.pressure
         }));
 
-        // Update momentary button held state (switches to eraser while pressed, back to pen when released)
-        if (isPressed !== isSpenButtonHeldRef.current) {
-          updateSpenButtonHeld(isPressed, e.clientX, e.clientY, isHovering ? 'hover-move' : 'contact-move');
+        // S Pen Hover Button Click detection (mid-air)
+        if (isHovering && !isEraserDrawingRef.current) {
+          if (isSpenButtonPressed(e.buttons, e.button, e.pressure) && !isSpenEraserArmedRef.current) {
+            triggerSpenButtonAction(e.clientX, e.clientY, `hover-move (buttons=${e.buttons})`);
+          }
         }
       }
     };
 
-    // 2. Pointer Down (Stylus contact without toggling)
-    const handleGlobalPointerDown = (e: PointerEvent) => {
-      if (e.pointerType === 'pen') {
-        lastStylusActiveTimeRef.current = Date.now();
-        lastStylusHoverPosRef.current = { x: e.clientX, y: e.clientY };
-
-        const isPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
-        if (isPressed !== isSpenButtonHeldRef.current) {
-          updateSpenButtonHeld(isPressed, e.clientX, e.clientY, 'pointerdown');
-        }
-      }
-    };
-
-    // 3. Samsung One UI Context Menu (Fired by Samsung Internet when S Pen button is pressed in the air)
+    // Samsung One UI Context Menu (Fired by Samsung Internet when S Pen button is clicked in the air)
     const handleGlobalContextMenu = (e: MouseEvent) => {
       const isPenEvent = (e as any).pointerType === 'pen';
       const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
@@ -325,11 +321,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isPenEvent || isRecentPen) {
         e.preventDefault();
         e.stopPropagation();
-        updateSpenButtonHeld(true, e.clientX, e.clientY, 'contextmenu');
+        triggerSpenButtonAction(e.clientX, e.clientY, 'contextmenu');
       }
     };
 
-    // 4. Aux Click (Middle/Aux button click on Android Chromium)
+    // Aux Click (Middle/Aux button click on Android Chromium)
     const handleGlobalAuxClick = (e: MouseEvent) => {
       const isPenEvent = (e as any).pointerType === 'pen';
       const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
@@ -337,17 +333,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
         e.preventDefault();
         e.stopPropagation();
-        updateSpenButtonHeld(true, e.clientX, e.clientY, 'auxclick');
+        triggerSpenButtonAction(e.clientX, e.clientY, 'auxclick');
       }
     };
 
-    // 5. Android 14+ Stylus Hardware Button Key Events (Keycode 308 / 309)
+    // Android 14+ Stylus Hardware Button Key Events (Keycode 308 / 309)
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (isSpenHardwareKeyEvent(e)) {
         e.preventDefault();
         e.stopPropagation();
-        updateSpenButtonHeld(
-          true,
+        triggerSpenButtonAction(
           lastStylusHoverPosRef.current.x, 
           lastStylusHoverPosRef.current.y, 
           `key-down-${e.keyCode || e.code}`
@@ -355,47 +350,28 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       }
     };
 
-    const handleGlobalKeyUp = (e: KeyboardEvent) => {
-      if (isSpenHardwareKeyEvent(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        updateSpenButtonHeld(
-          false,
-          lastStylusHoverPosRef.current.x, 
-          lastStylusHoverPosRef.current.y, 
-          `key-up-${e.keyCode || e.code}`
-        );
-      }
-    };
-
-    // Window capture listeners for maximum priority before browser consumption
     window.addEventListener('pointermove', handleGlobalPointerMove, { capture: true, passive: true });
-    window.addEventListener('pointerdown', handleGlobalPointerDown, { capture: true });
     window.addEventListener('contextmenu', handleGlobalContextMenu, { capture: true });
     window.addEventListener('auxclick', handleGlobalAuxClick, { capture: true });
     window.addEventListener('keydown', handleGlobalKeyDown, { capture: true });
-    window.addEventListener('keyup', handleGlobalKeyUp, { capture: true });
 
-    // pointerrawupdate for ultra-fast 120Hz polling on Chromium Android
     if ('onpointerrawupdate' in window) {
       window.addEventListener('pointerrawupdate' as any, handleGlobalPointerMove as any, { capture: true, passive: true });
     }
 
     return () => {
       window.removeEventListener('pointermove', handleGlobalPointerMove, { capture: true });
-      window.removeEventListener('pointerdown', handleGlobalPointerDown, { capture: true });
       window.removeEventListener('contextmenu', handleGlobalContextMenu, { capture: true });
       window.removeEventListener('auxclick', handleGlobalAuxClick, { capture: true });
       window.removeEventListener('keydown', handleGlobalKeyDown, { capture: true });
-      window.removeEventListener('keyup', handleGlobalKeyUp, { capture: true });
       if ('onpointerrawupdate' in window) {
         window.removeEventListener('pointerrawupdate' as any, handleGlobalPointerMove as any, { capture: true });
       }
       if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
     };
-  }, [updateSpenButtonHeld]);
+  }, [triggerSpenButtonAction]);
 
-  // Pointer Down (stylus touches screen - NEVER toggles the tool)
+  // Pointer Down (stylus touches screen)
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     // 1. Stylus-Only Mode: Completely ignore any non-pen touch
     if (isStylusOnly && e.pointerType !== 'pen') {
@@ -403,7 +379,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
 
     // 2. Palm Rejection via Contact Geometry:
-    // Natural palm rests on Galaxy Tab/iPad produce contact dimensions > 20px
     if (e.pointerType === 'touch' && (e.width > 22 || e.height > 22)) {
       return; // Reject broad palm contact
     }
@@ -412,77 +387,86 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (e.pointerType === 'pen') {
       isStylusActiveRef.current = true;
     } else if (isStylusActiveRef.current && e.pointerType === 'touch') {
-      return; // Ignore finger/palm touch while pen is hovering/touching
+      return;
     }
 
-    // Check if the S Pen button is held on touch-down
-    if (e.pointerType === 'pen') {
-      const isPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
-      if (isPressed !== isSpenButtonHeldRef.current) {
-        updateSpenButtonHeld(isPressed, e.clientX, e.clientY, 'canvas-down');
+    // Check if the S Pen button is pressed upon touch-down
+    if (e.pointerType === 'pen' && isSpenButtonPressed(e.buttons, e.button, e.pressure)) {
+      if (!isSpenEraserArmedRef.current) {
+        triggerSpenButtonAction(e.clientX, e.clientY, 'touch-down-button');
       }
     }
 
     e.currentTarget.setPointerCapture(e.pointerId);
 
-    // Determine current tool to draw with: activeTool is 'eraser' if button is held, else selectedTool
-    const currentDrawingTool = isSpenButtonHeldRef.current ? 'eraser' : selectedToolRef.current;
-
+    const isEraserNow = isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser';
     const startPoint = getCanvasPoint(e);
-    const newStroke: Stroke = {
-      id: `stroke-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-      points: [startPoint],
-      color: currentDrawingTool === 'eraser' ? '#ffffff' : penColor,
-      width: currentDrawingTool === 'eraser' ? Math.max(penWidth, 12) : penWidth,
-      tool: currentDrawingTool,
-      opacity: currentDrawingTool === 'highlighter' ? 0.4 : 1.0
-    };
 
-    currentStrokeRef.current = newStroke;
+    if (isEraserNow) {
+      isEraserDrawingRef.current = true;
+      // Instant stroke erasing: delete any existing stroke near this point!
+      const eraseRadius = Math.max(22, penWidth * 3.5);
+      const { remaining, hasErased } = eraseStrokesNearPoint(strokes, startPoint.x, startPoint.y, eraseRadius);
+      if (hasErased) {
+        onChangeStrokes(remaining);
+        setHistoryIndex(remaining.length);
+      }
+    } else {
+      isEraserDrawingRef.current = false;
+      const newStroke: Stroke = {
+        id: `stroke-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        points: [startPoint],
+        color: penColor,
+        width: penWidth,
+        tool: selectedToolRef.current,
+        opacity: selectedToolRef.current === 'highlighter' ? 0.4 : 1.0
+      };
+      currentStrokeRef.current = newStroke;
+    }
+
     redraw();
   };
 
-  // Pointer Move (coalesced 120Hz events loop + momentary button tracking)
+  // Pointer Move (coalesced 120Hz events loop)
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType === 'pen') {
-      const isPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
-      if (isPressed !== isSpenButtonHeldRef.current) {
-        updateSpenButtonHeld(isPressed, e.clientX, e.clientY, 'canvas-move');
-
-        // If tool changes mid-stroke (e.g. user pressed/released button while drawing)
-        if (currentStrokeRef.current && currentStrokeRef.current.points.length > 1) {
-          const updated = [...strokes.slice(0, historyIndex), currentStrokeRef.current];
-          onChangeStrokes(updated);
-          setHistoryIndex(updated.length);
-
-          const newTool = isPressed ? 'eraser' : selectedToolRef.current;
-          const lastPt = currentStrokeRef.current.points[currentStrokeRef.current.points.length - 1];
-
-          currentStrokeRef.current = {
-            id: `stroke-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-            points: [lastPt],
-            color: newTool === 'eraser' ? '#ffffff' : penColor,
-            width: newTool === 'eraser' ? Math.max(penWidth, 12) : penWidth,
-            tool: newTool,
-            opacity: newTool === 'highlighter' ? 0.4 : 1.0
-          };
-        }
-      }
-    }
-
-    if (!currentStrokeRef.current) return;
-
     if (isStylusOnly && e.pointerType !== 'pen') return;
     if (isStylusActiveRef.current && e.pointerType === 'touch') return;
 
+    const isEraserNow = isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser';
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
 
-    // 120Hz Coalesced Events Loop for iPad ProMotion & Galaxy Tab 120Hz AMOLED
     const nativeEvent = e.nativeEvent as PointerEvent;
     const rawEvents = nativeEvent.getCoalescedEvents?.() ?? [];
     const coalescedEvents = rawEvents.length > 0 ? rawEvents : [nativeEvent];
+
+    // ERASER MODE: Erase any strokes that intersect the eraser path in real-time
+    if (isEraserNow && isEraserDrawingRef.current) {
+      const eraseRadius = Math.max(22, penWidth * 3.5);
+      let currentStrokes = strokes;
+      let anyErased = false;
+
+      for (const ce of coalescedEvents) {
+        const ptX = ce.clientX - rect.left;
+        const ptY = ce.clientY - rect.top;
+        const res = eraseStrokesNearPoint(currentStrokes, ptX, ptY, eraseRadius);
+        if (res.hasErased) {
+          currentStrokes = res.remaining;
+          anyErased = true;
+        }
+      }
+
+      if (anyErased) {
+        onChangeStrokes(currentStrokes);
+        setHistoryIndex(currentStrokes.length);
+        redraw();
+      }
+      return;
+    }
+
+    // DRAWING INK MODE: Record coalesced points
+    if (!currentStrokeRef.current) return;
 
     for (const ce of coalescedEvents) {
       let pressure = ce.pressure;
@@ -503,7 +487,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     redraw();
   };
 
-  // Pointer Up (stylus leaves screen)
+  // Pointer Up (stylus leaves screen - auto returns to pen if S Pen eraser was used!)
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       try {
@@ -513,16 +497,34 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     if (e.pointerType === 'pen') {
       isStylusActiveRef.current = false;
-      // If button was released on lift
-      const isPressed = isSpenButtonPressed(e.buttons, e.button, 0);
-      if (!isPressed && isSpenButtonHeldRef.current) {
-        updateSpenButtonHeld(false, e.clientX, e.clientY, 'canvas-up');
-      }
     }
+
+    // Auto-revert S Pen Eraser back to writing pen on lift!
+    if (isSpenEraserArmedRef.current) {
+      isSpenEraserArmedRef.current = false;
+      setIsSpenEraserArmed(false);
+      isEraserDrawingRef.current = false;
+      playToggleAudioFeedback(false);
+
+      const base = selectedToolRef.current;
+      setHoverFeedback({
+        label: `Switched back to ${getToolLabel(base)}`,
+        tool: base,
+        x: e.clientX,
+        y: e.clientY - 40
+      });
+
+      if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
+      hoverFeedbackTimerRef.current = setTimeout(() => {
+        setHoverFeedback(null);
+      }, 1200);
+    }
+
+    isEraserDrawingRef.current = false;
 
     if (!currentStrokeRef.current) return;
 
-    // Discard single-point dots or zero-length strokes produced by palm brushes
+    // Discard single-point dots produced by palm brushes
     if (currentStrokeRef.current.points.length > 1) {
       const updated = [...strokes.slice(0, historyIndex), currentStrokeRef.current];
       onChangeStrokes(updated);
@@ -537,17 +539,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     handlePointerUp(e);
   };
 
-  // Prevent default context menu from consuming S Pen button gestures on the canvas
+  // Prevent default context menu from consuming S Pen button gestures on canvas
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    updateSpenButtonHeld(true, e.clientX, e.clientY, 'canvas-contextmenu');
+    triggerSpenButtonAction(e.clientX, e.clientY, 'canvas-contextmenu');
   };
 
   const handleAuxClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    updateSpenButtonHeld(true, e.clientX, e.clientY, 'canvas-auxclick');
+    triggerSpenButtonAction(e.clientX, e.clientY, 'canvas-auxclick');
   };
 
   // History controls
@@ -573,11 +575,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   };
 
-  // Manual toggle handler for on-screen buttons
   const handleManualToolSelect = (tool: PenTool) => {
     setSelectedTool(tool);
-    setIsSpenButtonHeld(false);
-    isSpenButtonHeldRef.current = false;
+    setIsSpenEraserArmed(false);
+    isSpenEraserArmedRef.current = false;
   };
 
   return (
@@ -623,7 +624,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           className="ink-canvas absolute inset-0 block w-full h-full"
         />
 
-        {/* Dynamic S Pen Hover Toggle Notification Badge */}
+        {/* Dynamic S Pen Hover Notification Badge */}
         {hoverFeedback && (
           <div 
             className="absolute z-30 pointer-events-none transform -translate-x-1/2 -translate-y-full transition-all duration-150 animate-in fade-in zoom-in-95"
@@ -644,7 +645,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-ink-muted-light/60 dark:text-ink-muted-dark/60 text-sm">
             <p className="font-medium">Write with S Pen or Apple Pencil</p>
             <p className="text-xs mt-1">
-              Hold S Pen button to Erase • Release to return to Pen • 120Hz Coalesced
+              Click S Pen button to Erase • Erase &amp; lift to return to Pen • 120Hz Coalesced
             </p>
           </div>
         )}
@@ -657,16 +658,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             title="Click to toggle S Pen Live Diagnostic HUD"
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-surface-light/80 dark:bg-surface-dark/80 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] font-medium text-ink-muted-light dark:text-ink-muted-dark shadow-subtle hover:text-ink-light dark:hover:text-ink-dark transition"
           >
-            <span className={`w-2 h-2 rounded-full ${isSpenButtonHeld ? 'bg-rose-500 animate-pulse' : stylusTelemetry.status === 'hovering' ? 'bg-emerald-500' : stylusTelemetry.status === 'drawing' ? 'bg-violet-500' : 'bg-slate-400'}`} />
+            <span className={`w-2 h-2 rounded-full ${isSpenEraserArmed ? 'bg-rose-500 animate-pulse' : stylusTelemetry.status === 'hovering' ? 'bg-emerald-500' : stylusTelemetry.status === 'drawing' ? 'bg-violet-500' : 'bg-slate-400'}`} />
             <span>
-              S Pen: {isSpenButtonHeld ? 'Eraser (Holding Button)' : stylusTelemetry.status === 'hovering' ? 'Hovering (Pen)' : stylusTelemetry.status === 'drawing' ? 'Inking' : 'Ready'}
+              S Pen: {isSpenEraserArmed ? 'Eraser (Armed)' : stylusTelemetry.status === 'hovering' ? 'Hovering (Pen)' : stylusTelemetry.status === 'drawing' ? 'Inking' : 'Ready'}
             </span>
             <Activity className="w-3 h-3 ml-0.5 opacity-60" />
           </button>
 
           {diagnosticHUD && (
             <div className="p-2.5 rounded-xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating text-[10px] font-mono text-ink-light dark:text-ink-dark space-y-1 animate-in fade-in">
-              <div>Button Held: <span className={isSpenButtonHeld ? "font-bold text-rose-500" : "text-emerald-500"}>{isSpenButtonHeld ? "YES (Eraser)" : "NO (Writing Pen)"}</span></div>
+              <div>Eraser Armed: <span className={isSpenEraserArmed ? "font-bold text-rose-500" : "text-emerald-500"}>{isSpenEraserArmed ? "YES (Eraser)" : "NO (Pen)"}</span></div>
               <div>Buttons: <span className="font-semibold text-violet-500">{stylusTelemetry.buttons}</span> (button: {stylusTelemetry.button})</div>
               <div>Pressure: <span className="font-semibold">{stylusTelemetry.pressure.toFixed(2)}</span></div>
               <div>Last Event: <span className="text-emerald-500">{stylusTelemetry.lastTrigger}</span></div>
@@ -680,13 +681,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           <button
             type="button"
             onClick={() => {
-              if (selectedTool === 'eraser') {
+              if (activeTool === 'eraser') {
                 handleManualToolSelect('fountain');
               } else {
                 handleManualToolSelect('eraser');
               }
             }}
-            title="Toggle between Pen and Eraser (or hold S Pen button)"
+            title="Toggle between Pen and Eraser (or click S Pen button)"
             className="flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating text-xs font-semibold text-ink-light dark:text-ink-dark hover:scale-105 active:scale-95 transition"
           >
             {activeTool === 'eraser' ? (

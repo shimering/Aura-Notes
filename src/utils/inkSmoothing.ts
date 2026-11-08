@@ -176,3 +176,38 @@ export function getStrokesBoundingBox(strokes: Stroke[]): {
     height: Math.max(1, maxY - minY)
   };
 }
+
+/**
+ * Checks if a point (px, py) is within radius of any point of a stroke.
+ */
+export function isPointNearStroke(stroke: Stroke, px: number, py: number, radius: number = 24): boolean {
+  const r2 = radius * radius;
+  for (const pt of stroke.points) {
+    const dx = pt.x - px;
+    const dy = pt.y - py;
+    if (dx * dx + dy * dy <= r2) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Deletes any strokes that come within radius of the eraser point.
+ * Provides instant, clean vector stroke erasing for S Pen and stylus.
+ */
+export function eraseStrokesNearPoint(
+  strokes: Stroke[],
+  px: number,
+  py: number,
+  radius: number = 24
+): { remaining: Stroke[]; hasErased: boolean } {
+  let hasErased = false;
+  const remaining = strokes.filter(s => {
+    if (s.tool === 'eraser') return false;
+    const hit = isPointNearStroke(s, px, py, radius);
+    if (hit) hasErased = true;
+    return !hit;
+  });
+  return { remaining, hasErased };
+}
