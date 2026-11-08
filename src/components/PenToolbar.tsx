@@ -43,6 +43,8 @@ interface PenToolbarProps {
   onChangeColor: (color: string) => void;
   width: number;
   onChangeWidth: (width: number) => void;
+  eraserWidth?: number;
+  onChangeEraserWidth?: (width: number) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -62,6 +64,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   onChangeColor,
   width,
   onChangeWidth,
+  eraserWidth,
+  onChangeEraserWidth,
   canUndo,
   canRedo,
   onUndo,
@@ -171,26 +175,53 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
         </div>
       )}
 
-      {/* Stroke Width Selector */}
+      {/* Width / Size Selector (Adapts to Pen vs Eraser) */}
       <div className="flex items-center gap-1.5 px-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
-        {[2, 4, 7, 12].map((size) => (
-          <button
-            key={size}
-            type="button"
-            onClick={() => onChangeWidth(size)}
-            title={`Stroke width: ${size}px`}
-            className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
-              width === size
-                ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold'
-                : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
-            }`}
-          >
-            <div
-              className="rounded-full bg-current"
-              style={{ width: `${Math.min(14, size + 2)}px`, height: `${Math.min(14, size + 2)}px` }}
-            />
-          </button>
-        ))}
+        {activeTool === 'eraser' ? (
+          // Eraser Sizes: Small (12px), Medium (24px), Large (36px), Extra Large (56px)
+          [12, 24, 36, 56].map((size) => {
+            const currentEraserSize = eraserWidth ?? 24;
+            const isSelected = currentEraserSize === size;
+            return (
+              <button
+                key={size}
+                type="button"
+                onClick={() => (onChangeEraserWidth ? onChangeEraserWidth(size) : onChangeWidth(size))}
+                title={`Eraser size: ${size}px`}
+                className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
+                  isSelected
+                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 ring-2 ring-rose-500 font-bold'
+                    : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
+                }`}
+              >
+                <div
+                  className="rounded-full bg-current"
+                  style={{ width: `${Math.min(16, Math.max(6, Math.round(size / 3)))}px`, height: `${Math.min(16, Math.max(6, Math.round(size / 3)))}px` }}
+                />
+              </button>
+            );
+          })
+        ) : (
+          // Pen Sizes: Fine (2px), Regular (4px), Medium (7px), Bold (12px)
+          [2, 4, 7, 12].map((size) => (
+            <button
+              key={size}
+              type="button"
+              onClick={() => onChangeWidth(size)}
+              title={`Pen width: ${size}px`}
+              className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
+                width === size
+                  ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold'
+                  : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
+              }`}
+            >
+              <div
+                className="rounded-full bg-current"
+                style={{ width: `${Math.min(14, size + 2)}px`, height: `${Math.min(14, size + 2)}px` }}
+              />
+            </button>
+          ))
+        )}
       </div>
 
       {/* Stylus-Only Palm Shield Toggle */}
