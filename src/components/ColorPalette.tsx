@@ -36,11 +36,15 @@ export const ColorPalette: React.FC<ColorPaletteProps> = ({
   const [customColor, setCustomColor] = useState('#2563eb');
 
   return (
-    <div className="p-3 w-64 bg-surface-light dark:bg-surface-dark rounded-2xl shadow-xl border border-surface-subtle-light dark:border-surface-subtle-dark">
+    <div 
+      className="p-3 w-64 bg-surface-light dark:bg-surface-dark rounded-2xl shadow-xl border border-surface-subtle-light dark:border-surface-subtle-dark select-none"
+      onMouseDown={(e) => e.preventDefault()}
+    >
       {/* Tabs */}
       <div className="flex items-center gap-1 p-1 bg-surface-subtle-light dark:bg-surface-subtle-dark rounded-xl mb-3 text-xs font-medium">
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => setActiveTab('text')}
           className={`flex-1 py-1 px-2 rounded-lg flex items-center justify-center gap-1.5 transition ${
             activeTab === 'text'
@@ -53,6 +57,7 @@ export const ColorPalette: React.FC<ColorPaletteProps> = ({
         </button>
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => setActiveTab('highlight')}
           className={`flex-1 py-1 px-2 rounded-lg flex items-center justify-center gap-1.5 transition ${
             activeTab === 'highlight'
@@ -72,7 +77,10 @@ export const ColorPalette: React.FC<ColorPaletteProps> = ({
               <button
                 key={c.name}
                 type="button"
-                onClick={() => onSelectTextColor(c.value)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onSelectTextColor(c.value);
+                }}
                 title={c.name}
                 className="w-8 h-8 rounded-full border border-black/10 dark:border-white/10 flex items-center justify-center hover:scale-110 transition active:scale-95 shadow-sm"
                 style={{ backgroundColor: c.value === 'inherit' ? '#e2e8f0' : c.value }}
@@ -107,7 +115,10 @@ export const ColorPalette: React.FC<ColorPaletteProps> = ({
               <button
                 key={c.name}
                 type="button"
-                onClick={() => onSelectHighlightColor(c.value)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onSelectHighlightColor(c.value);
+                }}
                 title={c.name}
                 className={`h-8 rounded-xl border border-black/10 dark:border-white/10 flex items-center justify-center text-xs font-medium hover:scale-105 transition active:scale-95 shadow-sm ${
                   c.value === 'transparent' ? 'bg-transparent text-ink-muted-light' : 'text-slate-800'

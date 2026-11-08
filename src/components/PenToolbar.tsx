@@ -8,11 +8,14 @@ import {
   Redo2, 
   Trash2, 
   Wand2,
-  Sliders
+  ShieldCheck,
+  ShieldAlert
 } from 'lucide-react';
 import { PenTool } from '../types/note';
 
 export const INK_PALETTE = [
+  { name: 'Pure White (Dark Mode)', hex: '#ffffff' },
+  { name: 'Platinum', hex: '#e2e8f0' },
   { name: 'Charcoal', hex: '#1e293b' },
   { name: 'Pure Black', hex: '#000000' },
   { name: 'Ocean Blue', hex: '#2563eb' },
@@ -46,6 +49,8 @@ interface PenToolbarProps {
   onClear: () => void;
   onScribbleToText: () => void;
   hasStrokes: boolean;
+  isStylusOnly: boolean;
+  onToggleStylusOnly: () => void;
 }
 
 export const PenToolbar: React.FC<PenToolbarProps> = ({
@@ -61,12 +66,14 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   onRedo,
   onClear,
   onScribbleToText,
-  hasStrokes
+  hasStrokes,
+  isStylusOnly,
+  onToggleStylusOnly
 }) => {
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
 
   return (
-    <div className="flex items-center flex-wrap gap-1.5 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark">
+    <div className="flex items-center flex-wrap gap-1.5 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark select-none">
       {/* Tool Selection */}
       <div className="flex items-center gap-1 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
         <button
@@ -171,6 +178,21 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           </button>
         ))}
       </div>
+
+      {/* Stylus-Only Palm Shield Toggle */}
+      <button
+        type="button"
+        onClick={onToggleStylusOnly}
+        title={isStylusOnly ? "Stylus-Only Active (Palms & fingers completely ignored)" : "All Inputs Active (Click to lock to S Pen / Apple Pencil only)"}
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition active:scale-95 ${
+          isStylusOnly
+            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300 font-semibold'
+            : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light dark:text-ink-muted-dark'
+        }`}
+      >
+        {isStylusOnly ? <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <ShieldAlert className="w-3.5 h-3.5 opacity-60" />}
+        <span className="hidden sm:inline">{isStylusOnly ? 'Stylus Shield' : 'Touch/Pen'}</span>
+      </button>
 
       {/* Scribble to Text Feature Button */}
       <button

@@ -27,7 +27,7 @@ export function getPressureWidth(baseWidth: number, pressure: number, tool: Stro
 
 /**
  * Renders a single stroke onto a Canvas 2D context using quadratic Bézier curves
- * between midpoints to produce sleek, fluid calligraphy without sharp corners.
+ * between midpoints, completely covering endpoints from points[0] to points[last].
  */
 export function renderStroke(
   ctx: CanvasRenderingContext2D,
@@ -83,6 +83,19 @@ export function renderStroke(
   }
 
   // Multi-point stroke with dynamic Bézier interpolation
+  // 1. Initial segment from points[0] to mid(points[0], points[1])
+  const firstP = points[0];
+  const secondP = points[1];
+  const firstMidX = (firstP.x + secondP.x) / 2;
+  const firstMidY = (firstP.y + secondP.y) / 2;
+
+  ctx.lineWidth = getPressureWidth(stroke.width, firstP.pressure, stroke.tool) * scale;
+  ctx.beginPath();
+  ctx.moveTo(firstP.x * scale, firstP.y * scale);
+  ctx.lineTo(firstMidX * scale, firstMidY * scale);
+  ctx.stroke();
+
+  // 2. Interior curves from mid1 to mid2
   for (let i = 1; i < points.length - 1; i++) {
     const p0 = points[i - 1];
     const p1 = points[i];
@@ -101,6 +114,18 @@ export function renderStroke(
     ctx.quadraticCurveTo(p1.x * scale, p1.y * scale, mid2X * scale, mid2Y * scale);
     ctx.stroke();
   }
+
+  // 3. Final segment from last midpoint to points[last]
+  const lastP = points[points.length - 1];
+  const prevP = points[points.length - 2];
+  const lastMidX = (prevP.x + lastP.x) / 2;
+  const lastMidY = (prevP.y + lastP.y) / 2;
+
+  ctx.lineWidth = getPressureWidth(stroke.width, lastP.pressure, stroke.tool) * scale;
+  ctx.beginPath();
+  ctx.moveTo(lastMidX * scale, lastMidY * scale);
+  ctx.lineTo(lastP.x * scale, lastP.y * scale);
+  ctx.stroke();
 
   ctx.restore();
 }

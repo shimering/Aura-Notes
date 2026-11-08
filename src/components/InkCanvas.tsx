@@ -23,10 +23,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Detect dark mode for initial ink color
+  const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+
   // Inking state
   const [activeTool, setActiveTool] = useState<PenTool>('fountain');
-  const [penColor, setPenColor] = useState<string>('#1e293b');
+  const [penColor, setPenColor] = useState<string>(isDarkMode ? '#ffffff' : '#1e293b');
   const [penWidth, setPenWidth] = useState<number>(4);
+  const [isStylusOnly, setIsStylusOnly] = useState<boolean>(false);
 
   // History for Undo/Redo
   const [historyIndex, setHistoryIndex] = useState<number>(strokes.length);
@@ -76,13 +80,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   }, [strokes, historyIndex]);
 
-  // Handle canvas resize and high-DPI scaling
+  // Handle canvas resize and high-DPI scaling using ResizeObserver
   const resizeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
     const rect = container.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
     const dpr = window.devicePixelRatio || 1;
 
     canvas.width = Math.floor(rect.width * dpr);
@@ -93,10 +99,21 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     redraw();
   }, [redraw]);
 
+  // Attach ResizeObserver to container to handle sidebar collapse and mode switches
   useEffect(() => {
     resizeCanvas();
+    if (!containerRef.current) return;
+
+    const ro = new ResizeObserver(() => {
+      resizeCanvas();
+    });
+    ro.observe(containerRef.current);
+
     window.addEventListener('resize', resizeCanvas);
-    return () => window.removeEventListener('resize', resizeCanvas);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', resizeCanvas);
+    };
   }, [resizeCanvas]);
 
   useEffect(() => {
@@ -112,8 +129,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Stylus pressure detection (Apple Pencil / S Pen provide dynamic pressure)
-    // If not supported by device, fallback smoothly
     let pressure = e.pressure;
     if (pressure === 0 && e.pointerType === 'pen') {
       pressure = 0.5;
@@ -131,11 +146,22 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Down (stylus touches screen)
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // Palm Rejection: If stylus is active or pointerType is touch while drawing, reject palm touches
+    // 1. Stylus-Only Mode: Completely ignore any non-pen touch
+    if (isStylusOnly && e.pointerType !== 'pen') {
+      return;
+    }
+
+    // 2. Palm Rejection via Contact Geometry:
+    // Natural palm rests on Galaxy Tab/iPad produce contact dimensions > 20px
+    if (e.pointerType === 'touch' && (e.width > 22 || e.height > 22)) {
+      return; // Reject broad palm contact
+    }
+
+    // 3. Stylus priority palm rejection
     if (e.pointerType === 'pen') {
       isStylusActiveRef.current = true;
     } else if (isStylusActiveRef.current && e.pointerType === 'touch') {
-      return; // Ignore accidental palm touch
+      return; // Ignore finger/palm touch while pen is hovering/touching
     }
 
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -163,10 +189,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!currentStrokeRef.current) return;
 
-    // Palm rejection check
-    if (isStylusActiveRef.current && e.pointerType === 'touch') {
-      return;
-    }
+    if (isStylusOnly && e.pointerType !== 'pen') return;
+    if (isStylusActiveRef.current && e.pointerType === 'touch') return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -174,7 +198,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     // 120Hz Coalesced Events Loop for iPad ProMotion & Galaxy Tab 120Hz AMOLED
     const nativeEvent = e.nativeEvent as PointerEvent;
-    const coalescedEvents = (nativeEvent.getCoalescedEvents ? nativeEvent.getCoalescedEvents() : [nativeEvent]);
+    const rawEvents = nativeEvent.getCoalescedEvents?.() ?? [];
+    const coalescedEvents = rawEvents.length > 0 ? rawEvents : [nativeEvent];
 
     for (const ce of coalescedEvents) {
       let pressure = ce.pressure;
@@ -268,6 +293,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             onClear={handleClear}
             onScribbleToText={onScribbleToText}
             hasStrokes={strokes.length > 0}
+            isStylusOnly={isStylusOnly}
+            onToggleStylusOnly={() => setIsStylusOnly(!isStylusOnly)}
           />
         </div>
       </div>
@@ -290,7 +317,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         {strokes.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-ink-muted-light/60 dark:text-ink-muted-dark/60 text-sm">
             <p className="font-medium">Write with S Pen or Apple Pencil</p>
-            <p className="text-xs mt-1">Pressure sensitive • Palm rejection • Scribble to text</p>
+            <p className="text-xs mt-1">Pressure sensitive • Palm shield • 120Hz Coalesced • Scribble to text</p>
           </div>
         )}
       </div>

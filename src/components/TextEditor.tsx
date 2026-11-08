@@ -11,15 +11,21 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent })
   const editorRef = useRef<HTMLDivElement>(null);
   const isInternalUpdateRef = useRef(false);
 
-  // Sync content only if external note changed (not when user is typing)
+  // Synchronize content whenever external note or content changes
   useEffect(() => {
-    if (editorRef.current && !isInternalUpdateRef.current) {
+    if (editorRef.current) {
+      if (isInternalUpdateRef.current) {
+        // Change originated from user typing in this editor instance;
+        // consume the flag and don't re-render innerHTML to preserve cursor.
+        isInternalUpdateRef.current = false;
+        return;
+      }
+      // External change (e.g. note switched, or OCR Scribble text inserted)
       if (editorRef.current.innerHTML !== note.content) {
         editorRef.current.innerHTML = note.content;
       }
     }
-    isInternalUpdateRef.current = false;
-  }, [note.id]);
+  }, [note.id, note.content]);
 
   const handleInput = () => {
     if (editorRef.current) {

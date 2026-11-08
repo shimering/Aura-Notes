@@ -44,7 +44,7 @@ export const FormatToolbar: React.FC<FormatToolbarProps> = ({ onApplyFormat }) =
   };
 
   return (
-    <div className="relative flex items-center flex-wrap gap-1 p-1.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark transition-all">
+    <div className="relative flex items-center flex-wrap gap-1 p-1.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark transition-all select-none">
       {/* Text Style Section */}
       <div className="flex items-center gap-0.5 pr-1.5 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
         <button
@@ -141,7 +141,11 @@ export const FormatToolbar: React.FC<FormatToolbarProps> = ({ onApplyFormat }) =
       <div className="relative" ref={popoverRef}>
         <button
           type="button"
-          onClick={() => setShowColorPopover(!showColorPopover)}
+          onMouseDown={(e) => {
+            // Prevent taking focus away from editor
+            e.preventDefault();
+            setShowColorPopover(!showColorPopover);
+          }}
           title="Text Color & Highlight Palette"
           className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium transition active:scale-95 ${
             showColorPopover
