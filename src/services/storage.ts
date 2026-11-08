@@ -1,5 +1,6 @@
 import { get, set, del } from 'idb-keyval';
 import { Note } from '../types/note';
+import { recordDeletedNoteId } from './syncService';
 
 const NOTES_KEY = 'aura_notes_list';
 const ACTIVE_NOTE_ID_KEY = 'aura_active_note_id';
@@ -97,8 +98,23 @@ export async function saveNote(note: Note): Promise<void> {
   }
 }
 
+export async function saveAllNotes(notes: Note[]): Promise<void> {
+  try {
+    if (hasIndexedDB()) {
+      await set(NOTES_KEY, notes);
+    } else {
+      memoryStorage[NOTES_KEY] = notes;
+    }
+  } catch (error) {
+    console.error('Failed to save notes list:', error);
+    throw error;
+  }
+}
+
 export async function deleteNote(id: string): Promise<void> {
   try {
+    await recordDeletedNoteId(id);
+
     let notes: Note[] = [];
     if (hasIndexedDB()) {
       notes = (await get<Note[]>(NOTES_KEY)) || [];

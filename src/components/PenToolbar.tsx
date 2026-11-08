@@ -9,7 +9,8 @@ import {
   Trash2, 
   Wand2,
   ShieldCheck,
-  ShieldAlert
+  ShieldAlert,
+  Sparkles
 } from 'lucide-react';
 import { PenTool } from '../types/note';
 
@@ -51,6 +52,7 @@ interface PenToolbarProps {
   hasStrokes: boolean;
   isStylusOnly: boolean;
   onToggleStylusOnly: () => void;
+  onOpenSPenMenu?: () => void;
 }
 
 export const PenToolbar: React.FC<PenToolbarProps> = ({
@@ -68,7 +70,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   onScribbleToText,
   hasStrokes,
   isStylusOnly,
-  onToggleStylusOnly
+  onToggleStylusOnly,
+  onOpenSPenMenu
 }) => {
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
 
@@ -127,6 +130,17 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
         >
           <Eraser className="w-4 h-4" />
         </button>
+
+        {onOpenSPenMenu && (
+          <button
+            type="button"
+            onClick={onOpenSPenMenu}
+            title="S Pen Quick Menu (or press S Pen side button once)"
+            className="p-2 rounded-xl transition active:scale-95 flex items-center justify-center text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40"
+          >
+            <Sparkles className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Colors (only show if not eraser) */}

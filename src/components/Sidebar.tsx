@@ -9,7 +9,9 @@ import {
   Tag, 
   FileText,
   ChevronLeft,
-  X
+  X,
+  Download,
+  Cloud
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -21,6 +23,9 @@ interface SidebarProps {
   onTogglePin: (id: string) => void;
   isOpen: boolean;
   onToggleOpen: () => void;
+  onDownloadApp?: () => void;
+  onOpenSync?: () => void;
+  syncVaultKey?: string;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -32,6 +37,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onTogglePin,
   isOpen,
   onToggleOpen,
+  onDownloadApp,
+  onOpenSync,
+  syncVaultKey = '',
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -76,11 +84,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       <aside
-        className={`fixed md:static inset-y-0 left-0 z-40 w-80 md:w-80 flex-shrink-0 flex flex-col bg-surface-light dark:bg-surface-dark border-r border-surface-subtle-light dark:border-surface-subtle-dark transition-all duration-300 ease-in-out ${
-          isOpen ? 'translate-x-0' : '-translate-x-full md:w-0 md:border-r-0 md:overflow-hidden'
+        className={`fixed md:relative inset-y-0 left-0 z-40 flex-shrink-0 flex flex-col bg-surface-light dark:bg-surface-dark border-surface-subtle-light dark:border-surface-subtle-dark transition-all duration-300 ease-in-out overflow-hidden ${
+          isOpen 
+            ? 'w-80 border-r translate-x-0 opacity-100' 
+            : 'w-0 border-r-0 -translate-x-full md:translate-x-0 opacity-0 pointer-events-none'
         }`}
       >
-        {/* Sidebar Header */}
+        <div className="w-80 h-full flex flex-col flex-shrink-0">
+          {/* Sidebar Header */}
         <div className="p-4 border-b border-surface-subtle-light dark:border-surface-subtle-dark flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-violet-600 via-indigo-600 to-pink-500 flex items-center justify-center text-white shadow-sm">
@@ -237,7 +248,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
             })
           )}
         </div>
-      </aside>
+
+        {/* Sidebar Footer with Sync & Download App shortcuts */}
+        <div className="p-3 border-t border-surface-subtle-light dark:border-surface-subtle-dark flex-shrink-0 space-y-1.5">
+          {onOpenSync && (
+            <button
+              onClick={onOpenSync}
+              className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold rounded-xl bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60 text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark border border-surface-subtle-light dark:border-surface-subtle-dark transition active:scale-95"
+            >
+              <div className="flex items-center gap-2">
+                <Cloud className={`w-3.5 h-3.5 ${syncVaultKey ? 'text-emerald-500' : 'text-violet-500'}`} />
+                <span>{syncVaultKey ? 'Cross-Device Sync: Active' : 'Enable Cross-Device Sync'}</span>
+              </div>
+              {syncVaultKey && (
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              )}
+            </button>
+          )}
+
+          {onDownloadApp && (
+            <button
+              onClick={onDownloadApp}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-xl bg-violet-50 text-violet-700 hover:bg-violet-100 dark:bg-violet-950/40 dark:text-violet-300 dark:hover:bg-violet-900/50 border border-violet-200/50 dark:border-violet-800/40 transition active:scale-95"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download App on Home Screen</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </aside>
     </>
   );
 };

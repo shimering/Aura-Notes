@@ -1,10 +1,91 @@
-import { defineConfig } from 'vite';
+import { defineConfig, Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+
+// Vite dev middleware to emulate Cloudflare Worker Sync API during local testing
+function devSyncApiPlugin(): Plugin {
+  const devVaultStore = new Map<string, any>();
+
+  return {
+    name: 'dev-sync-api',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url && req.url.startsWith('/api/sync/vault/')) {
+          const vaultKey = decodeURIComponent(req.url.replace('/api/sync/vault/', '').split('?')[0]).trim();
+
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 200;
+            res.end();
+            return;
+          }
+
+          if (req.method === 'GET') {
+            const vault = devVaultStore.get(vaultKey) || { notes: [], settings: {}, updatedAt: 0 };
+            res.statusCode = 200;
+            res.end(JSON.stringify(vault));
+            return;
+          }
+
+          if (req.method === 'POST') {
+            let bodyStr = '';
+            req.on('data', (chunk) => {
+              bodyStr += chunk;
+            });
+            req.on('end', () => {
+              try {
+                const body = JSON.parse(bodyStr);
+                const existing = devVaultStore.get(vaultKey) || { notes: [], settings: {}, deletedNoteIds: [] };
+
+                // Merge deleted
+                const allDeleted = Array.from(new Set([...(existing.deletedNoteIds || []), ...(body.deletedNoteIds || [])]));
+                const deletedSet = new Set(allDeleted);
+
+                const noteMap = new Map();
+                for (const n of existing.notes || []) {
+                  if (!deletedSet.has(n.id)) noteMap.set(n.id, n);
+                }
+                for (const n of body.notes || []) {
+                  if (deletedSet.has(n.id)) continue;
+                  const prev = noteMap.get(n.id);
+                  if (!prev || (n.updatedAt || 0) >= (prev.updatedAt || 0)) {
+                    noteMap.set(n.id, n);
+                  }
+                }
+
+                const mergedVault = {
+                  vaultKey,
+                  notes: Array.from(noteMap.values()),
+                  settings: { ...(existing.settings || {}), ...(body.settings || {}) },
+                  deletedNoteIds: allDeleted,
+                  updatedAt: Date.now()
+                };
+
+                devVaultStore.set(vaultKey, mergedVault);
+                res.statusCode = 200;
+                res.end(JSON.stringify(mergedVault));
+              } catch (e: any) {
+                res.statusCode = 500;
+                res.end(JSON.stringify({ error: e.message }));
+              }
+            });
+            return;
+          }
+        }
+        next();
+      });
+    }
+  };
+}
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
+    devSyncApiPlugin(),
     react(),
     VitePWA({
       registerType: 'autoUpdate',

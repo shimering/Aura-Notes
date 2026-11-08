@@ -4,12 +4,15 @@ import {
   Moon, 
   Sun, 
   Download, 
+  FileDown,
   Check, 
   Sparkles,
   Type, 
   PenTool, 
   Columns,
-  Share2
+  Share2,
+  Cloud,
+  RefreshCw
 } from 'lucide-react';
 import { Note } from '../types/note';
 
@@ -19,20 +22,30 @@ interface HeaderProps {
   note: Note | null;
   onUpdateTitle: (title: string) => void;
   onToggleSidebar: () => void;
+  isSidebarOpen?: boolean;
   viewMode: ViewMode;
   onChangeViewMode: (mode: ViewMode) => void;
   isSaving: boolean;
   onExport: () => void;
+  onOpenInstall?: () => void;
+  onOpenSync?: () => void;
+  isSyncing?: boolean;
+  syncVaultKey?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   note,
   onUpdateTitle,
   onToggleSidebar,
+  isSidebarOpen = true,
   viewMode,
   onChangeViewMode,
   isSaving,
-  onExport
+  onExport,
+  onOpenInstall,
+  onOpenSync,
+  isSyncing = false,
+  syncVaultKey = ''
 }) => {
   const [isDark, setIsDark] = useState(() => {
     return document.documentElement.classList.contains('dark');
@@ -74,8 +87,12 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="flex items-center gap-2 flex-1 min-w-0">
         <button
           onClick={onToggleSidebar}
-          title="Toggle Sidebar"
-          className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark transition"
+          title={isSidebarOpen ? "Hide notes list (Maximize panels to full screen)" : "Show notes list"}
+          className={`p-2 rounded-xl transition ${
+            !isSidebarOpen 
+              ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300 ring-1 ring-violet-500/30' 
+              : 'text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+          }`}
         >
           <Menu className="w-5 h-5" />
         </button>
@@ -147,24 +164,53 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Right controls */}
-      <div className="flex items-center gap-1.5">
-        {/* PWA Install Button (if browser triggered beforeinstallprompt) */}
-        {installPrompt && (
-          <button
-            onClick={handleInstallPWA}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl bg-violet-600 text-white shadow-sm hover:bg-violet-700 transition"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Install App</span>
-          </button>
-        )}
+      <div className="flex items-center gap-2">
+        {/* Cross-Device Cloud Sync Button */}
+        <button
+          onClick={onOpenSync}
+          title={
+            isSyncing 
+              ? 'Syncing with cloud vault...' 
+              : syncVaultKey 
+                ? `Cross-Device Sync Active (Vault: ${syncVaultKey})` 
+                : 'Connect Cross-Device Cloud Sync'
+          }
+          className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark transition relative active:scale-95"
+        >
+          {isSyncing ? (
+            <RefreshCw className="w-4 h-4 text-violet-500 animate-spin" />
+          ) : syncVaultKey ? (
+            <div className="relative">
+              <Cloud className="w-4 h-4 text-emerald-500" />
+              <span className="w-2 h-2 rounded-full bg-emerald-500 absolute -top-1 -right-1 ring-2 ring-white dark:ring-surface-dark" />
+            </div>
+          ) : (
+            <Cloud className="w-4 h-4" />
+          )}
+        </button>
+
+        {/* Download App to Home Screen Button */}
+        <button
+          onClick={() => {
+            if (onOpenInstall) {
+              onOpenInstall();
+            } else if (installPrompt) {
+              handleInstallPWA();
+            }
+          }}
+          title="Download Aura Notes as an app on your Home Screen"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition active:scale-95"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Download App</span>
+        </button>
 
         <button
           onClick={onExport}
           title="Export Note (Markdown / Text)"
           className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark transition"
         >
-          <Download className="w-4 h-4" />
+          <FileDown className="w-4 h-4" />
         </button>
 
         <button

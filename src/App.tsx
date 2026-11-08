@@ -1,37 +1,124 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Note, Stroke } from './types/note';
+import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
   saveNote, 
+  saveAllNotes,
   deleteNote, 
   getActiveNoteId, 
   setActiveNoteId 
 } from './services/storage';
+import { 
+  getSettings, 
+  saveSettings, 
+  syncVaultWithCloud 
+} from './services/syncService';
 import { Header, ViewMode } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { TextEditor } from './components/TextEditor';
 import { InkCanvas, InkCanvasRef } from './components/InkCanvas';
 import { ScribbleRecognitionModal } from './components/ScribbleRecognitionModal';
+import { InstallModal } from './components/InstallModal';
+import { SyncModal } from './components/SyncModal';
 
 export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNoteId, setActiveNoteIdState] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    // Default to split mode on tablets & desktops, text mode on mobile
     return window.innerWidth >= 1024 ? 'both' : 'text';
   });
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 1024);
   const [isScribbleModalOpen, setIsScribbleModalOpen] = useState(false);
+  const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [installPrompt, setInstallPrompt] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   const inkCanvasRef = useRef<InkCanvasRef>(null);
   const saveTimeoutRef = useRef<any>(null);
+  const syncTimeoutRef = useRef<any>(null);
 
-  // Initialize and load notes from local IndexedDB
+  // Capture beforeinstallprompt for PWA home screen install
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  // Sync execution helper
+  const executeSync = useCallback(async (
+    vaultKey: string,
+    currentNotes: Note[],
+    currentSettings: AppSettings
+  ) => {
+    if (!vaultKey || isSyncing) return;
+    setIsSyncing(true);
+    setSyncError(null);
+    try {
+      const res = await syncVaultWithCloud(vaultKey, currentNotes, currentSettings);
+      setNotes(res.notes);
+      await saveAllNotes(res.notes);
+      setSettings(res.settings);
+
+      // Apply synced theme & view mode if enabled
+      if (res.settings.syncThemeAndLayout) {
+        if (res.settings.theme === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+        setViewMode(res.settings.viewMode);
+      }
+      return res;
+    } catch (err: any) {
+      console.warn('Sync failed:', err);
+      setSyncError(err.message || 'Unable to sync with cloud vault');
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [isSyncing]);
+
+  // Initialize and load notes + settings from local IndexedDB
   useEffect(() => {
     async function loadData() {
       try {
+        // 1. Load settings
+        const loadedSettings = await getSettings();
+        setSettings(loadedSettings);
+
+        // Apply theme from settings
+        if (loadedSettings.theme === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+
+        if (loadedSettings.viewMode) {
+          setViewMode(loadedSettings.viewMode);
+        }
+
+        // 2. Check URL for 1-click sync link (?sync=KEY)
+        let activeVaultKey = loadedSettings.syncVaultKey;
+        const searchParams = new URLSearchParams(window.location.search);
+        const querySyncKey = searchParams.get('sync');
+        if (querySyncKey && querySyncKey.trim()) {
+          activeVaultKey = querySyncKey.trim();
+          const updated = await saveSettings({ syncVaultKey: activeVaultKey });
+          setSettings(updated);
+          // Clean URL without reload
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+
+        // 3. Load notes
         const loadedNotes = await getAllNotes();
         setNotes(loadedNotes);
 
@@ -41,8 +128,13 @@ export default function App() {
         } else if (loadedNotes.length > 0) {
           setActiveNoteIdState(loadedNotes[0].id);
         }
+
+        // 4. Initial cloud sync if vault is configured
+        if (activeVaultKey && loadedSettings.autoSyncEnabled) {
+          executeSync(activeVaultKey, loadedNotes, loadedSettings);
+        }
       } catch (err) {
-        console.error('Error loading notes:', err);
+        console.error('Error loading notes & settings:', err);
       } finally {
         setIsLoading(false);
       }
@@ -50,9 +142,24 @@ export default function App() {
     loadData();
   }, []);
 
+  // Auto-sync on window focus or returning to tab (mirror changes from other devices)
+  useEffect(() => {
+    const handleFocus = () => {
+      if (document.visibilityState === 'visible' && settings.syncVaultKey && settings.autoSyncEnabled && !isSyncing) {
+        executeSync(settings.syncVaultKey, notes, settings);
+      }
+    };
+    window.addEventListener('visibilitychange', handleFocus);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('visibilitychange', handleFocus);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [settings.syncVaultKey, settings.autoSyncEnabled, isSyncing, notes, settings, executeSync]);
+
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
 
-  // Auto-save debouncer
+  // Auto-save & background sync debouncer
   const scheduleSave = useCallback((noteToSave: Note) => {
     setIsSaving(true);
     if (saveTimeoutRef.current) {
@@ -62,13 +169,21 @@ export default function App() {
     saveTimeoutRef.current = setTimeout(async () => {
       try {
         await saveNote(noteToSave);
+
+        // Background auto-sync to cloud vault
+        if (settings.syncVaultKey && settings.autoSyncEnabled) {
+          if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+          syncTimeoutRef.current = setTimeout(() => {
+            executeSync(settings.syncVaultKey, notes, settings);
+          }, 1500);
+        }
       } catch (err) {
         console.error('Failed to auto-save note:', err);
       } finally {
         setIsSaving(false);
       }
     }, 400);
-  }, []);
+  }, [notes, settings, executeSync]);
 
   // Update Note Title
   const handleUpdateTitle = (title: string) => {
@@ -107,10 +222,15 @@ export default function App() {
       updatedAt: Date.now()
     };
 
-    setNotes((prev) => [newNote, ...prev]);
+    const updatedNotes = [newNote, ...notes];
+    setNotes(updatedNotes);
     setActiveNoteIdState(newNote.id);
     await setActiveNoteId(newNote.id);
     await saveNote(newNote);
+
+    if (settings.syncVaultKey && settings.autoSyncEnabled) {
+      executeSync(settings.syncVaultKey, updatedNotes, settings);
+    }
   };
 
   // Select Note
@@ -133,6 +253,10 @@ export default function App() {
       setActiveNoteIdState(nextId);
       if (nextId) await setActiveNoteId(nextId);
     }
+
+    if (settings.syncVaultKey && settings.autoSyncEnabled) {
+      executeSync(settings.syncVaultKey, remaining, settings);
+    }
   };
 
   // Toggle Pin Note
@@ -142,6 +266,51 @@ export default function App() {
     const updated = { ...target, pinned: !target.pinned };
     setNotes((prev) => prev.map((n) => (n.id === id ? updated : n)));
     scheduleSave(updated);
+  };
+
+  // Update View Mode with settings persistence
+  const handleChangeViewMode = async (mode: ViewMode) => {
+    setViewMode(mode);
+    const updated = await saveSettings({ viewMode: mode });
+    setSettings(updated);
+  };
+
+  // Update Settings
+  const handleUpdateSettings = async (updates: Partial<AppSettings>) => {
+    const updated = await saveSettings(updates);
+    setSettings(updated);
+
+    if (updates.theme) {
+      if (updates.theme === 'dark') {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    }
+    if (updates.viewMode) {
+      setViewMode(updates.viewMode);
+    }
+    if (typeof updates.isSidebarOpen === 'boolean') {
+      setIsSidebarOpen(updates.isSidebarOpen);
+    }
+  };
+
+  // Manual Trigger Sync from Sync Modal or Header
+  const handleManualSync = async (vaultKey: string) => {
+    const updatedSettings = await saveSettings({ syncVaultKey: vaultKey });
+    setSettings(updatedSettings);
+    await executeSync(vaultKey, notes, updatedSettings);
+  };
+
+  // Import backup vault
+  const handleImportVault = async (importedNotes: Note[], importedSettings?: Partial<AppSettings>) => {
+    const merged = [...importedNotes, ...notes.filter((n) => !importedNotes.some((inN) => inN.id === n.id))];
+    setNotes(merged);
+    await saveAllNotes(merged);
+
+    if (importedSettings) {
+      await handleUpdateSettings(importedSettings);
+    }
   };
 
   // Insert Recognized Handwriting into Note
@@ -168,7 +337,6 @@ export default function App() {
   const handleExport = () => {
     if (!activeNote) return;
 
-    // Convert HTML content to plain text with line breaks
     const div = document.createElement('div');
     div.innerHTML = activeNote.content;
     const plainText = div.innerText || '';
@@ -205,27 +373,43 @@ export default function App() {
         onDeleteNote={handleDeleteNote}
         onTogglePin={handleTogglePin}
         isOpen={isSidebarOpen}
-        onToggleOpen={() => setIsSidebarOpen(!isSidebarOpen)}
+        onToggleOpen={() => {
+          const next = !isSidebarOpen;
+          setIsSidebarOpen(next);
+          saveSettings({ isSidebarOpen: next });
+        }}
+        onDownloadApp={() => setIsInstallModalOpen(true)}
+        onOpenSync={() => setIsSyncModalOpen(true)}
+        syncVaultKey={settings.syncVaultKey}
       />
 
       {/* Main Content Workspace */}
-      <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
+      <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative transition-all duration-300">
         <Header
           note={activeNote}
           onUpdateTitle={handleUpdateTitle}
-          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+          onToggleSidebar={() => {
+            const next = !isSidebarOpen;
+            setIsSidebarOpen(next);
+            saveSettings({ isSidebarOpen: next });
+          }}
+          isSidebarOpen={isSidebarOpen}
           viewMode={viewMode}
-          onChangeViewMode={setViewMode}
+          onChangeViewMode={handleChangeViewMode}
           isSaving={isSaving}
           onExport={handleExport}
+          onOpenInstall={() => setIsInstallModalOpen(true)}
+          onOpenSync={() => setIsSyncModalOpen(true)}
+          isSyncing={isSyncing}
+          syncVaultKey={settings.syncVaultKey}
         />
 
         {activeNote ? (
-          <div className="flex-1 flex flex-col lg:flex-row h-full min-h-0 overflow-hidden relative">
+          <div className="flex-1 flex flex-col lg:flex-row h-full min-h-0 overflow-hidden relative transition-all duration-300">
             {/* Keyboard Rich Text Editor View */}
             {(viewMode === 'text' || viewMode === 'both') && (
               <div 
-                className={`h-full min-h-0 overflow-hidden flex flex-col ${
+                className={`h-full min-h-0 overflow-hidden flex flex-col transition-all duration-300 ${
                   viewMode === 'both' ? 'flex-1 lg:border-r border-surface-subtle-light dark:border-surface-subtle-dark' : 'flex-1'
                 }`}
               >
@@ -238,7 +422,7 @@ export default function App() {
 
             {/* Stylus Ink Drawing Canvas (S Pen & Apple Pencil) */}
             {(viewMode === 'ink' || viewMode === 'both') && (
-              <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col relative">
+              <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col relative transition-all duration-300">
                 <InkCanvas
                   ref={inkCanvasRef}
                   strokes={activeNote.inkStrokes || []}
@@ -274,6 +458,29 @@ export default function App() {
           onInsertText={handleInsertScribbleText}
         />
       )}
+
+      {/* PWA Download to Home Screen Modal */}
+      <InstallModal
+        isOpen={isInstallModalOpen}
+        onClose={() => setIsInstallModalOpen(false)}
+        installPrompt={installPrompt}
+        onInstallSuccess={() => {
+          setInstallPrompt(null);
+        }}
+      />
+
+      {/* Cross-Device Sync Modal */}
+      <SyncModal
+        isOpen={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
+        notes={notes}
+        settings={settings}
+        onSync={handleManualSync}
+        onImportVault={handleImportVault}
+        onUpdateSettings={handleUpdateSettings}
+        isSyncing={isSyncing}
+        syncError={syncError}
+      />
     </div>
   );
 }

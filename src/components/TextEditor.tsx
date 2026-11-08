@@ -68,8 +68,8 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent })
       </div>
 
       {/* Main editable note sheet */}
-      <div className="flex-1 overflow-y-auto px-6 py-8 md:px-16 md:py-12 flex justify-center">
-        <div className="w-full max-w-3xl min-h-[500px]">
+      <div className="flex-1 overflow-y-auto px-6 py-8 md:px-12 lg:px-16 md:py-12 flex justify-center">
+        <div className="w-full max-w-4xl xl:max-w-5xl min-h-[500px] transition-all duration-300">
           <div
             ref={editorRef}
             contentEditable
