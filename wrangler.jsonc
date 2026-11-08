@@ -7,5 +7,11 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "AURA_SYNC_KV",
+      "id": "53d0a12a7d4747c2b38635e4d9f395c9"
+    }
+  ]
 }
