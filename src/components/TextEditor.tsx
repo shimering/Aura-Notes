@@ -1,10 +1,24 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import { Note } from '../types/note';
 import { FormatToolbar } from './FormatToolbar';
 
 interface TextEditorProps {
   note: Note;
   onChangeContent: (content: string) => void;
+}
+
+/**
+ * Extracts readable text from note HTML. Works on a detached node, so it is
+ * safe to call during render (unlike innerText, which needs layout).
+ */
+function htmlToText(html: string): string {
+  const div = document.createElement('div');
+  div.innerHTML = html || '';
+  div.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
+  div
+    .querySelectorAll('p, div, li, ul, ol, h1, h2, h3, h4, h5, h6, blockquote')
+    .forEach((block) => block.append('\n'));
+  return div.textContent || '';
 }
 
 export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent }) => {
@@ -49,16 +63,16 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent })
     handleInput();
   };
 
-  // Calculate words and characters
-  const getStats = () => {
-    if (!editorRef.current) return { words: 0, chars: 0 };
-    const text = editorRef.current.innerText || '';
-    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-    const chars = text.length;
-    return { words, chars };
-  };
-
-  const stats = getStats();
+  // Calculate words and characters from the note content so the counts are
+  // correct on first paint (the contentEditable DOM is populated after mount).
+  const stats = useMemo(() => {
+    const text = htmlToText(note.content);
+    const trimmed = text.trim();
+    return {
+      words: trimmed ? trimmed.split(/\s+/).length : 0,
+      chars: trimmed.length
+    };
+  }, [note.content]);
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-surface-light dark:bg-surface-dark relative">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Menu, 
   Moon, 
@@ -12,15 +12,20 @@ import {
   Columns,
   Share2,
   Cloud,
-  RefreshCw
+  RefreshCw,
+  Tag,
+  Settings
 } from 'lucide-react';
 import { Note } from '../types/note';
+import { TagEditor } from './TagEditor';
 
 export type ViewMode = 'both' | 'text' | 'ink';
 
 interface HeaderProps {
   note: Note | null;
   onUpdateTitle: (title: string) => void;
+  onUpdateTags?: (tags: string[]) => void;
+  allTags?: string[];
   onToggleSidebar: () => void;
   isSidebarOpen?: boolean;
   viewMode: ViewMode;
@@ -29,6 +34,7 @@ interface HeaderProps {
   onExport: () => void;
   onOpenInstall?: () => void;
   onOpenSync?: () => void;
+  onOpenSettings?: () => void;
   isSyncing?: boolean;
   syncVaultKey?: string;
 }
@@ -36,6 +42,8 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   note,
   onUpdateTitle,
+  onUpdateTags,
+  allTags = [],
   onToggleSidebar,
   isSidebarOpen = true,
   viewMode,
@@ -44,9 +52,12 @@ export const Header: React.FC<HeaderProps> = ({
   onExport,
   onOpenInstall,
   onOpenSync,
+  onOpenSettings,
   isSyncing = false,
   syncVaultKey = ''
 }) => {
+  const [isTagEditorOpen, setIsTagEditorOpen] = useState(false);
+  const tagButtonRef = useRef<HTMLDivElement>(null);
   const [isDark, setIsDark] = useState(() => {
     return document.documentElement.classList.contains('dark');
   });
@@ -109,6 +120,40 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="text-sm font-medium text-ink-muted-light dark:text-ink-muted-dark">
             Select or create a note
           </span>
+        )}
+
+        {/* Tags */}
+        {note && onUpdateTags && (
+          <div ref={tagButtonRef} className="relative flex-shrink-0">
+            <button
+              onClick={() => setIsTagEditorOpen((open) => !open)}
+              onMouseDown={(e) => e.stopPropagation()}
+              title="Edit note tags"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition active:scale-95 ${
+                (note.tags?.length || 0) > 0
+                  ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300 ring-1 ring-violet-500/30'
+                  : 'text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+              }`}
+            >
+              <Tag className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">
+                {note.tags && note.tags.length > 0
+                  ? note.tags.length === 1
+                    ? note.tags[0]
+                    : `${note.tags.length} tags`
+                  : 'Tags'}
+              </span>
+            </button>
+
+            {isTagEditorOpen && (
+              <TagEditor
+                tags={note.tags || []}
+                allTags={allTags}
+                onChange={onUpdateTags}
+                onClose={() => setIsTagEditorOpen(false)}
+              />
+            )}
+          </div>
         )}
 
         {/* Save status badge */}
@@ -220,6 +265,17 @@ export const Header: React.FC<HeaderProps> = ({
         >
           {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
         </button>
+
+        {onOpenSettings && (
+          <button
+            onClick={onOpenSettings}
+            title="Settings"
+            aria-label="Open settings"
+            className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark transition active:scale-95"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </header>
   );

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Note } from '../types/note';
 import { 
   Plus, 
@@ -11,14 +11,17 @@ import {
   ChevronLeft,
   X,
   Download,
-  Cloud
+  Cloud,
+  ChevronDown,
+  Sparkles
 } from 'lucide-react';
+import { NOTE_TEMPLATES } from '../utils/templates';
 
 interface SidebarProps {
   notes: Note[];
   activeNoteId: string | null;
   onSelectNote: (id: string) => void;
-  onCreateNote: () => void;
+  onCreateNote: (templateId?: string) => void;
   onDeleteNote: (id: string) => void;
   onTogglePin: (id: string) => void;
   isOpen: boolean;
@@ -26,6 +29,7 @@ interface SidebarProps {
   onDownloadApp?: () => void;
   onOpenSync?: () => void;
   syncVaultKey?: string;
+  searchInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -40,9 +44,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDownloadApp,
   onOpenSync,
   syncVaultKey = '',
+  searchInputRef,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [isTemplateMenuOpen, setIsTemplateMenuOpen] = useState(false);
+  const templateMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isTemplateMenuOpen) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (templateMenuRef.current && !templateMenuRef.current.contains(e.target as Node)) {
+        setIsTemplateMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [isTemplateMenuOpen]);
 
   // Extract all unique tags
   const allTags = Array.from(
@@ -108,13 +126,56 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <div className="flex items-center gap-1">
-            <button
-              onClick={onCreateNote}
-              title="Create New Note"
-              className="p-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition active:scale-95"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
+            <div ref={templateMenuRef} className="relative flex items-center">
+              <button
+                onClick={() => onCreateNote()}
+                title="Create New Note"
+                className="p-2 pl-2.5 rounded-l-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setIsTemplateMenuOpen((open) => !open)}
+                title="New note from template"
+                aria-haspopup="menu"
+                aria-expanded={isTemplateMenuOpen}
+                className="p-2 pr-2.5 rounded-r-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition active:scale-95 border-l border-white/25"
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+
+              {isTemplateMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute top-full right-0 mt-2 z-50 w-64 p-1.5 rounded-2xl bg-surface-light dark:bg-surface-dark border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating animate-in fade-in slide-in-from-top-1"
+                >
+                  <p className="px-2 py-1 text-[10px] uppercase tracking-wider text-ink-muted-light dark:text-ink-muted-dark">
+                    New from template
+                  </p>
+                  {NOTE_TEMPLATES.map((template) => (
+                    <button
+                      key={template.id}
+                      role="menuitem"
+                      onClick={() => {
+                        setIsTemplateMenuOpen(false);
+                        onCreateNote(template.id);
+                      }}
+                      className="w-full text-left px-2.5 py-2 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark transition flex items-start gap-2"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-violet-500" />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-semibold text-ink-light dark:text-ink-dark">
+                          {template.name}
+                        </span>
+                        <span className="block text-[11px] leading-snug text-ink-muted-light dark:text-ink-muted-dark">
+                          {template.description}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               onClick={onToggleOpen}
               className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark md:hidden"
@@ -129,8 +190,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted-light dark:text-ink-muted-dark" />
             <input
+              ref={searchInputRef}
               type="text"
-              placeholder="Search notes or scribbles..."
+              placeholder="Search notes or scribbles... (Ctrl+K)"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-surface-subtle-light dark:bg-surface-subtle-dark border-none outline-none focus:ring-2 focus:ring-violet-500 text-ink-light dark:text-ink-dark placeholder-ink-muted-light dark:placeholder-ink-muted-dark transition"

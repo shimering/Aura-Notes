@@ -21,6 +21,8 @@ import { InkCanvas, InkCanvasRef } from './components/InkCanvas';
 import { ScribbleRecognitionModal } from './components/ScribbleRecognitionModal';
 import { InstallModal } from './components/InstallModal';
 import { SyncModal } from './components/SyncModal';
+import { SettingsModal } from './components/SettingsModal';
+import { getNoteTemplate } from './utils/templates';
 
 export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -34,6 +36,7 @@ export default function App() {
   const [isScribbleModalOpen, setIsScribbleModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [installPrompt, setInstallPrompt] = useState<any>(null);
@@ -41,6 +44,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
 
   const inkCanvasRef = useRef<InkCanvasRef>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const saveTimeoutRef = useRef<any>(null);
   const syncTimeoutRef = useRef<any>(null);
 
@@ -224,6 +228,9 @@ export default function App() {
   }, [executeSync]);
 
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
+  const allTags = Array.from(new Set(notes.flatMap((n) => n.tags || []))).sort((a, b) =>
+    a.localeCompare(b)
+  );
 
   // Auto-save & background sync debouncer
   const scheduleSave = useCallback((noteToSave: Note) => {
@@ -298,17 +305,18 @@ export default function App() {
     scheduleSave(updated);
   };
 
-  // Create New Note
-  const handleCreateNote = async () => {
+  // Create New Note (optionally from a template)
+  const handleCreateNote = async (templateId?: string) => {
     const now = Date.now();
     lastLocalEditTimeRef.current = now;
+    const template = getNoteTemplate(templateId);
     const newNote: Note = {
       id: `note-${now}-${Math.random().toString(36).substr(2, 6)}`,
-      title: 'Untitled Note',
-      content: '',
+      title: template.title || 'Untitled Note',
+      content: template.content,
       inkStrokes: [],
-      tags: [],
-      color: '#3b82f6',
+      tags: [...template.tags],
+      color: template.color,
       createdAt: now,
       updatedAt: now
     };
@@ -361,6 +369,20 @@ export default function App() {
     const updated = { ...target, pinned: !target.pinned, updatedAt: now };
     setNotes((prev) => {
       const next = prev.map((n) => (n.id === id ? updated : n));
+      notesRef.current = next;
+      return next;
+    });
+    scheduleSave(updated);
+  };
+
+  // Update Note Tags
+  const handleUpdateTags = (tags: string[]) => {
+    if (!activeNote) return;
+    const now = Date.now();
+    lastLocalEditTimeRef.current = now;
+    const updated = { ...activeNote, tags, updatedAt: now };
+    setNotes((prev) => {
+      const next = prev.map((n) => (n.id === updated.id ? updated : n));
       notesRef.current = next;
       return next;
     });
@@ -464,6 +486,15 @@ export default function App() {
 
   // Global keyboard shortcuts
   useEffect(() => {
+    const focusSearch = () => {
+      setIsSidebarOpen(true);
+      saveSettings({ isSidebarOpen: true });
+      window.setTimeout(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }, 50);
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
 
@@ -471,17 +502,34 @@ export default function App() {
         setIsScribbleModalOpen(false);
         setIsInstallModalOpen(false);
         setIsSyncModalOpen(false);
+        setIsSettingsModalOpen(false);
         return;
       }
 
-      if (!mod) return;
-      const key = e.key.toLowerCase();
       const target = e.target as HTMLElement | null;
       const isEditingText =
         !!target &&
         (target.isContentEditable ||
           target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA');
+
+      if (!mod) {
+        // "/" focuses search, unless the user is already typing.
+        if (e.key === '/' && !isEditingText) {
+          e.preventDefault();
+          focusSearch();
+        }
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+
+      if ((key === 'k' || key === 'f') && !e.shiftKey) {
+        // Ctrl+K is a reliable alias because mobile browsers reserve Ctrl+F.
+        e.preventDefault();
+        focusSearch();
+        return;
+      }
 
       if (key === 'n' && !e.shiftKey && !isEditingText) {
         e.preventDefault();
@@ -550,6 +598,7 @@ export default function App() {
         onDownloadApp={() => setIsInstallModalOpen(true)}
         onOpenSync={() => setIsSyncModalOpen(true)}
         syncVaultKey={settings.syncVaultKey}
+        searchInputRef={searchInputRef}
       />
 
       {/* Main Content Workspace */}
@@ -557,6 +606,8 @@ export default function App() {
         <Header
           note={activeNote}
           onUpdateTitle={handleUpdateTitle}
+          onUpdateTags={handleUpdateTags}
+          allTags={allTags}
           onToggleSidebar={() => {
             const next = !isSidebarOpen;
             setIsSidebarOpen(next);
@@ -569,6 +620,7 @@ export default function App() {
           onExport={handleExport}
           onOpenInstall={() => setIsInstallModalOpen(true)}
           onOpenSync={() => setIsSyncModalOpen(true)}
+          onOpenSettings={() => setIsSettingsModalOpen(true)}
           isSyncing={isSyncing}
           syncVaultKey={settings.syncVaultKey}
         />
@@ -598,6 +650,10 @@ export default function App() {
                   strokes={activeNote.inkStrokes || []}
                   onChangeStrokes={handleUpdateStrokes}
                   onScribbleToText={() => setIsScribbleModalOpen(true)}
+                  defaultTool={settings.defaultPenTool}
+                  defaultColor={settings.defaultPenColor}
+                  defaultWidth={settings.defaultPenWidth}
+                  defaultStylusOnly={settings.stylusOnly}
                 />
               </div>
             )}
@@ -609,7 +665,7 @@ export default function App() {
               Create a new note or select an existing one from the sidebar to begin typing or drawing.
             </p>
             <button
-              onClick={handleCreateNote}
+              onClick={() => handleCreateNote()}
               className="px-5 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-700 text-white font-medium shadow-md transition active:scale-95"
             >
               Create New Note
@@ -650,6 +706,15 @@ export default function App() {
         onUpdateSettings={handleUpdateSettings}
         isSyncing={isSyncing}
         syncError={syncError}
+      />
+
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        settings={settings}
+        onUpdateSettings={handleUpdateSettings}
+        onOpenSync={() => setIsSyncModalOpen(true)}
       />
     </div>
   );

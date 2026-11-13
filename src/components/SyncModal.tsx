@@ -14,13 +14,15 @@ import {
   Sparkles,
   ShieldCheck,
   AlertCircle,
-  QrCode
+  QrCode,
+  FileText
 } from 'lucide-react';
 import { Note } from '../types/note';
 import { AppSettings } from '../types/settings';
 import { 
   generateRandomVaultKey, 
   exportVaultToJson, 
+  exportAllNotesAsMarkdown,
   parseVaultJson 
 } from '../services/syncService';
 
@@ -394,6 +396,15 @@ export const SyncModal: React.FC<SyncModalProps> = ({
                 />
               </label>
             </div>
+
+            <button
+              onClick={() => exportAllNotesAsMarkdown(notes)}
+              disabled={notes.length === 0}
+              className="w-full py-2 px-3 rounded-xl bg-surface-subtle-light dark:bg-surface-subtle-dark hover:bg-surface-subtle-light/80 text-ink-light dark:text-ink-dark text-xs font-medium border border-surface-subtle-light dark:border-surface-subtle-dark transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Export All Notes as Markdown (.md)</span>
+            </button>
             {importStatus && (
               <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
                 {importStatus}

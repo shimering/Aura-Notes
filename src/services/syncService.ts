@@ -407,3 +407,75 @@ export function parseVaultJson(jsonString: string): { notes: Note[]; settings?: 
     throw new Error(`Failed to parse backup file: ${err.message}`);
   }
 }
+
+function htmlToPlainText(html: string): string {
+  if (!html) return '';
+  const div = document.createElement('div');
+  div.innerHTML = html;
+
+  // Rough Markdown-ish structure for lists and headings.
+  div.querySelectorAll('li').forEach((li) => {
+    li.prepend(document.createTextNode('- '));
+  });
+  div.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => {
+    const level = Math.min(Number(heading.tagName[1]) + 1, 6);
+    heading.prepend(document.createTextNode(`${'#'.repeat(level)} `));
+  });
+
+  div.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
+  div
+    .querySelectorAll('p, div, li, ul, ol, h1, h2, h3, h4, h5, h6, blockquote')
+    .forEach((block) => block.append('\n'));
+
+  // Template HTML is indented for readability; strip that indentation so the
+  // exported Markdown does not turn into code blocks.
+  return (div.textContent || '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.replace(/^[ \t]+/, '').replace(/[ \t]+$/, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function noteToMarkdown(note: Note): string {
+  const lines: string[] = [`# ${note.title || 'Untitled Note'}`, ''];
+
+  if (note.tags && note.tags.length > 0) {
+    lines.push(`*Tags: ${note.tags.join(', ')}*`, '');
+  }
+
+  const body = htmlToPlainText(note.content);
+  if (body) lines.push(body, '');
+
+  if (note.inkStrokes && note.inkStrokes.length > 0) {
+    lines.push(`*Includes ${note.inkStrokes.length} handwritten stroke(s) — open in Aura Notes to view.*`, '');
+  }
+
+  lines.push(
+    '---',
+    `Created: ${new Date(note.createdAt).toLocaleString()}`,
+    `Updated: ${new Date(note.updatedAt).toLocaleString()}`
+  );
+
+  return lines.join('\n');
+}
+
+/**
+ * Downloads every note as a single Markdown document.
+ */
+export function exportAllNotesAsMarkdown(notes: Note[]): void {
+  if (notes.length === 0) return;
+
+  const dateStr = new Date().toISOString().split('T')[0];
+  const header = `# Aura Notes export — ${dateStr}\n\n${notes.length} note${notes.length === 1 ? '' : 's'}\n`;
+  const divider = '\n\n<div style="page-break-after: always"></div>\n\n';
+  const body = notes.map(noteToMarkdown).join(divider);
+  const blob = new Blob([`${header}\n${body}\n`], { type: 'text/markdown;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `aura-notes-${dateStr}.md`;
+  link.click();
+  URL.revokeObjectURL(url);
+}

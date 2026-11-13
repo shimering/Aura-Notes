@@ -117,6 +117,26 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   }, [selectedTool]);
 
+  // Keep the canvas in sync when stylus defaults change in Settings. These only
+  // fire on actual prop changes, so in-canvas tool picks are never clobbered.
+  useEffect(() => {
+    setSelectedTool(defaultTool);
+  }, [defaultTool]);
+
+  useEffect(() => {
+    if (defaultColor) setPenColor(defaultColor);
+  }, [defaultColor]);
+
+  useEffect(() => {
+    if (typeof defaultWidth === 'number' && defaultWidth > 0) {
+      setPenWidth(defaultWidth);
+    }
+  }, [defaultWidth]);
+
+  useEffect(() => {
+    setIsStylusOnly(defaultStylusOnly);
+  }, [defaultStylusOnly]);
+
   // S Pen Feedback overlay
   const [hoverFeedback, setHoverFeedback] = useState<{ label: string; tool: PenTool; x: number; y: number } | null>(null);
   const [isQuickMenuOpen, setIsQuickMenuOpen] = useState<boolean>(false);
