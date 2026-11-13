@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { Stroke, StrokePoint, PenTool } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint } from '../utils/inkSmoothing';
+import { InkHistory } from '../utils/inkHistory';
 import { 
   isSpenBarrelOrEraser, 
   isSpenButtonPressed, 
@@ -14,12 +15,20 @@ export interface InkCanvasRef {
   getCanvasElement: () => HTMLCanvasElement | null;
   exportImageData: () => ImageData | null;
   exportDataUrl: () => string;
+  undo: () => void;
+  redo: () => void;
+  clear: () => void;
 }
 
 interface InkCanvasProps {
+  noteId: string;
   strokes: Stroke[];
   onChangeStrokes: (strokes: Stroke[]) => void;
   onScribbleToText: () => void;
+  defaultTool?: PenTool;
+  defaultColor?: string;
+  defaultWidth?: number;
+  defaultStylusOnly?: boolean;
 }
 
 // Global AudioContext Singleton (prevents hardware exhaustion & browser crash)
@@ -69,9 +78,14 @@ function getToolLabel(tool: PenTool): string {
 }
 
 export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
+  noteId,
   strokes,
   onChangeStrokes,
-  onScribbleToText
+  onScribbleToText,
+  defaultTool = 'fountain',
+  defaultColor,
+  defaultWidth = 4,
+  defaultStylusOnly = false
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -80,21 +94,18 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
 
   // Primary user-selected tool (fountain, ballpoint, highlighter, or eraser)
-  const [selectedTool, setSelectedTool] = useState<PenTool>('fountain');
-  const [penColor, setPenColor] = useState<string>(isDarkMode ? '#ffffff' : '#1e293b');
-  const [penWidth, setPenWidth] = useState<number>(4);
+  const [selectedTool, setSelectedTool] = useState<PenTool>(defaultTool);
+  const [penColor, setPenColor] = useState<string>(defaultColor || (isDarkMode ? '#ffffff' : '#1e293b'));
+  const [penWidth, setPenWidth] = useState<number>(defaultWidth);
   const [eraserWidth, setEraserWidth] = useState<number>(24);
-  const [isStylusOnly, setIsStylusOnly] = useState<boolean>(false);
+  const [isStylusOnly, setIsStylusOnly] = useState<boolean>(defaultStylusOnly);
 
   // Momentary S Pen Eraser State: active while pressing button, DEACTIVATES ON RELEASE
   const [isSpenEraserArmed, setIsSpenEraserArmed] = useState<boolean>(false);
   const isSpenEraserArmedRef = useRef<boolean>(false);
-  const selectedToolRef = useRef<PenTool>('fountain');
-  const lastWritingToolRef = useRef<PenTool>('fountain');
+  const selectedToolRef = useRef<PenTool>(defaultTool);
+  const lastWritingToolRef = useRef<PenTool>(defaultTool === 'eraser' ? 'fountain' : defaultTool);
   const isEraserDrawingRef = useRef<boolean>(false);
-
-  // S Pen hover cursor indicator (shows exact radius of eraser/pen while hovering)
-  const [hoverCursor, setHoverCursor] = useState<{ x: number; y: number; isEraser: boolean; radius: number } | null>(null);
 
   // Effective tool: If S Pen eraser is armed, tool is 'eraser', else selectedTool
   const activeTool: PenTool = isSpenEraserArmed ? 'eraser' : selectedTool;
@@ -131,10 +142,22 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const lastStylusHoverPosRef = useRef<{ x: number; y: number }>({ x: 300, y: 300 });
   const lastStylusActiveTimeRef = useRef<number>(0);
 
-  // History for Undo/Redo
-  const [historyIndex, setHistoryIndex] = useState<number>(strokes.length);
+  // History for Undo/Redo (snapshots of committed stroke arrays, persisted to the note)
+  const historyRef = useRef<InkHistory>(new InkHistory(100));
+  const [canUndo, setCanUndo] = useState<boolean>(false);
+  const [canRedo, setCanRedo] = useState<boolean>(false);
+
+  // Authoritative stroke list for rendering. Mirrors the note prop, but lets an
+  // eraser drag preview changes locally and commit a single undoable step on lift.
+  const strokesRef = useRef<Stroke[]>(strokes);
+  const previewStrokesRef = useRef<Stroke[] | null>(null);
   const currentStrokeRef = useRef<Stroke | null>(null);
   const isStylusActiveRef = useRef<boolean>(false);
+
+  const syncHistoryFlags = useCallback(() => {
+    setCanUndo(historyRef.current.canUndo);
+    setCanRedo(historyRef.current.canRedo);
+  }, []);
 
   // Expose methods for OCR engine
   useImperativeHandle(ref, () => ({
@@ -149,13 +172,31 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     exportDataUrl: () => {
       const canvas = canvasRef.current;
       return canvas ? canvas.toDataURL('image/png') : '';
-    }
+    },
+    undo: () => handleUndo(),
+    redo: () => handleRedo(),
+    clear: () => handleClear()
   }));
 
-  // Synchronize internal history pointer when external note changes
+  // Sync externally-provided strokes (note switch, OCR clear, cloud merge)
   useEffect(() => {
-    setHistoryIndex(strokes.length);
+    strokesRef.current = strokes;
+    if (!isEraserDrawingRef.current && !currentStrokeRef.current) {
+      previewStrokesRef.current = null;
+    }
+    redraw();
   }, [strokes]);
+
+  // Reset undo history when switching notes
+  useEffect(() => {
+    historyRef.current.reset();
+    previewStrokesRef.current = null;
+    currentStrokeRef.current = null;
+    strokesRef.current = strokes;
+    syncHistoryFlags();
+    redraw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteId]);
 
   // Redraw all strokes on canvas
   const redraw = useCallback(() => {
@@ -167,8 +208,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const dpr = window.devicePixelRatio || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Render strokes up to history index
-    const visibleStrokes = strokes.slice(0, historyIndex);
+    const visibleStrokes = previewStrokesRef.current ?? strokesRef.current;
     for (const stroke of visibleStrokes) {
       renderStroke(ctx, stroke, dpr);
     }
@@ -177,7 +217,47 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (currentStrokeRef.current) {
       renderStroke(ctx, currentStrokeRef.current, dpr);
     }
-  }, [strokes, historyIndex]);
+  }, []);
+
+  /**
+   * Atomically commits a stroke change: records an undo snapshot, updates the
+   * local authoritative list, pushes it to the note, and repaints.
+   */
+  const commitStrokes = useCallback((next: Stroke[]) => {
+    const previous = strokesRef.current;
+    if (previous === next) {
+      redraw();
+      return;
+    }
+    historyRef.current.commit(previous, next);
+    strokesRef.current = next;
+    previewStrokesRef.current = null;
+    syncHistoryFlags();
+    onChangeStrokes(next);
+    redraw();
+  }, [onChangeStrokes, redraw, syncHistoryFlags]);
+
+  const handleUndo = useCallback(() => {
+    if (currentStrokeRef.current || isEraserDrawingRef.current) return;
+    const previous = historyRef.current.undo(strokesRef.current);
+    if (!previous) return;
+    strokesRef.current = previous;
+    previewStrokesRef.current = null;
+    syncHistoryFlags();
+    onChangeStrokes(previous);
+    redraw();
+  }, [onChangeStrokes, redraw, syncHistoryFlags]);
+
+  const handleRedo = useCallback(() => {
+    if (currentStrokeRef.current || isEraserDrawingRef.current) return;
+    const next = historyRef.current.redo(strokesRef.current);
+    if (!next) return;
+    strokesRef.current = next;
+    previewStrokesRef.current = null;
+    syncHistoryFlags();
+    onChangeStrokes(next);
+    redraw();
+  }, [onChangeStrokes, redraw, syncHistoryFlags]);
 
   // Handle canvas resize and high-DPI scaling using ResizeObserver
   const resizeCanvas = useCallback(() => {
@@ -499,12 +579,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     if (isEraserNow) {
       isEraserDrawingRef.current = true;
-      // Instant stroke erasing: delete any existing stroke near this point!
+      previewStrokesRef.current = strokesRef.current;
+      // Instant stroke erasing preview: delete any existing stroke near this point
       const eraseRadius = eraserWidth;
-      const { remaining, hasErased } = eraseStrokesNearPoint(strokes, startPoint.x, startPoint.y, eraseRadius);
+      const { remaining, hasErased } = eraseStrokesNearPoint(strokesRef.current, startPoint.x, startPoint.y, eraseRadius);
       if (hasErased) {
-        onChangeStrokes(remaining);
-        setHistoryIndex(remaining.length);
+        previewStrokesRef.current = remaining;
       }
     } else {
       isEraserDrawingRef.current = false;
@@ -536,10 +616,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const rawEvents = nativeEvent.getCoalescedEvents?.() ?? [];
     const coalescedEvents = rawEvents.length > 0 ? rawEvents : [nativeEvent];
 
-    // ERASER MODE: Erase any strokes that intersect the eraser path in real-time
+    // ERASER MODE: preview erasing locally; committed as one undoable step on lift
     if (isEraserNow && isEraserDrawingRef.current) {
       const eraseRadius = eraserWidth;
-      let currentStrokes = strokes;
+      let currentStrokes = previewStrokesRef.current ?? strokesRef.current;
       let anyErased = false;
 
       for (const ce of coalescedEvents) {
@@ -553,8 +633,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       }
 
       if (anyErased) {
-        onChangeStrokes(currentStrokes);
-        setHistoryIndex(currentStrokes.length);
+        previewStrokesRef.current = currentStrokes;
         redraw();
       }
       return;
@@ -603,15 +682,24 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       }
     }
 
-    isEraserDrawingRef.current = false;
+    // Commit the eraser drag as a single undoable step
+    if (isEraserDrawingRef.current) {
+      isEraserDrawingRef.current = false;
+      const preview = previewStrokesRef.current;
+      if (preview && preview !== strokesRef.current) {
+        commitStrokes(preview);
+      } else {
+        previewStrokesRef.current = null;
+        redraw();
+      }
+      return;
+    }
 
     if (!currentStrokeRef.current) return;
 
     // Discard single-point dots produced by palm brushes
     if (currentStrokeRef.current.points.length > 1) {
-      const updated = [...strokes.slice(0, historyIndex), currentStrokeRef.current];
-      onChangeStrokes(updated);
-      setHistoryIndex(updated.length);
+      commitStrokes([...strokesRef.current, currentStrokeRef.current]);
     }
 
     currentStrokeRef.current = null;
@@ -636,25 +724,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   // History controls
-  const handleUndo = () => {
-    if (historyIndex > 0) {
-      setHistoryIndex(historyIndex - 1);
-    }
-  };
-
-  const handleRedo = () => {
-    if (historyIndex < strokes.length) {
-      setHistoryIndex(historyIndex + 1);
-    }
-  };
-
   const handleClear = () => {
-    if (strokes.length === 0) return;
+    if (strokesRef.current.length === 0) return;
     if (window.confirm('Clear all handwriting strokes from this note?')) {
-      onChangeStrokes([]);
-      setHistoryIndex(0);
       currentStrokeRef.current = null;
-      redraw();
+      previewStrokesRef.current = null;
+      commitStrokes([]);
     }
   };
 
@@ -677,8 +752,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           onChangeWidth={setPenWidth}
           eraserWidth={eraserWidth}
           onChangeEraserWidth={setEraserWidth}
-          canUndo={historyIndex > 0}
-          canRedo={historyIndex < strokes.length}
+          canUndo={canUndo}
+          canRedo={canRedo}
           onUndo={handleUndo}
           onRedo={handleRedo}
           onClear={handleClear}
@@ -687,6 +762,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           isStylusOnly={isStylusOnly}
           onToggleStylusOnly={() => setIsStylusOnly(!isStylusOnly)}
           onOpenSPenMenu={() => setIsQuickMenuOpen(true)}
+          lastWritingTool={lastWritingToolRef.current}
         />
       </div>
 

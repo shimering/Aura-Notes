@@ -454,6 +454,64 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+
+      if (e.key === 'Escape') {
+        setIsScribbleModalOpen(false);
+        setIsInstallModalOpen(false);
+        setIsSyncModalOpen(false);
+        return;
+      }
+
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      const target = e.target as HTMLElement | null;
+      const isEditingText =
+        !!target &&
+        (target.isContentEditable ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA');
+
+      if (key === 'n' && !e.shiftKey && !isEditingText) {
+        e.preventDefault();
+        handleCreateNote();
+        return;
+      }
+
+      if (key === 's') {
+        e.preventDefault();
+        const current = notesRef.current.find((n) => n.id === activeNoteIdRef.current);
+        if (current) {
+          setIsSaving(true);
+          saveNote(current).finally(() => setIsSaving(false));
+        }
+        return;
+      }
+
+      if (isEditingText) return;
+
+      if (key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          inkCanvasRef.current?.redo();
+        } else {
+          inkCanvasRef.current?.undo();
+        }
+      } else if (key === 'y') {
+        e.preventDefault();
+        inkCanvasRef.current?.redo();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+    // handleCreateNote is stable enough for a shortcut: it only reads refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if (isLoading) {
     return (
       <div className="h-full w-full flex items-center justify-center bg-canvas-light dark:bg-canvas-dark text-ink-muted-light dark:text-ink-muted-dark">
@@ -528,6 +586,7 @@ export default function App() {
               <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col relative transition-all duration-300">
                 <InkCanvas
                   ref={inkCanvasRef}
+                  noteId={activeNote.id}
                   strokes={activeNote.inkStrokes || []}
                   onChangeStrokes={handleUpdateStrokes}
                   onScribbleToText={() => setIsScribbleModalOpen(true)}
