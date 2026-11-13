@@ -24,6 +24,12 @@ function devSyncApiPlugin(): Plugin {
             return;
           }
 
+          if (!/^[A-Za-z0-9_-]{8,128}$/.test(vaultKey)) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: 'Invalid vault key' }));
+            return;
+          }
+
           if (req.method === 'GET') {
             const vault = devVaultStore.get(vaultKey) || { notes: [], settings: {}, updatedAt: 0 };
             res.statusCode = 200;
@@ -38,6 +44,11 @@ function devSyncApiPlugin(): Plugin {
             });
             req.on('end', () => {
               try {
+                if (bodyStr.length > 20 * 1024 * 1024) {
+                  res.statusCode = 413;
+                  res.end(JSON.stringify({ error: 'Sync payload too large' }));
+                  return;
+                }
                 const body = JSON.parse(bodyStr);
                 const existing = devVaultStore.get(vaultKey) || { notes: [], settings: {}, deletedNoteIds: [] };
 
@@ -62,7 +73,12 @@ function devSyncApiPlugin(): Plugin {
                     } else if (inTime === prevTime) {
                       const inStrokes = n.inkStrokes?.length || 0;
                       const prevStrokes = prev.inkStrokes?.length || 0;
-                      if (inStrokes >= prevStrokes) {
+                      if (inStrokes > prevStrokes) {
+                        noteMap.set(n.id, n);
+                      } else if (
+                        inStrokes === prevStrokes &&
+                        (n.content?.length || 0) > (prev.content?.length || 0)
+                      ) {
                         noteMap.set(n.id, n);
                       }
                     }

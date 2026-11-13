@@ -1,12 +1,23 @@
-import { get, set, del } from 'idb-keyval';
+import { createStore, get, set, set as setDefault, del, entries, setMany, clear } from 'idb-keyval';
 import { Note } from '../types/note';
 import { recordDeletedNoteId } from './syncService';
 
-const NOTES_KEY = 'aura_notes_list';
+// Per-note records live in their own object store so a single edit rewrites only
+// the affected note instead of the entire notes array.
+const notesStore = createStore('aura-notes-db', 'notes');
+// Separate database on purpose: idb-keyval creates one object store per DB
+// version, so requesting a second store from the same DB would never be created.
+const metaStore = createStore('aura-notes-meta', 'meta');
+
+// Legacy single-blob key (pre-v2). Migrated on first load and then deleted.
+const LEGACY_NOTES_KEY = 'aura_notes_list';
+const MIGRATED_KEY = 'aura_notes_migrated_v2';
 const ACTIVE_NOTE_ID_KEY = 'aura_active_note_id';
 
-// In-memory fallback for environments without indexedDB (e.g. Node tests, strict private browsing)
-const memoryStorage: Record<string, any> = {};
+// In-memory fallback for environments without indexedDB (Node tests, strict private browsing)
+const memoryNotes = new Map<string, Note>();
+const memoryMeta = new Map<string, any>();
+let memoryLegacyNotes: Note[] | undefined;
 
 function hasIndexedDB(): boolean {
   return typeof window !== 'undefined' && typeof indexedDB !== 'undefined';
@@ -37,60 +48,159 @@ const INITIAL_WELCOME_NOTE: Note = {
   updatedAt: Date.now()
 };
 
+/**
+ * Trims float noise from ink points before persisting. Cuts record size by a
+ * meaningful amount without visible fidelity loss.
+ */
+export function compactNote(note: Note): Note {
+  if (!note.inkStrokes || note.inkStrokes.length === 0) return note;
+
+  return {
+    ...note,
+    inkStrokes: note.inkStrokes.map((stroke) => ({
+      ...stroke,
+      points: stroke.points.map((p) => ({
+        x: Math.round(p.x * 10) / 10,
+        y: Math.round(p.y * 10) / 10,
+        pressure: Math.round(p.pressure * 100) / 100,
+        time: p.time
+      }))
+    }))
+  };
+}
+
+function sortNotes(notes: Note[]): Note[] {
+  return notes.sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return b.updatedAt - a.updatedAt;
+  });
+}
+
+async function readAllNotes(): Promise<Note[]> {
+  if (hasIndexedDB()) {
+    const rows = await entries<string, Note>(notesStore);
+    return rows.map(([, note]) => note).filter(Boolean);
+  }
+  return Array.from(memoryNotes.values());
+}
+
+async function writeAllNotes(notes: Note[]): Promise<void> {
+  if (hasIndexedDB()) {
+    await clear(notesStore);
+    if (notes.length > 0) {
+      await setMany(notes.map((n) => [n.id, compactNote(n)] as [string, Note]), notesStore);
+    }
+    return;
+  }
+  memoryNotes.clear();
+  for (const note of notes) {
+    memoryNotes.set(note.id, compactNote(note));
+  }
+}
+
+async function readMeta<T>(key: string): Promise<T | undefined> {
+  if (hasIndexedDB()) {
+    return await get<T>(key, metaStore);
+  }
+  return memoryMeta.get(key);
+}
+
+async function writeMeta(key: string, value: any): Promise<void> {
+  if (hasIndexedDB()) {
+    await set(key, value, metaStore);
+    return;
+  }
+  memoryMeta.set(key, value);
+}
+
+async function readLegacyNotes(): Promise<Note[] | undefined> {
+  if (hasIndexedDB()) {
+    return await get<Note[]>(LEGACY_NOTES_KEY);
+  }
+  return memoryLegacyNotes;
+}
+
+/**
+ * Migrates the pre-v2 single notes blob into per-note records exactly once.
+ */
+async function migrateLegacyNotesIfNeeded(): Promise<Note[] | null> {
+  try {
+    const migrated = await readMeta<boolean>(MIGRATED_KEY);
+    if (migrated) return null;
+
+    const legacy = await readLegacyNotes();
+    await writeMeta(MIGRATED_KEY, true);
+
+    if (!legacy || legacy.length === 0) return null;
+
+    await writeAllNotes(legacy);
+    try {
+      if (hasIndexedDB()) {
+        await del(LEGACY_NOTES_KEY);
+      } else {
+        memoryLegacyNotes = undefined;
+      }
+    } catch {
+      // Non-fatal: keep the legacy key around if deletion fails.
+    }
+    return legacy;
+  } catch (error) {
+    console.warn('Legacy note migration skipped:', error);
+    return null;
+  }
+}
+
 export async function getAllNotes(): Promise<Note[]> {
   try {
-    let notes: Note[] | undefined;
-    if (hasIndexedDB()) {
-      notes = await get<Note[]>(NOTES_KEY);
-    } else {
-      notes = memoryStorage[NOTES_KEY];
+    let notes = await readAllNotes();
+
+    if (notes.length === 0) {
+      const migrated = await migrateLegacyNotesIfNeeded();
+      if (migrated) notes = migrated;
     }
 
-    if (!notes || notes.length === 0) {
+    if (notes.length === 0) {
       await saveNote(INITIAL_WELCOME_NOTE);
       return [INITIAL_WELCOME_NOTE];
     }
-    return notes.sort((a, b) => {
-      if (a.pinned && !b.pinned) return -1;
-      if (!a.pinned && b.pinned) return 1;
-      return b.updatedAt - a.updatedAt;
-    });
+    return sortNotes(notes);
   } catch (error) {
     console.error('Failed to load notes from storage:', error);
+    // Never silently surface an empty notebook if the legacy blob is readable.
+    try {
+      const legacy = await readLegacyNotes();
+      if (legacy && legacy.length > 0) return sortNotes(legacy);
+    } catch {
+      // ignore
+    }
     return [INITIAL_WELCOME_NOTE];
   }
 }
 
 export async function getNoteById(id: string): Promise<Note | undefined> {
-  const notes = await getAllNotes();
-  return notes.find((n) => n.id === id);
+  try {
+    if (hasIndexedDB()) {
+      return await get<Note>(id, notesStore);
+    }
+    return memoryNotes.get(id);
+  } catch (error) {
+    console.error('Failed to load note from storage:', error);
+    return undefined;
+  }
 }
 
 export async function saveNote(note: Note): Promise<void> {
   try {
-    let notes: Note[] = [];
-    if (hasIndexedDB()) {
-      notes = (await get<Note[]>(NOTES_KEY)) || [];
-    } else {
-      notes = memoryStorage[NOTES_KEY] || [];
-    }
-
-    const index = notes.findIndex((n) => n.id === note.id);
-    const updatedNote = {
+    const stored = compactNote({
       ...note,
       updatedAt: note.updatedAt || Date.now()
-    };
-
-    if (index >= 0) {
-      notes[index] = updatedNote;
-    } else {
-      notes.unshift(updatedNote);
-    }
+    });
 
     if (hasIndexedDB()) {
-      await set(NOTES_KEY, notes);
+      await set(stored.id, stored, notesStore);
     } else {
-      memoryStorage[NOTES_KEY] = notes;
+      memoryNotes.set(stored.id, stored);
     }
   } catch (error) {
     console.error('Failed to save note to storage:', error);
@@ -100,11 +210,7 @@ export async function saveNote(note: Note): Promise<void> {
 
 export async function saveAllNotes(notes: Note[]): Promise<void> {
   try {
-    if (hasIndexedDB()) {
-      await set(NOTES_KEY, notes);
-    } else {
-      memoryStorage[NOTES_KEY] = notes;
-    }
+    await writeAllNotes(notes);
   } catch (error) {
     console.error('Failed to save notes list:', error);
     throw error;
@@ -115,19 +221,10 @@ export async function deleteNote(id: string): Promise<void> {
   try {
     await recordDeletedNoteId(id);
 
-    let notes: Note[] = [];
     if (hasIndexedDB()) {
-      notes = (await get<Note[]>(NOTES_KEY)) || [];
+      await del(id, notesStore);
     } else {
-      notes = memoryStorage[NOTES_KEY] || [];
-    }
-
-    const filtered = notes.filter((n) => n.id !== id);
-
-    if (hasIndexedDB()) {
-      await set(NOTES_KEY, filtered);
-    } else {
-      memoryStorage[NOTES_KEY] = filtered;
+      memoryNotes.delete(id);
     }
   } catch (error) {
     console.error('Failed to delete note from storage:', error);
@@ -137,10 +234,7 @@ export async function deleteNote(id: string): Promise<void> {
 
 export async function getActiveNoteId(): Promise<string | undefined> {
   try {
-    if (hasIndexedDB()) {
-      return await get<string>(ACTIVE_NOTE_ID_KEY);
-    }
-    return memoryStorage[ACTIVE_NOTE_ID_KEY];
+    return await readMeta<string>(ACTIVE_NOTE_ID_KEY);
   } catch {
     return undefined;
   }
@@ -148,12 +242,32 @@ export async function getActiveNoteId(): Promise<string | undefined> {
 
 export async function setActiveNoteId(id: string): Promise<void> {
   try {
-    if (hasIndexedDB()) {
-      await set(ACTIVE_NOTE_ID_KEY, id);
-    } else {
-      memoryStorage[ACTIVE_NOTE_ID_KEY] = id;
-    }
+    await writeMeta(ACTIVE_NOTE_ID_KEY, id);
   } catch (error) {
     console.error('Failed to save active note ID:', error);
   }
+}
+
+/**
+ * Test helper: clears both IndexedDB stores and the in-memory fallback.
+ */
+export async function __resetStorageForTests(): Promise<void> {
+  if (hasIndexedDB()) {
+    await clear(notesStore);
+    await clear(metaStore);
+  }
+  memoryNotes.clear();
+  memoryMeta.clear();
+  memoryLegacyNotes = undefined;
+}
+
+/**
+ * Test helper: seeds a legacy single-blob payload to exercise migration.
+ */
+export async function __seedLegacyNotesForTests(notes: Note[]): Promise<void> {
+  if (hasIndexedDB()) {
+    await setDefault(LEGACY_NOTES_KEY, notes);
+    return;
+  }
+  memoryLegacyNotes = notes;
 }

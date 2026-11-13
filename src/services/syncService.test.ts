@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { 
   generateRandomVaultKey, 
+  isValidVaultKey,
   mergeNotes, 
   mergeSettings, 
-  parseVaultJson 
+  parseVaultJson,
+  pruneTombstones
 } from './syncService';
 import { Note } from '../types/note';
 import { DEFAULT_SETTINGS } from '../types/settings';
@@ -11,7 +13,28 @@ import { DEFAULT_SETTINGS } from '../types/settings';
 describe('Cross-Device Sync Service', () => {
   it('generates formatted random vault keys', () => {
     const key = generateRandomVaultKey();
-    expect(key).toMatch(/^aura-sync-[a-z0-9]{4}-[a-z0-9]{4}$/);
+    expect(key).toMatch(/^aura-sync-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/);
+    expect(isValidVaultKey(key)).toBe(true);
+  });
+
+  it('rejects malformed vault keys', () => {
+    expect(isValidVaultKey('short')).toBe(false);
+    expect(isValidVaultKey('aura sync key')).toBe(false);
+    expect(isValidVaultKey('aura-sync-ok-key')).toBe(true);
+    expect(isValidVaultKey('')).toBe(false);
+  });
+
+  it('prunes expired tombstones but keeps recent deletions', () => {
+    const now = 100 * 24 * 60 * 60 * 1000;
+    const pruned = pruneTombstones(
+      {
+        recent: now - 5 * 24 * 60 * 60 * 1000,
+        old: now - 120 * 24 * 60 * 60 * 1000
+      },
+      now
+    );
+    expect(pruned).toHaveProperty('recent');
+    expect(pruned).not.toHaveProperty('old');
   });
 
   it('merges notes across devices using Last-Write-Wins and preserves independent notes', () => {

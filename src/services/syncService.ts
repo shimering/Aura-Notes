@@ -6,6 +6,11 @@ const SETTINGS_KEY = 'aura_app_settings';
 const DELETED_NOTES_KEY = 'aura_deleted_note_ids';
 const DEVICE_ID_KEY = 'aura_client_device_id';
 
+// Tombstones only need to survive long enough for every device to observe a
+// deletion. Pruning keeps sync payloads and KV values from growing forever.
+const TOMBSTONE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+const MAX_SYNC_PAYLOAD_BYTES = 20 * 1024 * 1024;
+
 // In-memory fallback
 const memoryStorage: Record<string, any> = {};
 
@@ -83,7 +88,7 @@ export async function saveSettings(updates: Partial<AppSettings>): Promise<AppSe
 }
 
 /**
- * Record a deleted note ID for tombstone tracking
+ * Record a deleted note ID for tombstone tracking.
  */
 export async function recordDeletedNoteId(id: string): Promise<void> {
   try {
@@ -94,10 +99,11 @@ export async function recordDeletedNoteId(id: string): Promise<void> {
       deleted = memoryStorage[DELETED_NOTES_KEY] || {};
     }
     deleted[id] = Date.now();
+    const pruned = pruneTombstones(deleted);
     if (hasIndexedDB()) {
-      await set(DELETED_NOTES_KEY, deleted);
+      await set(DELETED_NOTES_KEY, pruned);
     } else {
-      memoryStorage[DELETED_NOTES_KEY] = deleted;
+      memoryStorage[DELETED_NOTES_KEY] = pruned;
     }
   } catch (err) {
     console.warn('Failed to record deleted note id:', err);
@@ -105,28 +111,79 @@ export async function recordDeletedNoteId(id: string): Promise<void> {
 }
 
 /**
- * Retrieves the record of deleted note IDs and their deletion timestamps
+ * Drops tombstones older than the retention window.
+ */
+export function pruneTombstones(
+  tombstones: Record<string, number>,
+  now: number = Date.now()
+): Record<string, number> {
+  const cutoff = now - TOMBSTONE_MAX_AGE_MS;
+  const pruned: Record<string, number> = {};
+  for (const [id, deletedAt] of Object.entries(tombstones)) {
+    if (typeof deletedAt === 'number' && deletedAt >= cutoff) {
+      pruned[id] = deletedAt;
+    }
+  }
+  return pruned;
+}
+
+/**
+ * Retrieves the record of deleted note IDs and their deletion timestamps.
+ * Expired tombstones are pruned and persisted lazily.
  */
 export async function getDeletedNoteTombstones(): Promise<Record<string, number>> {
   try {
+    let deleted: Record<string, number>;
     if (hasIndexedDB()) {
-      return (await get<Record<string, number>>(DELETED_NOTES_KEY)) || {};
+      deleted = (await get<Record<string, number>>(DELETED_NOTES_KEY)) || {};
+    } else {
+      deleted = memoryStorage[DELETED_NOTES_KEY] || {};
     }
-    return memoryStorage[DELETED_NOTES_KEY] || {};
+
+    const pruned = pruneTombstones(deleted);
+    if (Object.keys(pruned).length !== Object.keys(deleted).length) {
+      if (hasIndexedDB()) {
+        await set(DELETED_NOTES_KEY, pruned);
+      } else {
+        memoryStorage[DELETED_NOTES_KEY] = pruned;
+      }
+    }
+    return pruned;
   } catch {
     return {};
   }
 }
 
 /**
+ * Persists the tombstone map (already pruned by the caller).
+ */
+export async function saveDeletedNoteTombstones(tombstones: Record<string, number>): Promise<void> {
+  const pruned = pruneTombstones(tombstones);
+  if (hasIndexedDB()) {
+    await set(DELETED_NOTES_KEY, pruned);
+  } else {
+    memoryStorage[DELETED_NOTES_KEY] = pruned;
+  }
+}
+
+/**
  * Generates an easy-to-type, memorable random Sync Vault Key
- * e.g. "aura-sync-k7p9-2m4w"
+ * e.g. "aura-sync-k7p9-2m4w-9x3r"
  */
 export function generateRandomVaultKey(): string {
   const chars = '23456789abcdefghjkmnpqrstuvwxyz';
-  const seg1 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-  const seg2 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-  return `aura-sync-${seg1}-${seg2}`;
+  const segment = () =>
+    Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return `aura-sync-${segment()}-${segment()}-${segment()}`;
+}
+
+/**
+ * Vault keys are the only shared secret, so constrain them to a sane,
+ * URL-safe shape and a minimum length.
+ */
+export function isValidVaultKey(key: string): boolean {
+  const trimmed = (key || '').trim();
+  return trimmed.length >= 8 && trimmed.length <= 128 && /^[A-Za-z0-9_-]+$/.test(trimmed);
 }
 
 /**
@@ -222,6 +279,9 @@ export async function syncVaultWithCloud(
   if (!vaultKey || !vaultKey.trim()) {
     throw new Error('Please provide a valid Sync Vault Key');
   }
+  if (!isValidVaultKey(vaultKey)) {
+    throw new Error('Sync Vault Key must be 8–128 characters using letters, numbers, dashes, or underscores.');
+  }
 
   const cleanKey = encodeURIComponent(vaultKey.trim());
   const deviceId = await getClientDeviceId();
@@ -229,7 +289,7 @@ export async function syncVaultWithCloud(
   const deletedIds = Object.keys(tombstones);
 
   const payload: SyncVaultPayload = {
-    vaultKey: cleanKey,
+    vaultKey: vaultKey.trim(),
     notes: localNotes,
     settings: {
       theme: localSettings.theme,
@@ -246,12 +306,20 @@ export async function syncVaultWithCloud(
     clientDeviceId: deviceId
   };
 
+  const serializedPayload = JSON.stringify(payload);
+  if (serializedPayload.length > MAX_SYNC_PAYLOAD_BYTES) {
+    throw new Error(
+      `This vault is too large to sync (${Math.round(serializedPayload.length / 1024 / 1024)} MB). ` +
+      'Try exporting a backup and removing very large ink drawings.'
+    );
+  }
+
   const response = await fetch(`/api/sync/vault/${cleanKey}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(payload)
+    body: serializedPayload
   });
 
   if (!response.ok) {
@@ -262,9 +330,24 @@ export async function syncVaultWithCloud(
   const result = await response.json();
   const remoteNotes: Note[] = Array.isArray(result.notes) ? result.notes : [];
   const remoteSettings: Partial<AppSettings> = result.settings || {};
+  const remoteDeletedIds: string[] = Array.isArray(result.deletedNoteIds)
+    ? result.deletedNoteIds
+    : [];
+
+  // Deletions made on other devices must remove local copies too. The server
+  // does not store per-tombstone timestamps, so treat them as "now".
+  const combinedTombstones: Record<string, number> = { ...tombstones };
+  for (const id of remoteDeletedIds) {
+    if (!combinedTombstones[id]) {
+      combinedTombstones[id] = Date.now();
+    }
+  }
+  if (remoteDeletedIds.length > 0) {
+    await saveDeletedNoteTombstones(combinedTombstones);
+  }
 
   // Merge notes and settings
-  const mergedNotes = mergeNotes(localNotes, remoteNotes, tombstones);
+  const mergedNotes = mergeNotes(localNotes, remoteNotes, combinedTombstones);
   const mergedSettings = mergeSettings(localSettings, remoteSettings);
 
   const syncedAt = Date.now();

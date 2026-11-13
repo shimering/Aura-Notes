@@ -11,6 +11,17 @@ interface Env {
 // In-memory fallback if KV is not configured on Cloudflare
 const memoryVaultStore = new Map<string, string>();
 
+const MAX_SYNC_PAYLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_TOMBSTONES = 5000;
+const VAULT_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+
+function jsonResponse(body: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...extraHeaders, 'Content-Type': 'application/json' }
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -30,10 +41,19 @@ export default {
     if (url.pathname.startsWith('/api/sync/vault/')) {
       const vaultKey = decodeURIComponent(url.pathname.replace('/api/sync/vault/', '')).trim();
       if (!vaultKey) {
-        return new Response(JSON.stringify({ error: 'Vault key is required' }), {
-          status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+        return jsonResponse({ error: 'Vault key is required' }, 400, corsHeaders);
+      }
+      if (!VAULT_KEY_PATTERN.test(vaultKey)) {
+        return jsonResponse(
+          { error: 'Vault key must be 8–128 characters using letters, numbers, dashes, or underscores' },
+          400,
+          corsHeaders
+        );
+      }
+
+      const declaredLength = Number(request.headers.get('content-length') || 0);
+      if (declaredLength > MAX_SYNC_PAYLOAD_BYTES) {
+        return jsonResponse({ error: 'Sync payload too large' }, 413, corsHeaders);
       }
 
       const storageKey = `vault:${vaultKey}`;
@@ -47,9 +67,7 @@ export default {
         }
 
         if (!storedData) {
-          return new Response(JSON.stringify({ notes: [], settings: {}, updatedAt: 0 }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          });
+          return jsonResponse({ notes: [], settings: {}, updatedAt: 0 }, 200, corsHeaders);
         }
 
         return new Response(storedData, {
@@ -85,8 +103,10 @@ export default {
             } catch {}
           }
 
-          // Merge deleted IDs
-          const allDeleted = Array.from(new Set([...(existingVault.deletedNoteIds || []), ...incomingDeleted]));
+          // Merge deleted IDs (bounded so the tombstone list cannot grow forever)
+          const allDeleted = Array.from(
+            new Set([...(existingVault.deletedNoteIds || []), ...incomingDeleted])
+          ).slice(-MAX_TOMBSTONES);
           const deletedSet = new Set(allDeleted);
 
           // Merge notes by ID with Last-Write-Wins (LWW)
@@ -107,9 +127,14 @@ export default {
               if (inTime > exTime) {
                 noteMap.set(inNote.id, inNote);
               } else if (inTime === exTime) {
+                // Equal clocks: prefer the version that clearly carries more work,
+                // otherwise keep the server copy to avoid flip-flopping.
                 const inStrokes = inNote.inkStrokes?.length || 0;
                 const exStrokes = existing.inkStrokes?.length || 0;
-                if (inStrokes >= exStrokes) {
+                if (inStrokes > exStrokes) {
+                  noteMap.set(inNote.id, inNote);
+                } else if (inStrokes === exStrokes &&
+                  (inNote.content?.length || 0) > (existing.content?.length || 0)) {
                   noteMap.set(inNote.id, inNote);
                 }
               }
@@ -132,6 +157,14 @@ export default {
           };
 
           const mergedVaultStr = JSON.stringify(mergedVault);
+          if (mergedVaultStr.length > MAX_SYNC_PAYLOAD_BYTES) {
+            return jsonResponse(
+              { error: 'Vault exceeds the maximum sync size. Remove large ink drawings or export a local backup.' },
+              413,
+              corsHeaders
+            );
+          }
+
           if (env.AURA_SYNC_KV) {
             await env.AURA_SYNC_KV.put(storageKey, mergedVaultStr);
           } else {
@@ -142,10 +175,7 @@ export default {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }
           });
         } catch (err: any) {
-          return new Response(JSON.stringify({ error: err.message || 'Sync failed' }), {
-            status: 500,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          });
+          return jsonResponse({ error: err.message || 'Sync failed' }, 500, corsHeaders);
         }
       }
 

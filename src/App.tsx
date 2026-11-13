@@ -118,6 +118,14 @@ export default function App() {
       notesRef.current = mergedResult;
       await saveAllNotes(mergedResult);
 
+      // If the active note was deleted on another device, fall back gracefully.
+      if (!mergedResult.some((n) => n.id === activeNoteIdRef.current)) {
+        const nextId = mergedResult.length > 0 ? mergedResult[0].id : null;
+        setActiveNoteIdState(nextId);
+        activeNoteIdRef.current = nextId;
+        if (nextId) await setActiveNoteId(nextId);
+      }
+
       setSettings(res.settings);
       settingsRef.current = res.settings;
 
