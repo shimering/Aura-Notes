@@ -51,42 +51,75 @@ npm test
 npm run build
 ```
 
+`npm run dev` serves the app on `http://localhost:5173` and includes a dev middleware that emulates the Worker's `/api/sync/vault/:key` endpoint, so cross-device sync can be exercised locally without a Cloudflare account.
+
 ---
 
-## 🌐 Deploy to GitHub & Cloudflare Pages
+## 🌐 Deploy to Cloudflare Workers
 
-### Step 1: Create a New GitHub Repository
-1. Go to [github.com/new](https://github.com/new).
-2. Name your repository (e.g. `aura-notes-pwa`).
-3. Leave "Initialize this repository with a README" unchecked (we already have everything).
-4. Run the following commands in your project terminal:
-   ```bash
-   git remote add origin https://github.com/<YOUR_USERNAME>/aura-notes-pwa.git
-   git branch -M main
-   git push -u origin main
-   ```
+Production is a **Cloudflare Worker** (`src/worker.ts`), not a static Pages project. The Worker serves the Vite build as static assets **and** handles the sync API, with vault data stored in a Workers KV namespace.
 
-### Step 2: Automated Deployment on Cloudflare Pages
+| Piece | Where it lives |
+| --- | --- |
+| Worker entry | `src/worker.ts` |
+| Worker config | `wrangler.jsonc` (mirrored by `wrangler.toml`) |
+| Static assets | `dist/` (built by `npm run build`), served through the `ASSETS` binding with SPA fallback |
+| Sync storage | Workers KV binding `AURA_SYNC_KV` |
 
-You can choose either of two simple methods:
+### Step 1: Sign in with Wrangler
 
-#### Method A: Direct Cloudflare Pages Git Integration (Recommended - 1 Click!)
-1. Log in to the [Cloudflare Dashboard](https://dash.cloudflare.com/).
-2. In the left navigation, go to **Workers & Pages** > **Create application** > **Pages** > **Connect to Git**.
-3. Select your newly created `aura-notes-pwa` GitHub repository.
-4. Set the build configuration:
-   - **Framework preset:** `Vite`
-   - **Build command:** `npm run build`
-   - **Build output directory:** `dist`
-5. Click **Save and Deploy**. Cloudflare Pages will automatically build and deploy your PWA to a fast global edge network on every git push!
+```bash
+npx wrangler login
+```
 
-#### Method B: GitHub Actions Workflow
-The repository includes a ready-to-use GitHub Actions workflow in `.github/workflows/deploy-cloudflare.yml`. To use it:
-1. Go to your GitHub repository **Settings** > **Secrets and variables** > **Actions**.
-2. Add the following repository secrets:
-   - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API token (with Pages edit permissions).
-   - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare account ID (found on your Cloudflare dashboard URL).
-3. Every commit pushed to `main` will automatically build, test, and deploy to Cloudflare Pages.
+### Step 2: Create the sync KV namespace (first deployment only)
+
+```bash
+npx wrangler kv namespace create AURA_SYNC_KV
+```
+
+Copy the returned namespace `id` into `kv_namespaces` in `wrangler.jsonc` (and the identical entry in `wrangler.toml`). Both config files are kept in sync — update both if you change either.
+
+If no `AURA_SYNC_KV` binding is present, the Worker still runs but falls back to an in-memory store: sync appears to work and then silently loses data whenever the isolate is recycled. Always bind KV in production.
+
+### Step 3: Build and deploy
+
+```bash
+npm run build
+npx wrangler deploy
+```
+
+Wrangler prints the deployed URL and a Version ID, for example:
+
+```
+https://aura-notes-pwa.gazarxperia.workers.dev
+```
+
+The app is live at that URL immediately; installed PWAs pick up the new service worker on their next launch (`vite-plugin-pwa` is configured with `registerType: 'autoUpdate'`).
+
+### Cross-Device Sync
+
+Sync is anonymous and key-based, with no accounts or sign-in:
+
+1. Open the app, choose **Enable Cross-Device Sync**, and copy the generated vault key (8–128 characters of letters, numbers, dashes, or underscores).
+2. Open `https://aura-notes-pwa.gazarxperia.workers.dev/?sync=YOUR_VAULT_KEY` on the second device — the key is adopted automatically and the query param is stripped from the URL.
+3. Both devices now merge notes into the same vault, last-write-wins per note, with deletions tracked as tombstones.
+
+Because the vault key is the only credential, treat it like a password: anyone holding it can read and write that vault.
+
+### Push the Source to GitHub (optional, does not deploy)
+
+The GitHub repository is just source hosting; deployment happens through `wrangler deploy`.
+
+```bash
+git remote add origin https://github.com/<YOUR_USERNAME>/Aura-Notes.git
+git branch -M main
+git push -u origin main
+```
+
+There is currently **no CI deployment workflow**: `.github/workflows/` is empty. The file at `docs/deploy-cloudflare.yml` is a legacy Cloudflare **Pages** sample (`pages deploy dist`) and does not match this Worker setup — do not copy it into `.github/workflows/` as-is.
+
+To automate deployment later, add a workflow that runs `npm ci`, `npm test`, `npm run build`, then invokes `cloudflare/wrangler-action` with `command: deploy` and the `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` repository secrets.
 
 ---
 
@@ -100,5 +133,5 @@ The repository includes a ready-to-use GitHub Actions workflow in `.github/workf
 
 ### On Samsung Galaxy Tab (S Pen):
 1. Open the deployed Cloudflare URL in **Google Chrome** or **Samsung Internet**.
-2. Tap the **Install** icon in the address bar, or tap the **Menu (⋮)** and select **Install App** / **Add to Home screen**.
+2. Tap the **Install** icon in the address bar, or tap the **Menu (⋮)** and select **Install App** / **Add to home screen**.
 3. Enjoy full 120Hz latency-free S Pen writing!
