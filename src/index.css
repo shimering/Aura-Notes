@@ -41,6 +41,56 @@ canvas.ink-canvas {
   font-style: italic;
 }
 
+/* Restore list semantics: Tailwind's preflight removes markers and indentation */
+.editable-note-content ul,
+.editable-note-content ol {
+  list-style-position: outside;
+  margin: 0.5rem 0;
+  padding-left: 1.75rem;
+}
+
+.editable-note-content ul {
+  list-style-type: disc;
+}
+
+.editable-note-content ul ul {
+  list-style-type: circle;
+}
+
+.editable-note-content ul ul ul {
+  list-style-type: square;
+}
+
+.editable-note-content ol {
+  list-style-type: decimal;
+}
+
+.editable-note-content ol ol {
+  list-style-type: lower-alpha;
+}
+
+.editable-note-content ol ol ol {
+  list-style-type: lower-roman;
+}
+
+.editable-note-content li {
+  display: list-item;
+  margin: 0.15rem 0;
+  padding-left: 0.15rem;
+}
+
+.editable-note-content li > p {
+  margin: 0;
+}
+
+.editable-note-content li::marker {
+  color: #787774;
+}
+
+.dark .editable-note-content li::marker {
+  color: #9a9a9f;
+}
+
 /* Glassmorphism utility */
 .glass-panel {
   background: rgba(255, 255, 255, 0.75);

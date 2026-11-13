@@ -21,6 +21,52 @@ function htmlToText(html: string): string {
   return div.textContent || '';
 }
 
+/**
+ * Chrome materialises the editor's inherited theme colours as inline styles
+ * while reshaping blocks for a list command. Those baked colours survive a
+ * light/dark switch and leave unreadable text, so drop them, and discard the
+ * wrappers they leave behind. Child text nodes are kept, so the caret survives.
+ */
+function cleanListMarkup(root: HTMLElement) {
+  root.querySelectorAll('[style]').forEach((el) => {
+    const declarations = (el.getAttribute('style') || '')
+      .split(';')
+      .map((declaration) => declaration.trim())
+      .filter(
+        (declaration) =>
+          declaration &&
+          !declaration.includes('var(--tw-') &&
+          !/^font-size\s*:/i.test(declaration)
+      );
+
+    if (declarations.length > 0) {
+      el.setAttribute('style', declarations.join('; '));
+    } else {
+      el.removeAttribute('style');
+    }
+
+    if (el.tagName === 'SPAN' && el.attributes.length === 0) {
+      el.replaceWith(...Array.from(el.childNodes));
+    }
+  });
+
+  // execCommand nests a converted paragraph: <p><ul>…</ul></p> is invalid markup
+  root.querySelectorAll('p > ul, p > ol').forEach((list) => {
+    const parent = list.parentElement;
+    if (parent && parent.children.length === 1) {
+      parent.replaceWith(list);
+    }
+  });
+
+  // An indented level is inserted as a sibling of the item: ul > ul is invalid
+  root.querySelectorAll('ul > ul, ul > ol, ol > ul, ol > ol').forEach((list) => {
+    const previous = list.previousElementSibling;
+    if (previous && previous.tagName === 'LI') {
+      previous.appendChild(list);
+    }
+  });
+}
+
 export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent }) => {
   const editorRef = useRef<HTMLDivElement>(null);
   const isInternalUpdateRef = useRef(false);
@@ -52,6 +98,9 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent })
     if (editorRef.current) {
       editorRef.current.focus();
       document.execCommand(command, false, value);
+      if (command === 'insertUnorderedList' || command === 'insertOrderedList') {
+        cleanListMarkup(editorRef.current);
+      }
       handleInput();
     }
   };
@@ -60,6 +109,25 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent })
     e.preventDefault();
     const text = e.clipboardData.getData('text/plain');
     document.execCommand('insertText', false, text);
+    handleInput();
+  };
+
+  // Tab indents a list item instead of moving focus out of the note.
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+
+    const anchor = window.getSelection()?.anchorNode;
+    const editor = editorRef.current;
+    if (!anchor || !editor || !editor.contains(anchor)) return;
+
+    const element = anchor.nodeType === Node.ELEMENT_NODE ? (anchor as Element) : anchor.parentElement;
+    const listItem = element?.closest('li');
+    if (!listItem || !editor.contains(listItem)) return;
+
+    e.preventDefault();
+    editor.focus();
+    document.execCommand(e.shiftKey ? 'outdent' : 'indent', false, undefined);
+    cleanListMarkup(editor);
     handleInput();
   };
 
@@ -90,6 +158,7 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent })
             suppressContentEditableWarning
             onInput={handleInput}
             onPaste={handlePaste}
+            onKeyDown={handleKeyDown}
             data-placeholder="Start typing your thoughts here, or use the stylus canvas to write by hand..."
             className="editable-note-content min-h-[400px] text-base md:text-lg text-ink-light dark:text-ink-dark leading-relaxed outline-none focus:outline-none font-sans"
             style={{

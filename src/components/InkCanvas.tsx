@@ -69,17 +69,6 @@ function playToggleAudioFeedback(isEraser: boolean) {
   } catch {}
 }
 
-function getToolLabel(tool: PenTool): string {
-  switch (tool) {
-    case 'fountain': return 'Fountain Pen';
-    case 'pen': return 'Ballpoint Pen';
-    case 'highlighter': return 'Highlighter';
-    case 'eraser': return 'Eraser';
-    case 'lasso': return 'Lasso';
-    default: return 'Pen';
-  }
-}
-
 export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   noteId,
   strokes,
@@ -143,8 +132,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setIsStylusOnly(defaultStylusOnly);
   }, [defaultStylusOnly]);
 
-  // S Pen Feedback overlay
-  const [hoverFeedback, setHoverFeedback] = useState<{ label: string; tool: PenTool; x: number; y: number } | null>(null);
   const [isQuickMenuOpen, setIsQuickMenuOpen] = useState<boolean>(false);
   const [quickMenuPos, setQuickMenuPos] = useState<{ x: number; y: number } | null>(null);
 
@@ -164,8 +151,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     lastTrigger: 'None'
   });
 
-  const hoverFeedbackTimerRef = useRef<any>(null);
-  const lastStylusHoverPosRef = useRef<{ x: number; y: number }>({ x: 300, y: 300 });
   const lastStylusActiveTimeRef = useRef<number>(0);
 
   // History for Undo/Redo (snapshots of committed stroke arrays, persisted to the note)
@@ -377,7 +362,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   /**
    * Activates Eraser mode while S Pen button is pressed.
    */
-  const activateSpenEraser = useCallback((clientX?: number, clientY?: number, source: string = 'press') => {
+  const activateSpenEraser = useCallback((source: string = 'press') => {
     if (isSpenEraserArmedRef.current) return;
     isSpenEraserArmedRef.current = true;
     setIsSpenEraserArmed(true);
@@ -389,33 +374,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       }
     } catch {}
 
-    const container = containerRef.current;
-    const rect = container ? container.getBoundingClientRect() : { left: 0, top: 0, width: 600, height: 600 };
-    const localX = typeof clientX === 'number' ? clientX - rect.left : rect.width / 2;
-    const localY = typeof clientY === 'number' ? clientY - rect.top : 80;
-
-    setHoverFeedback({
-      label: 'Eraser (Active while button pressed)',
-      tool: 'eraser',
-      x: Math.max(100, Math.min(rect.width - 100, localX)),
-      y: Math.max(70, Math.min(rect.height - 70, localY - 35))
-    });
-
     setStylusTelemetry((prev) => ({
       ...prev,
       lastTrigger: `${source}: ERASER ACTIVATED (${new Date().toLocaleTimeString()})`
     }));
-
-    if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
-    hoverFeedbackTimerRef.current = setTimeout(() => {
-      setHoverFeedback(null);
-    }, 2500);
   }, []);
 
   /**
    * Deactivates Eraser mode immediately when S Pen button is released.
    */
-  const deactivateSpenEraser = useCallback((clientX?: number, clientY?: number, source: string = 'release') => {
+  const deactivateSpenEraser = useCallback((source: string = 'release') => {
     if (!isSpenEraserArmedRef.current) return;
     isSpenEraserArmedRef.current = false;
     setIsSpenEraserArmed(false);
@@ -430,27 +398,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     playToggleAudioFeedback(false);
 
-    const container = containerRef.current;
-    const rect = container ? container.getBoundingClientRect() : { left: 0, top: 0, width: 600, height: 600 };
-    const localX = typeof clientX === 'number' ? clientX - rect.left : rect.width / 2;
-    const localY = typeof clientY === 'number' ? clientY - rect.top : 80;
-
-    setHoverFeedback({
-      label: `Deactivated • Back to ${getToolLabel(targetTool)}`,
-      tool: targetTool,
-      x: Math.max(100, Math.min(rect.width - 100, localX)),
-      y: Math.max(70, Math.min(rect.height - 70, localY - 35))
-    });
-
     setStylusTelemetry((prev) => ({
       ...prev,
       lastTrigger: `${source}: REVERTED TO PEN (${new Date().toLocaleTimeString()})`
     }));
-
-    if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
-    hoverFeedbackTimerRef.current = setTimeout(() => {
-      setHoverFeedback(null);
-    }, 1200);
   }, []);
 
   // Global window listeners for capturing S Pen hardware button interrupts across all browser layers
@@ -458,7 +409,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const handleGlobalPointerMove = (e: PointerEvent) => {
       if (e.pointerType === 'pen') {
         lastStylusActiveTimeRef.current = Date.now();
-        lastStylusHoverPosRef.current = { x: e.clientX, y: e.clientY };
 
         const isHovering = e.pressure <= 0.05;
         const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
@@ -474,9 +424,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         // While hovering: Active while button pressed, DEACTIVATE IMMEDIATELY UPON RELEASE!
         if (isHovering) {
           if (isButtonPressed && !isSpenEraserArmedRef.current) {
-            activateSpenEraser(e.clientX, e.clientY, `hover-press (buttons=${e.buttons})`);
+            activateSpenEraser(`hover-press (buttons=${e.buttons})`);
           } else if (!isButtonPressed && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-            deactivateSpenEraser(e.clientX, e.clientY, 'hover-release');
+            deactivateSpenEraser('hover-release');
           }
         }
       }
@@ -487,7 +437,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (e.pointerType === 'pen') {
         const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
         if (!isButtonPressed && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-          deactivateSpenEraser(e.clientX, e.clientY, 'global-pointerup-release');
+          deactivateSpenEraser('global-pointerup-release');
         }
       }
     };
@@ -497,7 +447,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         const isHovering = e.pressure <= 0.05;
         const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
         if (isHovering && isButtonPressed && !isSpenEraserArmedRef.current) {
-          activateSpenEraser(e.clientX, e.clientY, `global-pointerdown-press (buttons=${e.buttons})`);
+          activateSpenEraser(`global-pointerdown-press (buttons=${e.buttons})`);
         }
       }
     };
@@ -505,7 +455,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const handleGlobalMouseUp = (e: MouseEvent) => {
       const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
       if (isRecentPen && e.buttons === 0 && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-        deactivateSpenEraser(e.clientX, e.clientY, 'global-mouseup-release');
+        deactivateSpenEraser('global-mouseup-release');
       }
     };
 
@@ -518,9 +468,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         e.preventDefault();
         e.stopPropagation();
         if (e.buttons > 0) {
-          activateSpenEraser(e.clientX, e.clientY, 'contextmenu-hold');
+          activateSpenEraser('contextmenu-hold');
         } else if (isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-          deactivateSpenEraser(e.clientX, e.clientY, 'contextmenu-release');
+          deactivateSpenEraser('contextmenu-release');
         }
       }
     };
@@ -534,9 +484,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         e.preventDefault();
         e.stopPropagation();
         if (e.buttons > 0) {
-          activateSpenEraser(e.clientX, e.clientY, 'auxclick-hold');
+          activateSpenEraser('auxclick-hold');
         } else if (isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-          deactivateSpenEraser(e.clientX, e.clientY, 'auxclick-release');
+          deactivateSpenEraser('auxclick-release');
         }
       }
     };
@@ -546,11 +496,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isSpenHardwareKeyEvent(e)) {
         e.preventDefault();
         e.stopPropagation();
-        activateSpenEraser(
-          lastStylusHoverPosRef.current.x, 
-          lastStylusHoverPosRef.current.y, 
-          `key-down-${e.keyCode || e.code}`
-        );
+        activateSpenEraser(`key-down-${e.keyCode || e.code}`);
       }
     };
 
@@ -558,11 +504,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isSpenHardwareKeyEvent(e)) {
         e.preventDefault();
         e.stopPropagation();
-        deactivateSpenEraser(
-          lastStylusHoverPosRef.current.x, 
-          lastStylusHoverPosRef.current.y, 
-          `key-up-${e.keyCode || e.code}`
-        );
+        deactivateSpenEraser(`key-up-${e.keyCode || e.code}`);
       }
     };
 
@@ -593,7 +535,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if ('onpointerrawupdate' in window) {
         window.removeEventListener('pointerrawupdate' as any, handleGlobalPointerMove as any, { capture: true });
       }
-      if (hoverFeedbackTimerRef.current) clearTimeout(hoverFeedbackTimerRef.current);
     };
   }, [activateSpenEraser, deactivateSpenEraser]);
 
@@ -619,7 +560,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     // Check if S Pen button is pressed upon touch-down
     if (e.pointerType === 'pen' && isSpenButtonPressed(e.buttons, e.button, e.pressure)) {
       if (!isSpenEraserArmedRef.current) {
-        activateSpenEraser(e.clientX, e.clientY, 'touch-down-button');
+        activateSpenEraser('touch-down-button');
       }
     }
 
@@ -735,7 +676,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (isSpenEraserArmedRef.current) {
       const isStillPressedInAir = isSpenButtonPressed(e.buttons, e.button, 0);
       if (!isStillPressedInAir) {
-        deactivateSpenEraser(e.clientX, e.clientY, 'lift-release');
+        deactivateSpenEraser('lift-release');
       }
     }
 
@@ -770,13 +711,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    activateSpenEraser(e.clientX, e.clientY, 'canvas-contextmenu');
+    activateSpenEraser('canvas-contextmenu');
   };
 
   const handleAuxClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    activateSpenEraser(e.clientX, e.clientY, 'canvas-auxclick');
+    activateSpenEraser('canvas-auxclick');
   };
 
   // History controls
@@ -847,23 +788,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           onAuxClick={handleAuxClick}
           className="ink-canvas absolute inset-0 block w-full h-full"
         />
-
-        {/* Dynamic S Pen Hover Notification Badge */}
-        {hoverFeedback && (
-          <div 
-            className="absolute z-30 pointer-events-none transform -translate-x-1/2 -translate-y-full transition-all duration-150 animate-in fade-in zoom-in-95"
-            style={{ left: `${hoverFeedback.x}px`, top: `${hoverFeedback.y}px` }}
-          >
-            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-surface-dark/95 text-white dark:bg-surface-light/95 dark:text-ink-light shadow-floating text-xs font-semibold backdrop-blur-md border border-white/20">
-              {hoverFeedback.tool === 'eraser' ? (
-                <Eraser className="w-4 h-4 text-rose-400" />
-              ) : (
-                <Feather className="w-4 h-4 text-violet-400" />
-              )}
-              <span>S Pen: {hoverFeedback.label}</span>
-            </div>
-          </div>
-        )}
 
         {strokes.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-ink-muted-light/60 dark:text-ink-muted-dark/60 text-sm">
