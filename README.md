@@ -85,9 +85,10 @@ If no `AURA_SYNC_KV` binding is present, the Worker still runs but falls back to
 ### Step 3: Build and deploy
 
 ```bash
-npm run build
-npx wrangler deploy
+npm run deploy
 ```
+
+`npm run deploy` runs the typecheck and Vite build, then deploys the Worker with `wrangler` (pinned to v4, matching CI), so the published assets and the Worker code are always in sync.
 
 Wrangler prints the deployed URL and a Version ID, for example:
 
