@@ -67,10 +67,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     new Set(notes.flatMap((n) => n.tags || []))
   );
 
+  const query = searchQuery.trim().toLowerCase();
   const filteredNotes = notes.filter((note) => {
     const matchesSearch =
-      note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      note.content.toLowerCase().includes(searchQuery.toLowerCase());
+      !query ||
+      note.title.toLowerCase().includes(query) ||
+      note.content.toLowerCase().includes(query) ||
+      (note.recognizedText || '').toLowerCase().includes(query);
     const matchesTag = selectedTag ? note.tags?.includes(selectedTag) : true;
     return matchesSearch && matchesTag;
   });

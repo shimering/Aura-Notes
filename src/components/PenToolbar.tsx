@@ -11,9 +11,15 @@ import {
   Wand2,
   ShieldCheck,
   ShieldAlert,
-  Sparkles
+  Sparkles,
+  LayoutTemplate,
+  AlignJustify,
+  Grid3x3,
+  Circle,
+  Square
 } from 'lucide-react';
-import { PenTool } from '../types/note';
+import { PenTool, InkBackground } from '../types/note';
+import { INK_BACKGROUNDS } from '../utils/inkBackground';
 
 export const INK_PALETTE = [
   { name: 'Pure White (Dark Mode)', hex: '#ffffff' },
@@ -57,7 +63,16 @@ interface PenToolbarProps {
   onToggleStylusOnly: () => void;
   onOpenSPenMenu?: () => void;
   lastWritingTool?: PenTool;
+  background?: InkBackground;
+  onChangeBackground?: (background: InkBackground) => void;
 }
+
+const BACKGROUND_ICONS: Record<InkBackground, React.ReactNode> = {
+  none: <Square className="w-3.5 h-3.5" />,
+  ruled: <AlignJustify className="w-3.5 h-3.5" />,
+  grid: <Grid3x3 className="w-3.5 h-3.5" />,
+  dotted: <Circle className="w-3.5 h-3.5" />
+};
 
 export const PenToolbar: React.FC<PenToolbarProps> = ({
   activeTool,
@@ -78,9 +93,12 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   isStylusOnly,
   onToggleStylusOnly,
   onOpenSPenMenu,
-  lastWritingTool
+  lastWritingTool,
+  background = 'none',
+  onChangeBackground
 }) => {
   const [isEraserMenuOpen, setIsEraserMenuOpen] = useState<boolean>(false);
+  const [isBackgroundMenuOpen, setIsBackgroundMenuOpen] = useState<boolean>(false);
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
 
   return (
@@ -311,6 +329,58 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           ))
         )}
       </div>
+
+      {/* Page Background Picker */}
+      {onChangeBackground && (
+        <div className="relative flex items-center pr-1 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
+          <button
+            type="button"
+            onClick={() => setIsBackgroundMenuOpen(!isBackgroundMenuOpen)}
+            title="Page background style"
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-medium transition active:scale-95 ${
+              background !== 'none'
+                ? 'bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-300 font-semibold'
+                : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light dark:text-ink-muted-dark'
+            }`}
+          >
+            <LayoutTemplate className="w-4 h-4" />
+            <span className="hidden sm:inline">Page</span>
+            <ChevronDown className="w-3 h-3 opacity-60" />
+          </button>
+
+          {isBackgroundMenuOpen && (
+            <div className="absolute top-full mt-2 right-0 z-50 p-2.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark flex flex-col gap-1.5 min-w-[190px] animate-in fade-in slide-in-from-top-1">
+              <div className="px-1 text-[11px] font-bold text-ink-light dark:text-ink-dark flex items-center gap-1.5">
+                <LayoutTemplate className="w-3.5 h-3.5 text-violet-500" />
+                Page Background
+              </div>
+              <div className="grid grid-cols-2 gap-1 pt-1">
+                {INK_BACKGROUNDS.map((item) => {
+                  const isSelected = background === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        onChangeBackground(item.id);
+                        setIsBackgroundMenuOpen(false);
+                      }}
+                      className={`px-2 py-2 rounded-xl flex items-center gap-2 text-xs transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-violet-600 text-white shadow-md font-semibold'
+                          : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+                      }`}
+                    >
+                      {BACKGROUND_ICONS[item.id]}
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Stylus-Only Palm Shield Toggle */}
       <button

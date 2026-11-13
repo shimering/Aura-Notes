@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Note, Stroke } from './types/note';
+import { Note, Stroke, InkBackground } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
@@ -389,6 +389,20 @@ export default function App() {
     scheduleSave(updated);
   };
 
+  // Update Ink Page Background
+  const handleUpdateBackground = (background: InkBackground) => {
+    if (!activeNote) return;
+    const now = Date.now();
+    lastLocalEditTimeRef.current = now;
+    const updated: Note = { ...activeNote, inkBackground: background, updatedAt: now };
+    setNotes((prev) => {
+      const next = prev.map((n) => (n.id === updated.id ? updated : n));
+      notesRef.current = next;
+      return next;
+    });
+    scheduleSave(updated);
+  };
+
   // Update View Mode with settings persistence
   const handleChangeViewMode = async (mode: ViewMode) => {
     setViewMode(mode);
@@ -451,10 +465,19 @@ export default function App() {
     const updatedStrokes = clearStrokes ? [] : activeNote.inkStrokes;
     const now = Date.now();
     lastLocalEditTimeRef.current = now;
+
+    // Archive the transcription on the note so handwriting stays searchable
+    // after the ink strokes have been cleared from the canvas.
+    const previousRecognized = activeNote.recognizedText?.trim();
+    const recognizedArchive = previousRecognized
+      ? `${previousRecognized}\n${recognizedText}`
+      : recognizedText;
+
     const updatedNote = {
       ...activeNote,
       content: updatedContent,
       inkStrokes: updatedStrokes,
+      recognizedText: recognizedArchive,
       updatedAt: now
     };
 
@@ -654,6 +677,8 @@ export default function App() {
                   defaultColor={settings.defaultPenColor}
                   defaultWidth={settings.defaultPenWidth}
                   defaultStylusOnly={settings.stylusOnly}
+                  background={activeNote.inkBackground}
+                  onChangeBackground={handleUpdateBackground}
                 />
               </div>
             )}

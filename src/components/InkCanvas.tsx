@@ -1,7 +1,8 @@
 import React, { useRef, useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
-import { Stroke, StrokePoint, PenTool } from '../types/note';
+import { Stroke, StrokePoint, PenTool, InkBackground } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
+import { drawInkBackground } from '../utils/inkBackground';
 import { 
   isSpenBarrelOrEraser, 
   isSpenButtonPressed, 
@@ -25,6 +26,8 @@ interface InkCanvasProps {
   strokes: Stroke[];
   onChangeStrokes: (strokes: Stroke[]) => void;
   onScribbleToText: () => void;
+  background?: InkBackground;
+  onChangeBackground?: (background: InkBackground) => void;
   defaultTool?: PenTool;
   defaultColor?: string;
   defaultWidth?: number;
@@ -82,12 +85,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   strokes,
   onChangeStrokes,
   onScribbleToText,
+  background = 'none',
+  onChangeBackground,
   defaultTool = 'fountain',
   defaultColor,
   defaultWidth = 4,
   defaultStylusOnly = false
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const backgroundCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Detect dark mode for initial ink color
@@ -239,6 +245,22 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   }, []);
 
+  // Page ruling lives on its own layer behind the ink so eraser strokes never
+  // punch holes through the background pattern.
+  const drawBackground = useCallback(() => {
+    const canvas = backgroundCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawInkBackground(ctx, canvas.width, canvas.height, dpr, background);
+  }, [background]);
+
+  useEffect(() => {
+    drawBackground();
+  }, [drawBackground]);
+
   /**
    * Atomically commits a stroke change: records an undo snapshot, updates the
    * local authoritative list, pushes it to the note, and repaints.
@@ -295,8 +317,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
 
+    const bgCanvas = backgroundCanvasRef.current;
+    if (bgCanvas) {
+      bgCanvas.width = canvas.width;
+      bgCanvas.height = canvas.height;
+      bgCanvas.style.width = `${rect.width}px`;
+      bgCanvas.style.height = `${rect.height}px`;
+    }
+
+    drawBackground();
     redraw();
-  }, [redraw]);
+  }, [drawBackground, redraw]);
 
   // Attach ResizeObserver to container
   useEffect(() => {
@@ -689,6 +720,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       } catch {}
     }
 
+    // Capture the drag state BEFORE deactivating the S Pen eraser: deactivation
+    // clears isEraserDrawingRef, and if that happened first the eraser drag was
+    // never committed. The un-erased strokes then came back on the next stroke.
+    const wasErasing = isEraserDrawingRef.current;
+    isEraserDrawingRef.current = false;
+
     if (e.pointerType === 'pen') {
       isStylusActiveRef.current = false;
     }
@@ -703,8 +740,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
 
     // Commit the eraser drag as a single undoable step
-    if (isEraserDrawingRef.current) {
-      isEraserDrawingRef.current = false;
+    if (wasErasing) {
       const preview = previewStrokesRef.current;
       if (preview && preview !== strokesRef.current) {
         commitStrokes(preview);
@@ -783,6 +819,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           onToggleStylusOnly={() => setIsStylusOnly(!isStylusOnly)}
           onOpenSPenMenu={() => setIsQuickMenuOpen(true)}
           lastWritingTool={lastWritingToolRef.current}
+          background={background}
+          onChangeBackground={onChangeBackground}
         />
       </div>
 
@@ -793,6 +831,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         onAuxClick={handleAuxClick}
         className="flex-1 w-full h-full relative cursor-crosshair overflow-hidden touch-none"
       >
+        <canvas
+          ref={backgroundCanvasRef}
+          aria-hidden="true"
+          className="absolute inset-0 block w-full h-full pointer-events-none"
+        />
         <canvas
           ref={canvasRef}
           onPointerDown={handlePointerDown}
