@@ -108,9 +108,26 @@ Sync is anonymous and key-based, with no accounts or sign-in:
 
 Because the vault key is the only credential, treat it like a password: anyone holding it can read and write that vault.
 
-### Push the Source to GitHub (optional, does not deploy)
+### Push the Source to GitHub (deploys through CI)
 
-The GitHub repository is just source hosting; deployment happens through `wrangler deploy`.
+`main` deploys itself. Every push to `main` runs `.github/workflows/deploy.yml`, which:
+
+1. checks the Cloudflare secrets are present and fails fast with an actionable message when they are not,
+2. installs dependencies, runs `npm test` and `npm run build`,
+3. deploys the Worker with `cloudflare/wrangler-action` (`command: deploy`), reading `wrangler.jsonc`.
+
+The workflow can also be run by hand from **Actions → Deploy Cloudflare Worker → Run workflow**. It is gated on tests and the production build, so a failing check publishes nothing.
+
+Two repository secrets are required (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | API token from the **Edit Cloudflare Workers** template (Cloudflare → My Profile → API Tokens) |
+| `CLOUDFLARE_ACCOUNT_ID` | The account id printed by `npx wrangler whoami` |
+
+Pushes that add or edit files under `.github/workflows/` additionally need a GitHub credential with the `workflow` scope; ordinary source pushes do not.
+
+A first push of a fresh clone looks like:
 
 ```bash
 git remote add origin https://github.com/<YOUR_USERNAME>/Aura-Notes.git
@@ -118,9 +135,9 @@ git branch -M main
 git push -u origin main
 ```
 
-There is currently **no CI deployment workflow**: `.github/workflows/` is empty. The file at `docs/deploy-cloudflare.yml` is a legacy Cloudflare **Pages** sample (`pages deploy dist`) and does not match this Worker setup — do not copy it into `.github/workflows/` as-is.
+For a one-off release without CI, `npm run deploy` performs the same build and deploy from your machine.
 
-To automate deployment later, add a workflow that runs `npm ci`, `npm test`, `npm run build`, then invokes `cloudflare/wrangler-action` with `command: deploy` and the `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` repository secrets.
+`docs/deploy-cloudflare.yml` is a legacy Cloudflare **Pages** sample (`pages deploy dist`) kept for history only; it does not match this Worker setup and must not be moved into `.github/workflows/`.
 
 ---
 
