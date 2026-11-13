@@ -90,13 +90,20 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [isSpenEraserArmed, setIsSpenEraserArmed] = useState<boolean>(false);
   const isSpenEraserArmedRef = useRef<boolean>(false);
   const selectedToolRef = useRef<PenTool>('fountain');
+  const lastWritingToolRef = useRef<PenTool>('fountain');
   const isEraserDrawingRef = useRef<boolean>(false);
+
+  // S Pen hover cursor indicator (shows exact radius of eraser/pen while hovering)
+  const [hoverCursor, setHoverCursor] = useState<{ x: number; y: number; isEraser: boolean; radius: number } | null>(null);
 
   // Effective tool: If S Pen eraser is armed, tool is 'eraser', else selectedTool
   const activeTool: PenTool = isSpenEraserArmed ? 'eraser' : selectedTool;
 
   useEffect(() => {
     selectedToolRef.current = selectedTool;
+    if (selectedTool !== 'eraser') {
+      lastWritingToolRef.current = selectedTool;
+    }
   }, [selectedTool]);
 
   // S Pen Feedback overlay
@@ -283,17 +290,23 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setIsSpenEraserArmed(false);
     isEraserDrawingRef.current = false;
 
+    // Guaranteed revert to writing pen (never stay trapped in eraser!)
+    const targetTool = lastWritingToolRef.current || 'fountain';
+    if (selectedToolRef.current === 'eraser') {
+      setSelectedTool(targetTool);
+      selectedToolRef.current = targetTool;
+    }
+
     playToggleAudioFeedback(false);
 
-    const base = selectedToolRef.current;
     const container = containerRef.current;
     const rect = container ? container.getBoundingClientRect() : { left: 0, top: 0, width: 600, height: 600 };
     const localX = typeof clientX === 'number' ? clientX - rect.left : rect.width / 2;
     const localY = typeof clientY === 'number' ? clientY - rect.top : 80;
 
     setHoverFeedback({
-      label: `Deactivated • Back to ${getToolLabel(base)}`,
-      tool: base,
+      label: `Deactivated • Back to ${getToolLabel(targetTool)}`,
+      tool: targetTool,
       x: Math.max(100, Math.min(rect.width - 100, localX)),
       y: Math.max(70, Math.min(rect.height - 70, localY - 35))
     });
@@ -338,6 +351,33 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       }
     };
 
+    // Global pointerup (captures hover button release even if cursor didn't move)
+    const handleGlobalPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'pen') {
+        const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
+        if (!isButtonPressed && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
+          deactivateSpenEraser(e.clientX, e.clientY, 'global-pointerup-release');
+        }
+      }
+    };
+
+    const handleGlobalPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'pen') {
+        const isHovering = e.pressure <= 0.05;
+        const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
+        if (isHovering && isButtonPressed && !isSpenEraserArmedRef.current) {
+          activateSpenEraser(e.clientX, e.clientY, `global-pointerdown-press (buttons=${e.buttons})`);
+        }
+      }
+    };
+
+    const handleGlobalMouseUp = (e: MouseEvent) => {
+      const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
+      if (isRecentPen && e.buttons === 0 && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
+        deactivateSpenEraser(e.clientX, e.clientY, 'global-mouseup-release');
+      }
+    };
+
     // Samsung One UI Context Menu (Fired by Samsung Internet when S Pen button is clicked in the air)
     const handleGlobalContextMenu = (e: MouseEvent) => {
       const isPenEvent = (e as any).pointerType === 'pen';
@@ -346,7 +386,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isPenEvent || isRecentPen) {
         e.preventDefault();
         e.stopPropagation();
-        activateSpenEraser(e.clientX, e.clientY, 'contextmenu');
+        if (e.buttons > 0) {
+          activateSpenEraser(e.clientX, e.clientY, 'contextmenu-hold');
+        } else if (isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
+          deactivateSpenEraser(e.clientX, e.clientY, 'contextmenu-release');
+        }
       }
     };
 
@@ -358,7 +402,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
         e.preventDefault();
         e.stopPropagation();
-        activateSpenEraser(e.clientX, e.clientY, 'auxclick');
+        if (e.buttons > 0) {
+          activateSpenEraser(e.clientX, e.clientY, 'auxclick-hold');
+        } else if (isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
+          deactivateSpenEraser(e.clientX, e.clientY, 'auxclick-release');
+        }
       }
     };
 
@@ -388,6 +436,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
 
     window.addEventListener('pointermove', handleGlobalPointerMove, { capture: true, passive: true });
+    window.addEventListener('pointerdown', handleGlobalPointerDown, { capture: true });
+    window.addEventListener('pointerup', handleGlobalPointerUp, { capture: true });
+    window.addEventListener('pointercancel', handleGlobalPointerUp, { capture: true });
+    window.addEventListener('mouseup', handleGlobalMouseUp, { capture: true });
     window.addEventListener('contextmenu', handleGlobalContextMenu, { capture: true });
     window.addEventListener('auxclick', handleGlobalAuxClick, { capture: true });
     window.addEventListener('keydown', handleGlobalKeyDown, { capture: true });
@@ -399,6 +451,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     return () => {
       window.removeEventListener('pointermove', handleGlobalPointerMove, { capture: true });
+      window.removeEventListener('pointerdown', handleGlobalPointerDown, { capture: true });
+      window.removeEventListener('pointerup', handleGlobalPointerUp, { capture: true });
+      window.removeEventListener('pointercancel', handleGlobalPointerUp, { capture: true });
+      window.removeEventListener('mouseup', handleGlobalMouseUp, { capture: true });
       window.removeEventListener('contextmenu', handleGlobalContextMenu, { capture: true });
       window.removeEventListener('auxclick', handleGlobalAuxClick, { capture: true });
       window.removeEventListener('keydown', handleGlobalKeyDown, { capture: true });

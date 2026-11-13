@@ -12,31 +12,33 @@ describe('S Pen Detection Utilities', () => {
     // Normal tip touch (buttons = 1, button = 0) -> false
     expect(isSpenBarrelOrEraser(1, 0)).toBe(false);
 
-    // Android Chrome S Pen button mapping (button = 1 / buttons & 4 = true)
-    expect(isSpenBarrelOrEraser(4)).toBe(true);
-    expect(isSpenBarrelOrEraser(0, 1)).toBe(true);
+    // Released button (buttons = 0, even if button = 1 on pointerup) -> false
+    expect(isSpenBarrelOrEraser(0, 1)).toBe(false);
+
+    // Android Chrome S Pen button mapping (buttons & 4 = true)
+    expect(isSpenBarrelOrEraser(4, 1)).toBe(true);
 
     // Secondary button hovering (buttons = 2 / button = 2)
-    expect(isSpenBarrelOrEraser(2)).toBe(true);
-    expect(isSpenBarrelOrEraser(0, 2)).toBe(true);
+    expect(isSpenBarrelOrEraser(2, 2)).toBe(true);
 
     // Eraser tip (buttons = 32 / button = 5)
-    expect(isSpenBarrelOrEraser(32)).toBe(true);
-    expect(isSpenBarrelOrEraser(0, 5)).toBe(true);
+    expect(isSpenBarrelOrEraser(32, 5)).toBe(true);
   });
 
-  it('detects S Pen button press while hovering in mid-air', () => {
+  it('detects S Pen button press while hovering in mid-air and releases instantly when buttons === 0', () => {
     // Hovering with no button pressed
     expect(isSpenButtonPressed(0, -1, 0)).toBe(false);
     expect(isSpenButtonPressed(0, 0, 0)).toBe(false);
+
+    // Released in mid-air (pointerup reports buttons: 0, button: 1) -> MUST BE FALSE!
+    expect(isSpenButtonPressed(0, 1, 0)).toBe(false);
+    expect(isSpenButtonPressed(0, 2, 0)).toBe(false);
 
     // Hovering with barrel button pressed in the air
     expect(isSpenButtonPressed(4, -1, 0)).toBe(true);
     expect(isSpenButtonPressed(2, -1, 0)).toBe(true);
     expect(isSpenButtonPressed(32, -1, 0)).toBe(true);
     expect(isSpenButtonPressed(1, -1, 0)).toBe(true);
-    expect(isSpenButtonPressed(0, 1, 0)).toBe(true);
-    expect(isSpenButtonPressed(0, 2, 0)).toBe(true);
   });
 
   it('NEVER mistakes normal screen touch contact for an S Pen button press', () => {
@@ -49,8 +51,6 @@ describe('S Pen Detection Utilities', () => {
     expect(isSpenButtonPressed(5, 0, 0.5)).toBe(true); // 1 (tip) | 4 (barrel)
     expect(isSpenButtonPressed(3, 0, 0.5)).toBe(true); // 1 (tip) | 2 (secondary)
     expect(isSpenButtonPressed(33, 0, 0.5)).toBe(true); // 1 (tip) | 32 (stylus primary)
-    expect(isSpenButtonPressed(1, 1, 0.5)).toBe(true); // button === 1
-    expect(isSpenButtonPressed(1, 2, 0.5)).toBe(true); // button === 2
   });
 
   it('identifies Android 14+ Stylus hardware key events', () => {

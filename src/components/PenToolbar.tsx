@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   Pen, 
   Feather, 
   Highlighter, 
   Eraser, 
+  ChevronDown,
   Undo2, 
   Redo2, 
   Trash2, 
@@ -55,6 +56,7 @@ interface PenToolbarProps {
   isStylusOnly: boolean;
   onToggleStylusOnly: () => void;
   onOpenSPenMenu?: () => void;
+  lastWritingTool?: PenTool;
 }
 
 export const PenToolbar: React.FC<PenToolbarProps> = ({
@@ -75,8 +77,10 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   hasStrokes,
   isStylusOnly,
   onToggleStylusOnly,
-  onOpenSPenMenu
+  onOpenSPenMenu,
+  lastWritingTool
 }) => {
+  const [isEraserMenuOpen, setIsEraserMenuOpen] = useState<boolean>(false);
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
 
   return (
@@ -122,24 +126,94 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           <Highlighter className="w-4 h-4" />
         </button>
 
-        <button
-          type="button"
-          onClick={() => onSelectTool('eraser')}
-          title="Eraser (S Pen button also triggers eraser)"
-          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
-            activeTool === 'eraser'
-              ? 'bg-rose-500 text-white shadow-md'
-              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-          }`}
-        >
-          <Eraser className="w-4 h-4" />
-        </button>
+        {/* Eraser Tool + Quick Size Popover Trigger */}
+        <div className="relative flex items-center">
+          <button
+            type="button"
+            onClick={() => {
+              if (activeTool === 'eraser') {
+                onSelectTool(lastWritingTool || 'fountain');
+              } else {
+                onSelectTool('eraser');
+              }
+            }}
+            title={activeTool === 'eraser' ? "Eraser Active (Click to return to pen)" : "Eraser (or hold S Pen side button to erase momentarily)"}
+            className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
+              activeTool === 'eraser'
+                ? 'bg-rose-500 text-white shadow-md ring-2 ring-rose-400'
+                : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+            }`}
+          >
+            <Eraser className="w-4 h-4" />
+          </button>
+
+          {/* Dedicated Eraser Size Button (Always accessible without changing active pen!) */}
+          <button
+            type="button"
+            onClick={() => setIsEraserMenuOpen(!isEraserMenuOpen)}
+            title="Choose Eraser Size (S Pen button eraser)"
+            className={`ml-1 text-[11px] font-semibold px-1.5 py-1 rounded-lg flex items-center gap-0.5 transition active:scale-95 ${
+              activeTool === 'eraser'
+                ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-200'
+                : 'bg-surface-subtle-light dark:bg-surface-subtle-dark text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light dark:hover:text-ink-dark'
+            }`}
+          >
+            <span>{eraserWidth ?? 24}px</span>
+            <ChevronDown className="w-3 h-3 opacity-60" />
+          </button>
+
+          {/* Eraser Size Popover */}
+          {isEraserMenuOpen && (
+            <div className="absolute top-full mt-2 left-0 z-50 p-2.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark flex flex-col gap-1.5 min-w-[210px] animate-in fade-in slide-in-from-top-1">
+              <div className="flex items-center justify-between px-1 text-[11px] font-bold text-ink-light dark:text-ink-dark">
+                <span className="flex items-center gap-1.5">
+                  <Eraser className="w-3.5 h-3.5 text-rose-500" />
+                  Eraser Size
+                </span>
+                <span className="text-[10px] text-ink-muted-light dark:text-ink-muted-dark font-normal">
+                  S Pen Button
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1 pt-1">
+                {[
+                  { size: 12, label: '12px' },
+                  { size: 24, label: '24px' },
+                  { size: 36, label: '36px' },
+                  { size: 56, label: '56px' }
+                ].map((item) => {
+                  const isSel = (eraserWidth ?? 24) === item.size;
+                  return (
+                    <button
+                      key={item.size}
+                      type="button"
+                      onClick={() => {
+                        onChangeEraserWidth?.(item.size);
+                        setIsEraserMenuOpen(false);
+                      }}
+                      className={`py-2 px-1 rounded-xl flex flex-col items-center justify-center gap-1 transition active:scale-95 ${
+                        isSel
+                          ? 'bg-rose-500 text-white shadow-md font-bold'
+                          : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+                      }`}
+                    >
+                      <div 
+                        className="rounded-full bg-current" 
+                        style={{ width: `${Math.min(16, Math.max(6, Math.round(item.size / 3.5)))}px`, height: `${Math.min(16, Math.max(6, Math.round(item.size / 3.5)))}px` }} 
+                      />
+                      <span className="text-[10px]">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
 
         {onOpenSPenMenu && (
           <button
             type="button"
             onClick={onOpenSPenMenu}
-            title="S Pen Quick Menu (or press S Pen side button once)"
+            title="S Pen Quick Menu"
             className="p-2 rounded-xl transition active:scale-95 flex items-center justify-center text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40"
           >
             <Sparkles className="w-4 h-4" />
@@ -178,29 +252,43 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
       {/* Width / Size Selector (Adapts to Pen vs Eraser) */}
       <div className="flex items-center gap-1.5 px-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
         {activeTool === 'eraser' ? (
-          // Eraser Sizes: Small (12px), Medium (24px), Large (36px), Extra Large (56px)
-          [12, 24, 36, 56].map((size) => {
-            const currentEraserSize = eraserWidth ?? 24;
-            const isSelected = currentEraserSize === size;
-            return (
-              <button
-                key={size}
-                type="button"
-                onClick={() => (onChangeEraserWidth ? onChangeEraserWidth(size) : onChangeWidth(size))}
-                title={`Eraser size: ${size}px`}
-                className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
-                  isSelected
-                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 ring-2 ring-rose-500 font-bold'
-                    : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
-                }`}
-              >
-                <div
-                  className="rounded-full bg-current"
-                  style={{ width: `${Math.min(16, Math.max(6, Math.round(size / 3)))}px`, height: `${Math.min(16, Math.max(6, Math.round(size / 3)))}px` }}
-                />
-              </button>
-            );
-          })
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-semibold text-rose-600 dark:text-rose-400 mr-0.5">
+              Eraser:
+            </span>
+            {[12, 24, 36, 56].map((size) => {
+              const currentEraserSize = eraserWidth ?? 24;
+              const isSelected = currentEraserSize === size;
+              return (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => (onChangeEraserWidth ? onChangeEraserWidth(size) : onChangeWidth(size))}
+                  title={`Eraser size: ${size}px`}
+                  className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
+                    isSelected
+                      ? 'bg-rose-500 text-white ring-2 ring-rose-400 font-bold shadow-sm'
+                      : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
+                  }`}
+                >
+                  <div
+                    className="rounded-full bg-current"
+                    style={{ width: `${Math.min(16, Math.max(6, Math.round(size / 3)))}px`, height: `${Math.min(16, Math.max(6, Math.round(size / 3)))}px` }}
+                  />
+                </button>
+              );
+            })}
+            {/* Direct Back to Pen Button when Eraser is active */}
+            <button
+              type="button"
+              onClick={() => onSelectTool(lastWritingTool || 'fountain')}
+              title="Return to writing pen"
+              className="ml-1 flex items-center gap-1 px-2.5 py-1 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-medium shadow-sm transition active:scale-95"
+            >
+              <Feather className="w-3.5 h-3.5" />
+              <span>Back to Pen</span>
+            </button>
+          </div>
         ) : (
           // Pen Sizes: Fine (2px), Regular (4px), Medium (7px), Bold (12px)
           [2, 4, 7, 12].map((size) => (
@@ -211,7 +299,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
               title={`Pen width: ${size}px`}
               className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
                 width === size
-                  ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold'
+                  ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold ring-2 ring-violet-500'
                   : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
               }`}
             >

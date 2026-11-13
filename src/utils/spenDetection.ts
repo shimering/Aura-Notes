@@ -14,6 +14,9 @@ import { PenTool } from '../types/note';
  * - button === 5: Eraser button click
  */
 export function isSpenBarrelOrEraser(buttons: number, button?: number): boolean {
+  if (buttons === 0) {
+    return false;
+  }
   return (
     (buttons & 4) !== 0 ||
     (buttons & 2) !== 0 ||
@@ -27,30 +30,35 @@ export function isSpenBarrelOrEraser(buttons: number, button?: number): boolean 
 /**
  * Determines whether the physical S Pen side button is currently PRESSED / HELD DOWN.
  * 
- * 1. While Hovering in the air (pressure <= 0.05):
- *    Normal hovering has buttons === 0 and button <= 0.
- *    Any non-zero buttons or button > 0 indicates the side button is pressed in the air.
+ * 1. Absolute rule: If buttons === 0, no button is currently held down.
+ *    (On pointerup / mouseup, e.button identifies the button released, but buttons is 0).
  * 
- * 2. While Touching the screen (pressure > 0.05):
- *    Normal tip contact is buttons === 1 (primary button).
+ * 2. While Hovering in the air (pressure <= 0.05):
+ *    Normal hovering has buttons === 0.
+ *    Any non-zero buttons indicates a physical button is being held in mid-air.
+ * 
+ * 3. While Touching the screen (pressure > 0.05):
+ *    Tip contact alone sets buttons === 1 (primary button).
  *    Tip contact MUST NOT be mistaken for a barrel button press.
  *    The side button is active only if auxiliary/secondary bits are set:
- *    (buttons & 4) !== 0, (buttons & 2) !== 0, (buttons & 32) !== 0,
- *    or button === 1, button === 2, button === 5.
+ *    (buttons & 4) !== 0 (Chromium Android S Pen barrel),
+ *    (buttons & 2) !== 0 (Windows / Wacom secondary),
+ *    (buttons & 32) !== 0 (Android stylus primary).
  */
 export function isSpenButtonPressed(buttons: number, button?: number, pressure: number = 0): boolean {
-  if (pressure <= 0.05) {
-    if (buttons > 0) return true;
-    if (button !== undefined && button > 0 && button !== -1) return true;
+  if (buttons === 0) {
     return false;
   }
 
-  // When touching the screen, button tip contact alone (buttons === 1, button === 0) is regular inking
+  if (pressure <= 0.05) {
+    return buttons > 0;
+  }
+
+  // When touching the screen, button tip contact alone (buttons === 1) is regular inking
   return (
     (buttons & 4) !== 0 ||
     (buttons & 2) !== 0 ||
-    (buttons & 32) !== 0 ||
-    (button !== undefined && (button === 1 || button === 2 || button === 5))
+    (buttons & 32) !== 0
   );
 }
 
