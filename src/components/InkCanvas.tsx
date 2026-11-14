@@ -128,6 +128,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const selectedToolRef = useRef<PenTool>(defaultTool);
   const lastWritingToolRef = useRef<PenTool>(defaultTool === 'eraser' ? 'fountain' : defaultTool);
   const isEraserDrawingRef = useRef<boolean>(false);
+  const isPenDownRef = useRef<boolean>(false);
   const lastInkUiClickRef = useRef<{ control: HTMLElement; time: number } | null>(null);
 
   // Effective tool: If S Pen eraser is armed, tool is 'eraser', else selectedTool
@@ -465,7 +466,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (e.pointerType === 'pen') {
         lastStylusActiveTimeRef.current = Date.now();
 
-        const isHovering = e.pressure <= 0.05;
+        // While the tip is in contact, low/zero pressure samples are not hover.
+        const isHovering = !isPenDownRef.current && e.pressure <= 0.05;
         const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
 
         setStylusTelemetry((prev) => ({
@@ -490,6 +492,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     // Global pointerup (captures hover button release even if cursor didn't move)
     const handleGlobalPointerUp = (e: PointerEvent) => {
       if (e.pointerType === 'pen') {
+        isPenDownRef.current = false;
         if (isInkUiTarget(e.target)) return;
         const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
         if (!isButtonPressed && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
@@ -500,10 +503,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const handleGlobalPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'pen') {
+        isPenDownRef.current = true;
         if (isInkUiTarget(e.target)) return;
-        const isHovering = e.pressure <= 0.05;
-        const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
-        if (isHovering && isButtonPressed && !isSpenEraserArmedRef.current) {
+        // A tip touch sets buttons = 1 by itself. Only an auxiliary/barrel bit
+        // proves the S Pen button is physically held.
+        if (isSpenBarrelOrEraser(e.buttons, e.button) && !isSpenEraserArmedRef.current) {
           activateSpenEraser(`global-pointerdown-press (buttons=${e.buttons})`);
         }
       }
@@ -643,8 +647,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       return;
     }
 
-    // Check if S Pen button is pressed upon touch-down
-    if (e.pointerType === 'pen' && isSpenButtonPressed(e.buttons, e.button, e.pressure)) {
+    // Check if S Pen button is pressed upon touch-down. Tip contact alone
+    // reports buttons = 1, so require an actual auxiliary/barrel bit.
+    if (e.pointerType === 'pen' && isSpenBarrelOrEraser(e.buttons, e.button)) {
       if (!isSpenEraserArmedRef.current) {
         activateSpenEraser('touch-down-button');
       }
