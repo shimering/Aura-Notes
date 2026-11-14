@@ -126,7 +126,10 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
 
   return (
-    <div className="flex items-center flex-wrap gap-1.5 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark select-none">
+    <div
+      data-ink-ui="pen-toolbar"
+      className="flex items-center flex-wrap gap-1.5 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark select-none"
+    >
       {/* Tool Selection */}
       <div className="flex items-center gap-1 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
         <button

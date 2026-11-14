@@ -71,6 +71,28 @@ function playToggleAudioFeedback(isEraser: boolean) {
   } catch {}
 }
 
+const INK_UI_CONTROL_SELECTOR = 'button, [role="button"], input, label, select';
+
+/**
+ * True while interacting with ink UI (toolbar, eraser popover, S Pen menu).
+ * S Pen button handling must not arm/disarm the eraser or swallow taps there.
+ */
+function isInkUiTarget(target: EventTarget | null): boolean {
+  return (
+    typeof Element !== 'undefined' &&
+    target instanceof Element &&
+    !!target.closest('[data-ink-ui]')
+  );
+}
+
+function findInkUiControl(target: EventTarget | null): HTMLElement | null {
+  if (typeof Element === 'undefined' || !(target instanceof Element)) return null;
+  const control = target.closest<HTMLElement>(INK_UI_CONTROL_SELECTOR);
+  if (!control) return null;
+  if (control instanceof HTMLButtonElement && control.disabled) return null;
+  return control;
+}
+
 export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   noteId,
   strokes,
@@ -106,6 +128,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const selectedToolRef = useRef<PenTool>(defaultTool);
   const lastWritingToolRef = useRef<PenTool>(defaultTool === 'eraser' ? 'fountain' : defaultTool);
   const isEraserDrawingRef = useRef<boolean>(false);
+  const lastInkUiClickRef = useRef<{ control: HTMLElement; time: number } | null>(null);
 
   // Effective tool: If S Pen eraser is armed, tool is 'eraser', else selectedTool
   const activeTool: PenTool = isSpenEraserArmed ? 'eraser' : selectedTool;
@@ -183,6 +206,23 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const syncHistoryFlags = useCallback(() => {
     setCanUndo(historyRef.current.canUndo);
     setCanRedo(historyRef.current.canRedo);
+  }, []);
+
+  /**
+   * S Pen barrel taps arrive as contextmenu/auxclick on Android. When they land
+   * on ink UI, replay them as a normal click so mode/size controls stay usable
+   * while the S Pen button is held down.
+   */
+  const clickInkUiControl = useCallback((target: EventTarget | null) => {
+    const control = findInkUiControl(target);
+    if (!control) return;
+
+    const now = Date.now();
+    const last = lastInkUiClickRef.current;
+    if (last && last.control === control && now - last.time < 400) return;
+
+    lastInkUiClickRef.current = { control, time: now };
+    control.click();
   }, []);
 
   // Expose methods for OCR engine
@@ -450,6 +490,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     // Global pointerup (captures hover button release even if cursor didn't move)
     const handleGlobalPointerUp = (e: PointerEvent) => {
       if (e.pointerType === 'pen') {
+        if (isInkUiTarget(e.target)) return;
         const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
         if (!isButtonPressed && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
           deactivateSpenEraser('global-pointerup-release');
@@ -459,6 +500,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const handleGlobalPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'pen') {
+        if (isInkUiTarget(e.target)) return;
         const isHovering = e.pressure <= 0.05;
         const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
         if (isHovering && isButtonPressed && !isSpenEraserArmedRef.current) {
@@ -468,6 +510,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
 
     const handleGlobalMouseUp = (e: MouseEvent) => {
+      if (isInkUiTarget(e.target)) return;
       const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
       if (isRecentPen && e.buttons === 0 && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
         deactivateSpenEraser('global-mouseup-release');
@@ -478,6 +521,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const handleGlobalContextMenu = (e: MouseEvent) => {
       const isPenEvent = (e as any).pointerType === 'pen';
       const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
+
+      if (isInkUiTarget(e.target)) {
+        if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
+          e.preventDefault();
+          e.stopPropagation();
+          clickInkUiControl(e.target);
+        }
+        return;
+      }
 
       if (isPenEvent || isRecentPen) {
         e.preventDefault();
@@ -494,6 +546,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const handleGlobalAuxClick = (e: MouseEvent) => {
       const isPenEvent = (e as any).pointerType === 'pen';
       const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
+
+      if (isInkUiTarget(e.target)) {
+        if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
+          e.preventDefault();
+          e.stopPropagation();
+          clickInkUiControl(e.target);
+        }
+        return;
+      }
 
       if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
         e.preventDefault();
@@ -551,7 +612,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         window.removeEventListener('pointerrawupdate' as any, handleGlobalPointerMove as any, { capture: true });
       }
     };
-  }, [activateSpenEraser, deactivateSpenEraser]);
+  }, [activateSpenEraser, clickInkUiControl, deactivateSpenEraser]);
 
   /**
    * Applies the currently selected eraser mode at a canvas point.
@@ -762,7 +823,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   return (
     <div className="flex flex-col w-full h-full relative select-none">
       {/* Top Floating Pen Toolbar */}
-      <div className="px-4 py-2 flex justify-center items-center z-10 pointer-events-auto">
+      <div className="px-4 py-2 flex justify-center items-center z-10 pointer-events-auto" data-ink-ui="toolbar-shell">
         <PenToolbar
           activeTool={activeTool}
           onSelectTool={handleManualToolSelect}
@@ -824,7 +885,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         )}
 
         {/* Bottom Left: S Pen Live Telemetry / Diagnostic Badge */}
-        <div className="absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1">
+        <div className="absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1" data-ink-ui="stylus-status">
           <button
             type="button"
             onClick={() => setDiagnosticHUD(!diagnosticHUD)}
@@ -849,7 +910,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         </div>
 
         {/* Bottom Right: Quick S Pen Floating Trigger Badge */}
-        <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2">
+        <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2" data-ink-ui="floating-tools">
           {/* 1-Tap Quick Tool Flip Pill */}
           <button
             type="button"

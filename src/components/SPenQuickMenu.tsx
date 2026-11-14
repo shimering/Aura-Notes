@@ -122,6 +122,7 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
       <div
         ref={menuRef}
         style={getMenuStyle()}
+        data-ink-ui="spen-quick-menu"
         className="fixed pointer-events-auto w-80 rounded-3xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-2xl border border-surface-subtle-light/80 dark:border-surface-subtle-dark/80 shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-150 select-none"
       >
         {/* Header */}
