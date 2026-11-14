@@ -46,6 +46,9 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [account, setAccount] = useState<FreebuffUser | null>(null);
+  // False when the auth routes are absent (plain `vite dev`): the account
+  // panel then hides itself instead of offering a link that 404s.
+  const [authAvailable, setAuthAvailable] = useState(true);
 
   const inkCanvasRef = useRef<InkCanvasRef>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -234,6 +237,7 @@ export default function App() {
         const user = session.status === 'signed-in' ? session.user : null;
         accountRef.current = user;
         setAccount(user);
+        setAuthAvailable(session.status !== 'unavailable');
         setStorageNamespace(user ? user.sub : null);
 
         // 1. Load settings
@@ -848,7 +852,7 @@ export default function App() {
         onUpdateSettings={handleUpdateSettings}
         isSyncing={isSyncing}
         syncError={syncError}
-        account={account}
+        account={authAvailable ? account : undefined}
         onAccountSignedOut={handleAccountSignedOut}
       />
 
