@@ -5,7 +5,6 @@ import { InkHistory } from '../utils/inkHistory';
 import { drawInkBackground } from '../utils/inkBackground';
 import { 
   isSpenBarrelOrEraser, 
-  isSpenButtonPressed, 
   isSpenHardwareKeyEvent 
 } from '../utils/spenDetection';
 import { PenToolbar } from './PenToolbar';
@@ -129,6 +128,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const lastWritingToolRef = useRef<PenTool>(defaultTool === 'eraser' ? 'fountain' : defaultTool);
   const isEraserDrawingRef = useRef<boolean>(false);
   const isPenDownRef = useRef<boolean>(false);
+  const spenDeactivateTimerRef = useRef<number | null>(null);
   const lastInkUiClickRef = useRef<{ control: HTMLElement; time: number } | null>(null);
 
   // Effective tool: If S Pen eraser is armed, tool is 'eraser', else selectedTool
@@ -416,9 +416,22 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   /**
+   * Cancels a pending S Pen eraser release. Used to absorb the button-less
+   * pointerup that fires when the tip leaves the glass while the barrel button
+   * is still physically held.
+   */
+  const cancelScheduledSpenDeactivation = useCallback(() => {
+    if (spenDeactivateTimerRef.current !== null) {
+      window.clearTimeout(spenDeactivateTimerRef.current);
+      spenDeactivateTimerRef.current = null;
+    }
+  }, []);
+
+  /**
    * Activates Eraser mode while S Pen button is pressed.
    */
   const activateSpenEraser = useCallback((source: string = 'press') => {
+    cancelScheduledSpenDeactivation();
     if (isSpenEraserArmedRef.current) return;
     isSpenEraserArmedRef.current = true;
     setIsSpenEraserArmed(true);
@@ -434,12 +447,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       ...prev,
       lastTrigger: `${source}: ERASER ACTIVATED (${new Date().toLocaleTimeString()})`
     }));
-  }, []);
+  }, [cancelScheduledSpenDeactivation]);
 
   /**
    * Deactivates Eraser mode immediately when S Pen button is released.
    */
   const deactivateSpenEraser = useCallback((source: string = 'release') => {
+    cancelScheduledSpenDeactivation();
     if (!isSpenEraserArmedRef.current) return;
     isSpenEraserArmedRef.current = false;
     setIsSpenEraserArmed(false);
@@ -458,7 +472,25 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       ...prev,
       lastTrigger: `${source}: REVERTED TO PEN (${new Date().toLocaleTimeString()})`
     }));
-  }, []);
+  }, [cancelScheduledSpenDeactivation]);
+
+  /**
+   * Debounces eraser release. pointerup/mouseup report buttons = 0 even when
+   * the barrel button is still held; waiting lets the following hover event
+   * confirm the real button state and prevents an eraser ↔ pen flicker.
+   */
+  const scheduleSpenEraserDeactivation = useCallback((source: string) => {
+    if (spenDeactivateTimerRef.current !== null) return;
+    spenDeactivateTimerRef.current = window.setTimeout(() => {
+      spenDeactivateTimerRef.current = null;
+      if (!isSpenEraserArmedRef.current || isEraserDrawingRef.current) return;
+      deactivateSpenEraser(source);
+    }, 200);
+  }, [deactivateSpenEraser]);
+
+  useEffect(() => {
+    return () => cancelScheduledSpenDeactivation();
+  }, [cancelScheduledSpenDeactivation]);
 
   // Global window listeners for capturing S Pen hardware button interrupts across all browser layers
   useEffect(() => {
@@ -468,7 +500,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
         // While the tip is in contact, low/zero pressure samples are not hover.
         const isHovering = !isPenDownRef.current && e.pressure <= 0.05;
-        const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
+        const hasBarrelButton = isSpenBarrelOrEraser(e.buttons, e.button);
 
         setStylusTelemetry((prev) => ({
           ...prev,
@@ -478,12 +510,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           pressure: e.pressure
         }));
 
-        // While hovering: Active while button pressed, DEACTIVATE IMMEDIATELY UPON RELEASE!
+        // Only a real auxiliary/barrel bit arms the eraser while hovering. This
+        // ignores stale buttons = 1 samples right after the tip leaves the glass.
         if (isHovering) {
-          if (isButtonPressed && !isSpenEraserArmedRef.current) {
+          if (hasBarrelButton) {
+            // Re-activating is a no-op when armed, but cancels a pending release.
             activateSpenEraser(`hover-press (buttons=${e.buttons})`);
-          } else if (!isButtonPressed && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-            deactivateSpenEraser('hover-release');
+          } else if (isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
+            scheduleSpenEraserDeactivation('hover-release');
           }
         }
       }
@@ -494,9 +528,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (e.pointerType === 'pen') {
         isPenDownRef.current = false;
         if (isInkUiTarget(e.target)) return;
-        const isButtonPressed = isSpenButtonPressed(e.buttons, e.button, e.pressure);
-        if (!isButtonPressed && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-          deactivateSpenEraser('global-pointerup-release');
+        if (isSpenEraserArmedRef.current) {
+          scheduleSpenEraserDeactivation('global-pointerup-release');
         }
       }
     };
@@ -516,8 +549,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const handleGlobalMouseUp = (e: MouseEvent) => {
       if (isInkUiTarget(e.target)) return;
       const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
-      if (isRecentPen && e.buttons === 0 && isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-        deactivateSpenEraser('global-mouseup-release');
+      if (isRecentPen && e.buttons === 0 && isSpenEraserArmedRef.current) {
+        scheduleSpenEraserDeactivation('global-mouseup-release');
       }
     };
 
@@ -538,10 +571,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isPenEvent || isRecentPen) {
         e.preventDefault();
         e.stopPropagation();
-        if (e.buttons > 0) {
+        if (isSpenBarrelOrEraser(e.buttons, e.button)) {
           activateSpenEraser('contextmenu-hold');
-        } else if (isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-          deactivateSpenEraser('contextmenu-release');
+        } else if (isSpenEraserArmedRef.current) {
+          scheduleSpenEraserDeactivation('contextmenu-release');
         }
       }
     };
@@ -563,10 +596,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
         e.preventDefault();
         e.stopPropagation();
-        if (e.buttons > 0) {
+        if (isSpenBarrelOrEraser(e.buttons, e.button)) {
           activateSpenEraser('auxclick-hold');
-        } else if (isSpenEraserArmedRef.current && !isEraserDrawingRef.current) {
-          deactivateSpenEraser('auxclick-release');
+        } else if (isSpenEraserArmedRef.current) {
+          scheduleSpenEraserDeactivation('auxclick-release');
         }
       }
     };
@@ -584,7 +617,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isSpenHardwareKeyEvent(e)) {
         e.preventDefault();
         e.stopPropagation();
-        deactivateSpenEraser(`key-up-${e.keyCode || e.code}`);
+        scheduleSpenEraserDeactivation(`key-up-${e.keyCode || e.code}`);
       }
     };
 
@@ -616,7 +649,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         window.removeEventListener('pointerrawupdate' as any, handleGlobalPointerMove as any, { capture: true });
       }
     };
-  }, [activateSpenEraser, clickInkUiControl, deactivateSpenEraser]);
+  }, [activateSpenEraser, clickInkUiControl, deactivateSpenEraser, scheduleSpenEraserDeactivation]);
 
   /**
    * Applies the currently selected eraser mode at a canvas point.
@@ -760,13 +793,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       isStylusActiveRef.current = false;
     }
 
-    // When lifting the pen from screen:
-    // If S Pen button is no longer pressed in the air, DEACTIVATE ERASER IMMEDIATELY!
-    if (isSpenEraserArmedRef.current) {
-      const isStillPressedInAir = isSpenButtonPressed(e.buttons, e.button, 0);
-      if (!isStillPressedInAir) {
-        deactivateSpenEraser('lift-release');
-      }
+    // When lifting the pen from screen, pointerup reports buttons = 0 even when
+    // the barrel button is still held. Debounce the release so the next hover
+    // event can keep the eraser armed without a pen/eraser flicker.
+    if (isSpenEraserArmedRef.current && !isSpenBarrelOrEraser(e.buttons, e.button)) {
+      scheduleSpenEraserDeactivation('lift-release');
     }
 
     // Commit the eraser drag as a single undoable step
@@ -820,6 +851,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handleManualToolSelect = (tool: PenTool) => {
+    cancelScheduledSpenDeactivation();
     setSelectedTool(tool);
     setIsSpenEraserArmed(false);
     isSpenEraserArmedRef.current = false;
