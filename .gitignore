@@ -25,3 +25,7 @@ dist-ssr
 
 # Superpowers scratch
 .superpowers/sdd
+
+# Wrangler local state and dev vars
+.wrangler/
+.dev.vars

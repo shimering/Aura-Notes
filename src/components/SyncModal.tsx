@@ -19,12 +19,13 @@ import {
 } from 'lucide-react';
 import { Note } from '../types/note';
 import { AppSettings } from '../types/settings';
-import { 
+import {
   generateRandomVaultKey, 
   exportVaultToJson, 
   exportAllNotesAsMarkdown,
   parseVaultJson 
 } from '../services/syncService';
+import { AccountPanel } from './AccountPanel';
 
 interface SyncModalProps {
   isOpen: boolean;
@@ -179,6 +180,9 @@ export const SyncModal: React.FC<SyncModalProps> = ({
 
         {/* Content Body */}
         <div className="p-6 overflow-y-auto space-y-6 text-ink-light dark:text-ink-dark text-sm">
+          {/* Optional Sign in with Freebuff account */}
+          <AccountPanel />
+
           {isConnected ? (
             /* Active Vault Section */
             <div className="space-y-4">

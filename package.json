@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@freebuff/auth": "^0.1.0",
     "clsx": "^2.1.1",
     "idb-keyval": "^6.2.1",
     "lucide-react": "^1.16.0",

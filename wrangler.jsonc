@@ -6,7 +6,18 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
+    // Required so /auth/freebuff/* reaches the Worker instead of the SPA fallback.
+    "run_worker_first": true,
     "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    // Canonical origin, used as the Sign in with Freebuff baseUrl.
+    "APP_ORIGIN": "https://aura-notes-pwa.gazarxperia.workers.dev"
+    // FREEBUFF_CLIENT_ID: set this after running the registration command:
+    //   npx @freebuff/auth register --project aura-notes --name "Aura Notes" \
+    //     --environment production \
+    //     --redirect-uri https://aura-notes-pwa.gazarxperia.workers.dev/auth/freebuff/callback
+    // "FREEBUFF_CLIENT_ID": "<printed-by-register>"
   },
   "kv_namespaces": [
     {

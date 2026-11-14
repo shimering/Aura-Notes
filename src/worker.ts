@@ -1,3 +1,5 @@
+import { createFreebuffAuth, type FreebuffAuth } from '@freebuff/auth';
+
 interface Env {
   ASSETS: {
     fetch: (request: Request) => Promise<Response>;
@@ -6,6 +8,12 @@ interface Env {
     get: (key: string) => Promise<string | null>;
     put: (key: string, value: string) => Promise<void>;
   };
+  /** Public client ID from `npx @freebuff/auth register`. Not a secret. */
+  FREEBUFF_CLIENT_ID?: string;
+  /** Only set for a non-production Freebuff issuer. */
+  FREEBUFF_ISSUER?: string;
+  /** Canonical site origin, e.g. https://aura-notes-pwa.gazarxperia.workers.dev. */
+  APP_ORIGIN?: string;
 }
 
 // In-memory fallback if KV is not configured on Cloudflare
@@ -22,9 +30,83 @@ function jsonResponse(body: unknown, status = 200, extraHeaders: Record<string, 
   });
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+interface AuthRuntime {
+  wrap: (request: Request, env: Env) => Promise<Response>;
+  getUser: (request: Request) => Promise<{ sub: string; email?: string; name?: string; picture?: string } | null>;
+}
+
+// One auth instance per isolate caches discovery documents and signing keys.
+let authRuntime: AuthRuntime | null = null;
+let authRuntimeKey = '';
+
+function getAuthRuntime(env: Env): AuthRuntime | null {
+  const clientId = env.FREEBUFF_CLIENT_ID?.trim();
+  const origin = (env.APP_ORIGIN || '').trim().replace(/\/+$/, '');
+  if (!clientId || !origin) return null;
+
+  const cacheKey = `${clientId}|${origin}|${env.FREEBUFF_ISSUER || ''}`;
+  if (authRuntime && authRuntimeKey === cacheKey) return authRuntime;
+
+  let auth: FreebuffAuth;
+  try {
+    auth = createFreebuffAuth({
+      clientId,
+      baseUrl: origin,
+      ...(env.FREEBUFF_ISSUER ? { issuer: env.FREEBUFF_ISSUER } : {}),
+    });
+  } catch (error) {
+    // A bad client ID or origin must never take the notes app down: sign-in is
+    // optional, local editing and the anonymous vault keep working without it.
+    console.error(
+      'Sign in with Freebuff is misconfigured:',
+      error instanceof Error ? error.message : 'unknown error'
+    );
+    authRuntime = null;
+    authRuntimeKey = '';
+    return null;
+  }
+
+  authRuntime = {
+    // `wrap` serves /auth/freebuff/* and refreshes the session cookie.
+    wrap: auth.wrap(handleRequest),
+    getUser: (request) => auth.getUser(request),
+  };
+  authRuntimeKey = cacheKey;
+  return authRuntime;
+}
+
+/**
+ * Signed-in account API. Only used by the UI to show who is signed in; the
+ * vault sync routes stay anonymous until per-user storage lands.
+ */
+async function handleAccountApi(request: Request, env: Env): Promise<Response> {
+  const runtime = getAuthRuntime(env);
+  if (!runtime) {
+    return jsonResponse(
+      { error: 'Sign in with Freebuff is not configured yet', code: 'auth_not_configured' },
+      503
+    );
+  }
+
+  if (request.method !== 'GET') {
+    return jsonResponse({ error: 'Method not allowed' }, 405);
+  }
+
+  const user = await runtime.getUser(request);
+  if (!user) {
+    return jsonResponse({ error: 'Sign in required' }, 401, { 'Cache-Control': 'private, no-store' });
+  }
+
+  return jsonResponse({ user }, 200, { 'Cache-Control': 'private, no-store' });
+}
+
+async function handleRequest(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === '/api/account') {
+      return handleAccountApi(request, env);
+    }
+
 
     // CORS headers for cross-origin or local dev requests
     const corsHeaders = {
@@ -183,5 +265,14 @@ export default {
     }
 
     return env.ASSETS.fetch(request);
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const runtime = getAuthRuntime(env);
+    // Auth must run before static assets so /auth/freebuff/* is not swallowed
+    // by the SPA fallback (assets.run_worker_first is set in wrangler config).
+    if (!runtime) return handleRequest(request, env);
+    return runtime.wrap(request, env);
   }
 };
