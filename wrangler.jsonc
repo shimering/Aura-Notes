@@ -12,17 +12,13 @@
   },
   "vars": {
     // Canonical origin, used as the Sign in with Freebuff baseUrl.
-    "APP_ORIGIN": "https://aura-notes-pwa.gazarxperia.workers.dev"
-    // FREEBUFF_CLIENT_ID: set this after running the registration command:
-    //   npx @freebuff/auth register --project aura-notes --name "Aura Notes" \
-    //     --environment production \
-    //     --redirect-uri https://aura-notes-pwa.gazarxperia.workers.dev/auth/freebuff/callback
-    // "FREEBUFF_CLIENT_ID": "<printed-by-register>"
+    "APP_ORIGIN": "https://aura-notes-pwa.gazarxperia.workers.dev",
+    "FREEBUFF_CLIENT_ID": "548d02e3-9df4-4a70-963a-640a4b6474de"
   },
   "kv_namespaces": [
     {
       "binding": "AURA_SYNC_KV",
-      "id": "53d0a12a7d4747c2b38635e4d9f395c9"
+      "id": "344c61c31f594381bfeaa78d990d3dd2"
     }
   ]
 }
