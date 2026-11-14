@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
-import { Stroke, StrokePoint, PenTool, InkBackground } from '../types/note';
-import { renderStroke, eraseStrokesNearPoint } from '../utils/inkSmoothing';
+import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode } from '../types/note';
+import { renderStroke, eraseStrokesNearPoint, eraseStrokesPartial } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
 import { drawInkBackground } from '../utils/inkBackground';
 import { 
@@ -31,6 +31,8 @@ interface InkCanvasProps {
   defaultTool?: PenTool;
   defaultColor?: string;
   defaultWidth?: number;
+  defaultEraserWidth?: number;
+  defaultEraserMode?: EraserMode;
   defaultStylusOnly?: boolean;
 }
 
@@ -79,6 +81,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   defaultTool = 'fountain',
   defaultColor,
   defaultWidth = 4,
+  defaultEraserWidth = 24,
+  defaultEraserMode = 'object',
   defaultStylusOnly = false
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -92,7 +96,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [selectedTool, setSelectedTool] = useState<PenTool>(defaultTool);
   const [penColor, setPenColor] = useState<string>(defaultColor || (isDarkMode ? '#ffffff' : '#1e293b'));
   const [penWidth, setPenWidth] = useState<number>(defaultWidth);
-  const [eraserWidth, setEraserWidth] = useState<number>(24);
+  const [eraserWidth, setEraserWidth] = useState<number>(defaultEraserWidth);
+  const [eraserMode, setEraserMode] = useState<EraserMode>(defaultEraserMode);
   const [isStylusOnly, setIsStylusOnly] = useState<boolean>(defaultStylusOnly);
 
   // Momentary S Pen Eraser State: active while pressing button, DEACTIVATES ON RELEASE
@@ -127,6 +132,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       setPenWidth(defaultWidth);
     }
   }, [defaultWidth]);
+
+  useEffect(() => {
+    if (typeof defaultEraserWidth === 'number' && defaultEraserWidth > 0) {
+      setEraserWidth(defaultEraserWidth);
+    }
+  }, [defaultEraserWidth]);
+
+  useEffect(() => {
+    setEraserMode(defaultEraserMode);
+  }, [defaultEraserMode]);
 
   useEffect(() => {
     setIsStylusOnly(defaultStylusOnly);
@@ -538,6 +553,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
   }, [activateSpenEraser, deactivateSpenEraser]);
 
+  /**
+   * Applies the currently selected eraser mode at a canvas point.
+   * Object mode removes whole strokes; pixel mode only removes the covered part.
+   */
+  const eraseAtPoint = (strokeList: Stroke[], x: number, y: number) => {
+    return eraserMode === 'pixel'
+      ? eraseStrokesPartial(strokeList, x, y, eraserWidth)
+      : eraseStrokesNearPoint(strokeList, x, y, eraserWidth);
+  };
+
   // Pointer Down (stylus touches screen)
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     // 1. Stylus-Only Mode: Completely ignore any non-pen touch
@@ -572,9 +597,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (isEraserNow) {
       isEraserDrawingRef.current = true;
       previewStrokesRef.current = strokesRef.current;
-      // Instant stroke erasing preview: delete any existing stroke near this point
-      const eraseRadius = eraserWidth;
-      const { remaining, hasErased } = eraseStrokesNearPoint(strokesRef.current, startPoint.x, startPoint.y, eraseRadius);
+      // Instant erase preview: object mode deletes strokes, pixel mode clips them
+      const { remaining, hasErased } = eraseAtPoint(strokesRef.current, startPoint.x, startPoint.y);
       if (hasErased) {
         previewStrokesRef.current = remaining;
       }
@@ -610,14 +634,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     // ERASER MODE: preview erasing locally; committed as one undoable step on lift
     if (isEraserNow && isEraserDrawingRef.current) {
-      const eraseRadius = eraserWidth;
       let currentStrokes = previewStrokesRef.current ?? strokesRef.current;
       let anyErased = false;
 
       for (const ce of coalescedEvents) {
         const ptX = ce.clientX - rect.left;
         const ptY = ce.clientY - rect.top;
-        const res = eraseStrokesNearPoint(currentStrokes, ptX, ptY, eraseRadius);
+        const res = eraseAtPoint(currentStrokes, ptX, ptY);
         if (res.hasErased) {
           currentStrokes = res.remaining;
           anyErased = true;
@@ -749,6 +772,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           onChangeWidth={setPenWidth}
           eraserWidth={eraserWidth}
           onChangeEraserWidth={setEraserWidth}
+          eraserMode={eraserMode}
+          onChangeEraserMode={setEraserMode}
           canUndo={canUndo}
           canRedo={canRedo}
           onUndo={handleUndo}
@@ -793,7 +818,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-ink-muted-light/60 dark:text-ink-muted-dark/60 text-sm">
             <p className="font-medium">Write with S Pen or Apple Pencil</p>
             <p className="text-xs mt-1">
-              Press S Pen button to Erase • Release to return to Pen • Choose size in toolbar
+              Press S Pen button to Erase • Release to return to Pen • Choose size & mode in toolbar
             </p>
           </div>
         )}
@@ -808,14 +833,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           >
             <span className={`w-2 h-2 rounded-full ${isSpenEraserArmed ? 'bg-rose-500 animate-pulse' : stylusTelemetry.status === 'hovering' ? 'bg-emerald-500' : stylusTelemetry.status === 'drawing' ? 'bg-violet-500' : 'bg-slate-400'}`} />
             <span>
-              S Pen: {isSpenEraserArmed ? `Eraser (${eraserWidth}px)` : stylusTelemetry.status === 'hovering' ? `Hovering (${penWidth}px Pen)` : stylusTelemetry.status === 'drawing' ? 'Inking' : 'Ready'}
+              S Pen: {isSpenEraserArmed ? `Eraser (${eraserMode === 'pixel' ? 'Pixel' : 'Object'}, ${eraserWidth}px)` : stylusTelemetry.status === 'hovering' ? `Hovering (${penWidth}px Pen)` : stylusTelemetry.status === 'drawing' ? 'Inking' : 'Ready'}
             </span>
             <Activity className="w-3 h-3 ml-0.5 opacity-60" />
           </button>
 
           {diagnosticHUD && (
             <div className="p-2.5 rounded-xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating text-[10px] font-mono text-ink-light dark:text-ink-dark space-y-1 animate-in fade-in">
-              <div>Eraser Active: <span className={isSpenEraserArmed ? "font-bold text-rose-500" : "text-emerald-500"}>{isSpenEraserArmed ? `YES (${eraserWidth}px)` : `NO (${penWidth}px Pen)`}</span></div>
+              <div>Eraser Active: <span className={isSpenEraserArmed ? "font-bold text-rose-500" : "text-emerald-500"}>{isSpenEraserArmed ? `YES (${eraserMode === 'pixel' ? 'Pixel' : 'Object'}, ${eraserWidth}px)` : `NO (${penWidth}px Pen)`}</span></div>
               <div>Buttons: <span className="font-semibold text-violet-500">{stylusTelemetry.buttons}</span> (button: {stylusTelemetry.button})</div>
               <div>Pressure: <span className="font-semibold">{stylusTelemetry.pressure.toFixed(2)}</span></div>
               <div>Last Event: <span className="text-emerald-500">{stylusTelemetry.lastTrigger}</span></div>
@@ -887,6 +912,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             setPenWidth(newWidth);
           }
         }}
+        eraserMode={eraserMode}
+        onChangeEraserMode={setEraserMode}
       />
     </div>
   );

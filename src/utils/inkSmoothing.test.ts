@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getStrokesBoundingBox, getPressureWidth, eraseStrokesNearPoint, isPointNearStroke } from './inkSmoothing';
+import { getStrokesBoundingBox, getPressureWidth, eraseStrokesNearPoint, eraseStrokesPartial, isPointNearStroke } from './inkSmoothing';
 import { Stroke } from '../types/note';
 
 describe('Ink Smoothing & Bounding Box', () => {
@@ -62,5 +62,74 @@ describe('Ink Smoothing & Bounding Box', () => {
     expect(hasErased).toBe(true);
     expect(remaining.length).toBe(1);
     expect(remaining[0].id).toBe('stroke-2');
+  });
+});
+
+describe('Pixel (partial) erasing', () => {
+  const makeStroke = (id: string, points: { x: number; y: number }[]): Stroke => ({
+    id,
+    points: points.map((p, i) => ({ ...p, pressure: 0.5, time: 100 + i * 10 })),
+    color: '#000000',
+    width: 4,
+    tool: 'pen'
+  });
+
+  it('splits a stroke in two when erasing through its middle', () => {
+    const stroke = makeStroke('line', [{ x: 0, y: 50 }, { x: 100, y: 50 }]);
+
+    const { remaining, hasErased } = eraseStrokesPartial([stroke], 50, 50, 10);
+
+    expect(hasErased).toBe(true);
+    expect(remaining).toHaveLength(2);
+    // First piece ends at the left edge of the eraser circle (radius 10 + 2px stroke padding).
+    expect(remaining[0].points[remaining[0].points.length - 1].x).toBeCloseTo(38, 5);
+    expect(remaining[0].points[0].x).toBe(0);
+    // Second piece starts at the right edge of the eraser circle.
+    expect(remaining[1].points[0].x).toBeCloseTo(62, 5);
+    expect(remaining[1].points[remaining[1].points.length - 1].x).toBe(100);
+    expect(remaining[0].id).not.toBe(remaining[1].id);
+  });
+
+  it('removes the entire stroke when it is fully covered', () => {
+    const stroke = makeStroke('covered', [{ x: 45, y: 50 }, { x: 55, y: 50 }]);
+
+    const { remaining, hasErased } = eraseStrokesPartial([stroke], 50, 50, 30);
+
+    expect(hasErased).toBe(true);
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('leaves strokes outside the eraser circle untouched', () => {
+    const stroke = makeStroke('far', [{ x: 300, y: 300 }, { x: 320, y: 320 }]);
+
+    const { remaining, hasErased } = eraseStrokesPartial([stroke], 50, 50, 24);
+
+    expect(hasErased).toBe(false);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toBe(stroke);
+  });
+
+  it('only clips the touched end of a stroke', () => {
+    const stroke = makeStroke('end', [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+
+    const { remaining, hasErased } = eraseStrokesPartial([stroke], 100, 0, 20);
+
+    expect(hasErased).toBe(true);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].points[0].x).toBe(0);
+    expect(remaining[0].points[remaining[0].points.length - 1].x).toBeCloseTo(78, 5);
+  });
+
+  it('keeps nearby strokes whole instead of deleting them like object mode', () => {
+    const left = makeStroke('left', [{ x: 0, y: 50 }, { x: 40, y: 50 }]);
+    const right = makeStroke('right', [{ x: 60, y: 50 }, { x: 100, y: 50 }]);
+
+    const partial = eraseStrokesPartial([left, right], 50, 50, 10);
+    expect(partial.remaining).toHaveLength(2);
+    expect(partial.remaining.every(s => s.points.length > 0)).toBe(true);
+
+    // Object mode deletes both strokes because their end points touch the circle.
+    const object = eraseStrokesNearPoint([left, right], 50, 50, 10);
+    expect(object.remaining).toHaveLength(0);
   });
 });

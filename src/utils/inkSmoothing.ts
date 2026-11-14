@@ -211,3 +211,178 @@ export function eraseStrokesNearPoint(
   });
   return { remaining, hasErased };
 }
+
+/**
+ * Interpolates a StrokePoint between two samples. Used to cut a stroke exactly
+ * at the eraser circle boundary so partial erasing stays smooth.
+ */
+function interpolatePoint(a: StrokePoint, b: StrokePoint, t: number): StrokePoint {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    pressure: a.pressure + (b.pressure - a.pressure) * t,
+    time: a.time + (b.time - a.time) * t
+  };
+}
+
+/**
+ * Returns the parameters (0..1) where a segment enters and exits a circle.
+ * Empty when the segment does not cross the circle.
+ */
+function segmentCircleIntersections(
+  a: StrokePoint,
+  b: StrokePoint,
+  cx: number,
+  cy: number,
+  radius: number
+): number[] {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const fx = a.x - cx;
+  const fy = a.y - cy;
+
+  const a2 = dx * dx + dy * dy;
+  if (a2 === 0) return [];
+
+  const b2 = 2 * (fx * dx + fy * dy);
+  const c2 = fx * fx + fy * fy - radius * radius;
+  const discriminant = b2 * b2 - 4 * a2 * c2;
+  if (discriminant < 0) return [];
+
+  const sqrtD = Math.sqrt(discriminant);
+  const epsilon = 1e-6;
+  const t1 = (-b2 - sqrtD) / (2 * a2);
+  const t2 = (-b2 + sqrtD) / (2 * a2);
+
+  const result: number[] = [];
+  if (t1 >= -epsilon && t1 <= 1 + epsilon) result.push(Math.min(1, Math.max(0, t1)));
+  if (t2 >= -epsilon && t2 <= 1 + epsilon) {
+    const clamped = Math.min(1, Math.max(0, t2));
+    if (!result.length || Math.abs(clamped - result[result.length - 1]) > epsilon) {
+      result.push(clamped);
+    }
+  }
+  return result;
+}
+
+/**
+ * Splits one stroke into the pieces that remain after removing the parts inside
+ * the eraser circle. Returns null when the stroke is untouched.
+ */
+function splitStrokeAroundCircle(
+  stroke: Stroke,
+  cx: number,
+  cy: number,
+  radius: number
+): StrokePoint[][] | null {
+  const points = stroke.points;
+  if (!points || points.length === 0) return null;
+
+  const radiusSq = radius * radius;
+  const inside = (p: StrokePoint) => {
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    return dx * dx + dy * dy <= radiusSq;
+  };
+
+  const firstInside = inside(points[0]);
+  let changed = firstInside;
+  let current: StrokePoint[] = firstInside ? [] : [points[0]];
+  const pieces: StrokePoint[][] = [];
+
+  const endRun = () => {
+    if (current.length > 0) {
+      pieces.push(current);
+      current = [];
+    }
+  };
+
+  const addPoint = (p: StrokePoint) => {
+    const last = current[current.length - 1];
+    if (!last || last.x !== p.x || last.y !== p.y) {
+      current.push(p);
+    }
+  };
+
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const aInside = inside(a);
+    const bInside = inside(b);
+
+    if (!aInside && !bInside) {
+      const ts = segmentCircleIntersections(a, b, cx, cy, radius);
+      if (ts.length >= 2) {
+        // Segment passes straight through the eraser: keep both outside ends.
+        addPoint(interpolatePoint(a, b, ts[0]));
+        endRun();
+        current = [interpolatePoint(a, b, ts[1])];
+        addPoint(b);
+        changed = true;
+      } else {
+        addPoint(b);
+      }
+    } else if (aInside && bInside) {
+      endRun();
+    } else if (!aInside && bInside) {
+      const ts = segmentCircleIntersections(a, b, cx, cy, radius);
+      if (ts.length > 0) addPoint(interpolatePoint(a, b, ts[0]));
+      endRun();
+      changed = true;
+    } else {
+      const ts = segmentCircleIntersections(a, b, cx, cy, radius);
+      const exitT = ts.length > 0 ? ts[ts.length - 1] : 0;
+      current = [interpolatePoint(a, b, exitT)];
+      addPoint(b);
+      changed = true;
+    }
+  }
+
+  endRun();
+  return changed ? pieces : null;
+}
+
+/**
+ * Pixel-style erasing: removes only the portion of each stroke inside the
+ * eraser circle and splits the remaining geometry into separate strokes.
+ * Unlike object erasing, nearby strokes are not deleted in full.
+ */
+export function eraseStrokesPartial(
+  strokes: Stroke[],
+  px: number,
+  py: number,
+  radius: number = 24
+): { remaining: Stroke[]; hasErased: boolean } {
+  if (strokes.length === 0) {
+    return { remaining: strokes, hasErased: false };
+  }
+
+  const safeRadius = Math.max(1, radius);
+  const remaining: Stroke[] = [];
+  let hasErased = false;
+
+  for (const stroke of strokes) {
+    if (stroke.tool === 'eraser') continue;
+
+    // Expand the clip radius by half the rendered stroke width so pixel erasing
+    // visually removes the ink, not just the centerline.
+    const strokePadding = stroke.tool === 'highlighter' ? stroke.width * 1.4 : stroke.width / 2;
+    const pieces = splitStrokeAroundCircle(stroke, px, py, safeRadius + strokePadding);
+    if (!pieces) {
+      remaining.push(stroke);
+      continue;
+    }
+
+    hasErased = true;
+    const baseId = stroke.id.split('~e')[0];
+    pieces.forEach((piece, index) => {
+      remaining.push({
+        ...stroke,
+        id: `${baseId}~e${index}`,
+        points: piece
+      });
+    });
+  }
+
+  return { remaining, hasErased };
+}

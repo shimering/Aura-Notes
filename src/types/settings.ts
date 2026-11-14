@@ -1,5 +1,5 @@
 import { ViewMode } from '../components/Header';
-import { PenTool } from './note';
+import { EraserMode, PenTool } from './note';
 
 export interface AppSettings {
   theme: 'light' | 'dark';
@@ -9,6 +9,8 @@ export interface AppSettings {
   defaultPenTool: PenTool;
   defaultPenColor: string;
   defaultPenWidth: number;
+  defaultEraserWidth: number;
+  defaultEraserMode: EraserMode;
   syncVaultKey: string;
   autoSyncEnabled: boolean;
   syncThemeAndLayout: boolean;
@@ -25,6 +27,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultPenTool: 'fountain',
   defaultPenColor: '#1e293b',
   defaultPenWidth: 4,
+  defaultEraserWidth: 24,
+  defaultEraserMode: 'object',
   syncVaultKey: '',
   autoSyncEnabled: true,
   syncThemeAndLayout: true,

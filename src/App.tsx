@@ -809,6 +809,8 @@ export default function App() {
                   defaultTool={settings.defaultPenTool}
                   defaultColor={settings.defaultPenColor}
                   defaultWidth={settings.defaultPenWidth}
+                  defaultEraserWidth={settings.defaultEraserWidth}
+                  defaultEraserMode={settings.defaultEraserMode}
                   defaultStylusOnly={settings.stylusOnly}
                   background={activeNote.inkBackground}
                   onChangeBackground={handleUpdateBackground}

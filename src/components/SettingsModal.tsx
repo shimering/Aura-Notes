@@ -14,7 +14,7 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { AppSettings } from '../types/settings';
-import { PenTool as PenToolType } from '../types/note';
+import { EraserMode, PenTool as PenToolType } from '../types/note';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -210,6 +210,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onChange={(e) => onUpdateSettings({ defaultPenWidth: Number(e.target.value) })}
                   className="w-full accent-violet-600"
                 />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <p className="text-xs font-semibold text-ink-light dark:text-ink-dark">Eraser Mode</p>
+                  <div className="flex items-center gap-1 p-0.5 rounded-lg bg-surface-light dark:bg-surface-dark">
+                    {(['object', 'pixel'] as EraserMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => onUpdateSettings({ defaultEraserMode: mode })}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition ${
+                          settings.defaultEraserMode === mode
+                            ? 'bg-rose-500 text-white shadow-sm'
+                            : 'text-ink-muted-light dark:text-ink-muted-dark'
+                        }`}
+                      >
+                        {mode === 'object' ? 'Object' : 'Pixel'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <p className="text-xs font-semibold text-ink-light dark:text-ink-dark">Eraser Size</p>
+                  <span className="text-[11px] font-mono text-ink-muted-light dark:text-ink-muted-dark">
+                    {settings.defaultEraserWidth}px
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={8}
+                  max={64}
+                  step={4}
+                  value={settings.defaultEraserWidth}
+                  onChange={(e) => onUpdateSettings({ defaultEraserWidth: Number(e.target.value) })}
+                  className="w-full accent-rose-500"
+                />
+                <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-1">
+                  Object removes whole strokes. Pixel erases only the covered part.
+                </p>
               </div>
 
               <label className="flex items-center justify-between cursor-pointer">

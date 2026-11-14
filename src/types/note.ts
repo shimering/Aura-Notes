@@ -7,6 +7,12 @@ export interface StrokePoint {
 
 export type PenTool = 'pen' | 'fountain' | 'highlighter' | 'eraser' | 'lasso';
 
+/**
+ * Object erasing removes whole vector strokes.
+ * Pixel erasing splits strokes and only removes the part under the eraser.
+ */
+export type EraserMode = 'object' | 'pixel';
+
 export type InkBackground = 'none' | 'ruled' | 'grid' | 'dotted';
 
 export interface Stroke {

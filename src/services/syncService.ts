@@ -299,6 +299,8 @@ export async function syncVaultWithCloud(
       defaultPenTool: localSettings.defaultPenTool,
       defaultPenColor: localSettings.defaultPenColor,
       defaultPenWidth: localSettings.defaultPenWidth,
+      defaultEraserWidth: localSettings.defaultEraserWidth,
+      defaultEraserMode: localSettings.defaultEraserMode,
       updatedAt: localSettings.updatedAt
     },
     deletedNoteIds: deletedIds,

@@ -18,7 +18,7 @@ import {
   Circle,
   Square
 } from 'lucide-react';
-import { PenTool, InkBackground } from '../types/note';
+import { PenTool, InkBackground, EraserMode } from '../types/note';
 import { INK_BACKGROUNDS } from '../utils/inkBackground';
 
 export const INK_PALETTE = [
@@ -52,6 +52,8 @@ interface PenToolbarProps {
   onChangeWidth: (width: number) => void;
   eraserWidth?: number;
   onChangeEraserWidth?: (width: number) => void;
+  eraserMode?: EraserMode;
+  onChangeEraserMode?: (mode: EraserMode) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -74,6 +76,26 @@ const BACKGROUND_ICONS: Record<InkBackground, React.ReactNode> = {
   dotted: <Circle className="w-3.5 h-3.5" />
 };
 
+const ERASER_MODES: {
+  id: EraserMode;
+  label: string;
+  description: string;
+  icon: React.ReactNode;
+}[] = [
+  {
+    id: 'object',
+    label: 'Object',
+    description: 'Object eraser — remove each touched stroke completely',
+    icon: <Trash2 className="w-3.5 h-3.5" />
+  },
+  {
+    id: 'pixel',
+    label: 'Pixel',
+    description: 'Pixel eraser — erase only the covered part of a stroke',
+    icon: <Eraser className="w-3.5 h-3.5" />
+  }
+];
+
 export const PenToolbar: React.FC<PenToolbarProps> = ({
   activeTool,
   onSelectTool,
@@ -83,6 +105,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   onChangeWidth,
   eraserWidth,
   onChangeEraserWidth,
+  eraserMode = 'object',
+  onChangeEraserMode,
   canUndo,
   canRedo,
   onUndo,
@@ -155,7 +179,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
                 onSelectTool('eraser');
               }
             }}
-            title={activeTool === 'eraser' ? "Eraser Active (Click to return to pen)" : "Eraser (or hold S Pen side button to erase momentarily)"}
+            title={activeTool === 'eraser' ? `Eraser Active — ${eraserMode === 'pixel' ? 'Pixel' : 'Object'} mode (Click to return to pen)` : "Eraser (or hold S Pen side button to erase momentarily)"}
             className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
               activeTool === 'eraser'
                 ? 'bg-rose-500 text-white shadow-md ring-2 ring-rose-400'
@@ -169,59 +193,96 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           <button
             type="button"
             onClick={() => setIsEraserMenuOpen(!isEraserMenuOpen)}
-            title="Choose Eraser Size (S Pen button eraser)"
-            className={`ml-1 text-[11px] font-semibold px-1.5 py-1 rounded-lg flex items-center gap-0.5 transition active:scale-95 ${
+            title="Choose Eraser Size & Mode (also used by S Pen button)"
+            className={`ml-1 text-[11px] font-semibold px-1.5 py-1 rounded-lg flex items-center gap-1 whitespace-nowrap transition active:scale-95 ${
               activeTool === 'eraser'
                 ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-200'
                 : 'bg-surface-subtle-light dark:bg-surface-subtle-dark text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light dark:hover:text-ink-dark'
             }`}
           >
+            <span>{eraserMode === 'pixel' ? 'Pixel' : 'Object'}</span>
+            <span className="opacity-50">·</span>
             <span>{eraserWidth ?? 24}px</span>
             <ChevronDown className="w-3 h-3 opacity-60" />
           </button>
 
           {/* Eraser Size Popover */}
           {isEraserMenuOpen && (
-            <div className="absolute top-full mt-2 left-0 z-50 p-2.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark flex flex-col gap-1.5 min-w-[210px] animate-in fade-in slide-in-from-top-1">
+            <div className="absolute top-full mt-2 left-0 z-50 p-2.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark flex flex-col gap-1.5 min-w-[240px] animate-in fade-in slide-in-from-top-1">
               <div className="flex items-center justify-between px-1 text-[11px] font-bold text-ink-light dark:text-ink-dark">
                 <span className="flex items-center gap-1.5">
                   <Eraser className="w-3.5 h-3.5 text-rose-500" />
-                  Eraser Size
+                  Eraser Settings
                 </span>
                 <span className="text-[10px] text-ink-muted-light dark:text-ink-muted-dark font-normal">
                   S Pen Button
                 </span>
               </div>
-              <div className="grid grid-cols-4 gap-1 pt-1">
-                {[
-                  { size: 12, label: '12px' },
-                  { size: 24, label: '24px' },
-                  { size: 36, label: '36px' },
-                  { size: 56, label: '56px' }
-                ].map((item) => {
-                  const isSel = (eraserWidth ?? 24) === item.size;
+
+              {/* Eraser Mode */}
+              <div className="grid grid-cols-2 gap-1 pt-1">
+                {ERASER_MODES.map((mode) => {
+                  const isSelected = eraserMode === mode.id;
                   return (
                     <button
-                      key={item.size}
+                      key={mode.id}
                       type="button"
-                      onClick={() => {
-                        onChangeEraserWidth?.(item.size);
-                        setIsEraserMenuOpen(false);
-                      }}
-                      className={`py-2 px-1 rounded-xl flex flex-col items-center justify-center gap-1 transition active:scale-95 ${
-                        isSel
-                          ? 'bg-rose-500 text-white shadow-md font-bold'
+                      onClick={() => onChangeEraserMode?.(mode.id)}
+                      title={mode.description}
+                      className={`px-2 py-1.5 rounded-xl flex items-center justify-center gap-1.5 text-[11px] transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-rose-500 text-white shadow-md font-semibold'
                           : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
                       }`}
                     >
-                      <div 
-                        className="rounded-full bg-current" 
-                        style={{ width: `${Math.min(16, Math.max(6, Math.round(item.size / 3.5)))}px`, height: `${Math.min(16, Math.max(6, Math.round(item.size / 3.5)))}px` }} 
-                      />
-                      <span className="text-[10px]">{item.label}</span>
+                      {mode.icon}
+                      <span>{mode.label}</span>
                     </button>
                   );
                 })}
+              </div>
+              <p className="px-1 text-[10px] leading-snug text-ink-muted-light dark:text-ink-muted-dark">
+                {eraserMode === 'pixel'
+                  ? 'Erases only the covered part of a stroke.'
+                  : 'Removes each touched stroke completely.'}
+              </p>
+
+              {/* Eraser Size */}
+              <div className="mt-1 pt-2 border-t border-surface-subtle-light dark:border-surface-subtle-dark">
+                <div className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted-light dark:text-ink-muted-dark">
+                  Size
+                </div>
+                <div className="grid grid-cols-4 gap-1">
+                  {[
+                    { size: 12, label: '12px' },
+                    { size: 24, label: '24px' },
+                    { size: 36, label: '36px' },
+                    { size: 56, label: '56px' }
+                  ].map((item) => {
+                    const isSel = (eraserWidth ?? 24) === item.size;
+                    return (
+                      <button
+                        key={item.size}
+                        type="button"
+                        onClick={() => {
+                          onChangeEraserWidth?.(item.size);
+                          setIsEraserMenuOpen(false);
+                        }}
+                        className={`py-2 px-1 rounded-xl flex flex-col items-center justify-center gap-1 transition active:scale-95 ${
+                          isSel
+                            ? 'bg-rose-500 text-white shadow-md font-bold'
+                            : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+                        }`}
+                      >
+                        <div 
+                          className="rounded-full bg-current" 
+                          style={{ width: `${Math.min(16, Math.max(6, Math.round(item.size / 3.5)))}px`, height: `${Math.min(16, Math.max(6, Math.round(item.size / 3.5)))}px` }} 
+                        />
+                        <span className="text-[10px]">{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
@@ -274,6 +335,27 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
             <span className="text-xs font-semibold text-rose-600 dark:text-rose-400 mr-0.5">
               Eraser:
             </span>
+            <div className="flex items-center p-0.5 rounded-lg bg-surface-subtle-light dark:bg-surface-subtle-dark">
+              {ERASER_MODES.map((mode) => {
+                const isSelected = eraserMode === mode.id;
+                return (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => onChangeEraserMode?.(mode.id)}
+                    title={mode.description}
+                    aria-pressed={isSelected}
+                    className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold transition active:scale-95 ${
+                      isSelected
+                        ? 'bg-rose-500 text-white shadow-sm'
+                        : 'text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light dark:hover:text-ink-dark'
+                    }`}
+                  >
+                    {mode.label}
+                  </button>
+                );
+              })}
+            </div>
             {[12, 24, 36, 56].map((size) => {
               const currentEraserSize = eraserWidth ?? 24;
               const isSelected = currentEraserSize === size;

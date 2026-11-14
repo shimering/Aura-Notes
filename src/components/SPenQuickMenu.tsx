@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { 
-  PenTool as PenToolType 
+  PenTool as PenToolType,
+  EraserMode
 } from '../types/note';
 import { 
   Feather, 
@@ -23,6 +24,8 @@ interface SPenQuickMenuProps {
   onChangeColor: (color: string) => void;
   width: number;
   onChangeWidth: (width: number) => void;
+  eraserMode?: EraserMode;
+  onChangeEraserMode?: (mode: EraserMode) => void;
 }
 
 export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
@@ -34,7 +37,9 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
   color,
   onChangeColor,
   width,
-  onChangeWidth
+  onChangeWidth,
+  eraserMode = 'object',
+  onChangeEraserMode
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -65,7 +70,7 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
   // Calculate coordinates clamped to viewport
   const getMenuStyle = () => {
     const menuWidth = 320;
-    const menuHeight = 360;
+    const menuHeight = 440;
     const padding = 16;
 
     if (!position) {
@@ -105,7 +110,7 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
     { id: 'fountain', label: 'Fountain', icon: <Feather className="w-4 h-4" />, desc: 'Calligraphic & pressure' },
     { id: 'pen', label: 'Ballpoint', icon: <Pen className="w-4 h-4" />, desc: 'Smooth & precise' },
     { id: 'highlighter', label: 'Highlighter', icon: <Highlighter className="w-4 h-4" />, desc: 'Soft transparent ink' },
-    { id: 'eraser', label: 'Eraser', icon: <Eraser className="w-4 h-4" />, desc: 'Precise stroke removal' },
+    { id: 'eraser', label: 'Eraser', icon: <Eraser className="w-4 h-4" />, desc: 'Object or pixel erase' },
   ];
 
   const currentColors = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
@@ -230,35 +235,101 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
           </div>
         )}
 
-        {/* 3. Stroke Thickness */}
+        {/* 3. Stroke Thickness / Eraser Controls */}
         <div className="mt-3 pt-3 border-t border-surface-subtle-light dark:border-surface-subtle-dark">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-semibold text-ink-muted-light dark:text-ink-muted-dark uppercase tracking-wider">
-              Thickness ({width}px)
-            </span>
-          </div>
-          <div className="grid grid-cols-4 gap-1.5">
-            {[2, 4, 7, 12].map((size) => {
-              const isSelected = width === size;
-              return (
-                <button
-                  key={size}
-                  onClick={() => onChangeWidth(size)}
-                  className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-95 ${
-                    isSelected
-                      ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold'
-                      : 'bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60 text-ink-muted-light hover:text-ink-light'
-                  }`}
-                >
-                  <div 
-                    className="rounded-full bg-current" 
-                    style={{ width: `${Math.min(12, size + 2)}px`, height: `${Math.min(12, size + 2)}px` }} 
-                  />
-                  <span className="text-[11px]">{size}px</span>
-                </button>
-              );
-            })}
-          </div>
+          {activeTool === 'eraser' ? (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-semibold text-ink-muted-light dark:text-ink-muted-dark uppercase tracking-wider">
+                  Eraser Mode
+                </span>
+                <span className="text-[10px] font-mono text-ink-muted-light dark:text-ink-muted-dark uppercase">
+                  {eraserMode === 'pixel' ? 'Pixel' : 'Object'} • {width}px
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 mb-2.5">
+                {([
+                  { id: 'object' as EraserMode, label: 'Object', desc: 'Remove whole stroke' },
+                  { id: 'pixel' as EraserMode, label: 'Pixel', desc: 'Partial erase' }
+                ]).map((mode) => {
+                  const isSelected = eraserMode === mode.id;
+                  return (
+                    <button
+                      key={mode.id}
+                      onClick={() => onChangeEraserMode?.(mode.id)}
+                      className={`py-1.5 px-2 rounded-xl flex flex-col items-center justify-center transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-rose-500 text-white shadow-sm font-semibold'
+                          : 'bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60 text-ink-muted-light hover:text-ink-light'
+                      }`}
+                    >
+                      <span className="text-[11px] leading-tight">{mode.label}</span>
+                      <span className={`text-[9px] leading-tight ${isSelected ? 'text-rose-100' : 'text-ink-muted-light dark:text-ink-muted-dark'}`}>
+                        {mode.desc}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-semibold text-ink-muted-light dark:text-ink-muted-dark uppercase tracking-wider">
+                  Eraser Size ({width}px)
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[12, 24, 36, 56].map((size) => {
+                  const isSelected = width === size;
+                  return (
+                    <button
+                      key={size}
+                      onClick={() => onChangeWidth(size)}
+                      className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-rose-500 text-white shadow-sm font-bold'
+                          : 'bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60 text-ink-muted-light hover:text-ink-light'
+                      }`}
+                    >
+                      <div
+                        className="rounded-full bg-current"
+                        style={{ width: `${Math.min(12, Math.max(5, Math.round(size / 5)))}px`, height: `${Math.min(12, Math.max(5, Math.round(size / 5)))}px` }}
+                      />
+                      <span className="text-[11px]">{size}px</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-semibold text-ink-muted-light dark:text-ink-muted-dark uppercase tracking-wider">
+                  Thickness ({width}px)
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[2, 4, 7, 12].map((size) => {
+                  const isSelected = width === size;
+                  return (
+                    <button
+                      key={size}
+                      onClick={() => onChangeWidth(size)}
+                      className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold'
+                          : 'bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60 text-ink-muted-light hover:text-ink-light'
+                      }`}
+                    >
+                      <div 
+                        className="rounded-full bg-current" 
+                        style={{ width: `${Math.min(12, size + 2)}px`, height: `${Math.min(12, size + 2)}px` }} 
+                      />
+                      <span className="text-[11px]">{size}px</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
