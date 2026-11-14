@@ -1,24 +1,25 @@
 name = "aura-notes-pwa"
 main = "src/worker.ts"
 compatibility_date = "2024-11-01"
+# Better Auth needs Node.js APIs (node:crypto, AsyncLocalStorage).
+compatibility_flags = ["nodejs_compat"]
 
 [assets]
 directory = "./dist"
 binding = "ASSETS"
-# Required so /auth/freebuff/* reaches the Worker instead of the SPA fallback.
+# Required so /api/auth/* reaches the Worker instead of the SPA fallback.
 run_worker_first = true
 not_found_handling = "single-page-application"
 
 [vars]
-# Canonical origin, used as the Sign in with Freebuff baseUrl.
+# Canonical site origin, also used for same-origin write checks.
 APP_ORIGIN = "https://aura-notes-pwa.gazarxperia.workers.dev"
-FREEBUFF_CLIENT_ID = "548d02e3-9df4-4a70-963a-640a4b6474de"
 
 [[kv_namespaces]]
 binding = "AURA_SYNC_KV"
 id = "53d0a12a7d4747c2b38635e4d9f395c9"
 
-# Per-user account records and note metadata.
+# Per-user account, Better Auth session data, and note metadata.
 [[d1_databases]]
 binding = "DB"
 database_name = "aura-notes"

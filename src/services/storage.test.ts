@@ -115,7 +115,7 @@ describe('Storage Service', () => {
   it('keeps account namespaces separate from device notes', async () => {
     await saveNote(makeNote('device-note', { title: 'Device Only' }));
 
-    setStorageNamespace('freebuff-user-123');
+    setStorageNamespace('account-user-123');
     const accountNotes = await getAllNotes();
     expect(accountNotes).toHaveLength(0); // accounts start empty, no welcome note
 

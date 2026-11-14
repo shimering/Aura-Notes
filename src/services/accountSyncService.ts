@@ -6,7 +6,7 @@ import { getDeletedNoteTombstones } from './syncService';
  * Account sync: one signed-in visitor's notes stored in Cloudflare.
  *
  * Metadata (title, tags, timestamps, tombstones) lives in D1 and the full note
- * payload lives in R2, both keyed by the Freebuff `sub` on the server. This
+ * payload lives in R2, both keyed by the Better Auth user id on the server. This
  * module only ever talks to the site's own origin, so the session cookie stays
  * HttpOnly and the client never sees a token.
  */
@@ -65,7 +65,7 @@ async function errorMessageFor(response: Response): Promise<string> {
 
 async function toSyncError(response: Response): Promise<AccountSyncError> {
   if (response.status === 401) {
-    return new AccountSyncError('Sign in with Freebuff to sync your notes.', 'auth_required');
+    return new AccountSyncError('Sign in to sync your notes.', 'auth_required');
   }
   if (response.status === 503) {
     return new AccountSyncError('Account storage is not available yet.', 'storage_unavailable');

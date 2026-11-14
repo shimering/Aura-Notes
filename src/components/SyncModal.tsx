@@ -26,7 +26,7 @@ import {
   parseVaultJson 
 } from '../services/syncService';
 import { AccountPanel } from './AccountPanel';
-import { FreebuffUser } from '../services/authService';
+import { AuthUser } from '../services/authService';
 
 interface SyncModalProps {
   isOpen: boolean;
@@ -38,7 +38,9 @@ interface SyncModalProps {
   onUpdateSettings: (updates: Partial<AppSettings>) => Promise<void>;
   isSyncing: boolean;
   syncError: string | null;
-  account?: FreebuffUser | null;
+  account?: AuthUser | null;
+  googleEnabled?: boolean;
+  onAccountSignedIn?: () => void;
   onAccountSignedOut?: () => void;
 }
 
@@ -53,6 +55,8 @@ export const SyncModal: React.FC<SyncModalProps> = ({
   isSyncing,
   syncError,
   account = null,
+  googleEnabled = false,
+  onAccountSignedIn,
   onAccountSignedOut
 }) => {
   const [inputVaultKey, setInputVaultKey] = useState('');
@@ -187,8 +191,13 @@ export const SyncModal: React.FC<SyncModalProps> = ({
 
         {/* Content Body */}
         <div className="p-6 overflow-y-auto space-y-6 text-ink-light dark:text-ink-dark text-sm">
-          {/* Optional Sign in with Freebuff account */}
-          <AccountPanel user={account} onSignedOut={onAccountSignedOut} />
+          {/* Optional account sign-in */}
+          <AccountPanel
+            user={account}
+            googleEnabled={googleEnabled}
+            onSignedIn={onAccountSignedIn}
+            onSignedOut={onAccountSignedOut}
+          />
 
           {isAccountMode ? (
             /* Signed-in account storage */
@@ -205,8 +214,8 @@ export const SyncModal: React.FC<SyncModalProps> = ({
 
                 <p className="text-xs text-ink-muted-light dark:text-ink-muted-dark leading-relaxed">
                   Your notes are stored in your own Cloudflare-backed account (metadata in D1, note
-                  content in R2) and load on any device where you sign in with Freebuff. Notes
-                  already on this device stay separate in local storage.
+                  content in R2) and load on any device where you sign in. Notes already on this
+                  device stay separate in local storage.
                 </p>
 
                 <div className="flex items-center justify-between pt-1">

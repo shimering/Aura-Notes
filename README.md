@@ -65,7 +65,7 @@ Production is a **Cloudflare Worker** (`src/worker.ts`), not a static Pages proj
 | Worker config | `wrangler.jsonc` (mirrored by `wrangler.toml`) |
 | Static assets | `dist/` (built by `npm run build`), served through the `ASSETS` binding with SPA fallback |
 | Anonymous vault storage | Workers KV binding `AURA_SYNC_KV` |
-| Account records + note metadata | D1 binding `DB` (database `aura-notes`) |
+| Account records + Better Auth tables | D1 binding `DB` (database `aura-notes`) |
 | Signed-in note payloads | R2 binding `NOTES_BUCKET` (bucket `aura-notes-storage`) |
 
 ### Step 1: Sign in with Wrangler
@@ -93,15 +93,44 @@ npx wrangler r2 bucket create aura-notes-storage
 
 Copy the D1 `database_id` into `d1_databases` (`binding: "DB"`) and the bucket name into `r2_buckets` (`binding: "NOTES_BUCKET"`) in **both** `wrangler.jsonc` and `wrangler.toml`.
 
-Then apply the account schema:
+Then apply the account and auth schema:
 
 ```bash
 npx wrangler d1 execute aura-notes --remote --file migrations/0001_accounts.sql
+npx wrangler d1 execute aura-notes --remote --file migrations/0002_better_auth.sql
 ```
 
-The migration is idempotent (`CREATE TABLE IF NOT EXISTS`), so it is safe to re-run. Without the `DB` / `NOTES_BUCKET` bindings the app still runs for signed-out visitors, but `/api/notes` returns `503 storage_not_configured`.
+Both migrations are idempotent (`CREATE TABLE IF NOT EXISTS`), so they are safe to re-run. Without the `DB` / `NOTES_BUCKET` bindings the app still runs for signed-out visitors, but `/api/notes` returns `503 storage_not_configured`.
 
-### Step 4: Build and deploy
+### Step 4: Configure sign-in (Better Auth)
+
+Auth runs inside the Worker and stores users and sessions in D1. `BETTER_AUTH_SECRET` is required; the two Google secrets enable the "Continue with Google" button:
+
+| Secret | Value |
+| --- | --- |
+| `BETTER_AUTH_SECRET` | Random string, at least 32 characters (`openssl rand -base64 32`) |
+| `GOOGLE_CLIENT_ID` | Google OAuth **Web application** client ID (optional) |
+| `GOOGLE_CLIENT_SECRET` | Matching Google OAuth client secret (optional) |
+
+```bash
+npx wrangler secret put BETTER_AUTH_SECRET
+# Optional, enables Google sign-in:
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put GOOGLE_CLIENT_SECRET
+```
+
+In **Google Cloud Console → APIs & Services → Credentials**, create an OAuth client of type **Web application** and add these authorized redirect URIs:
+
+```
+https://aura-notes-pwa.gazarxperia.workers.dev/api/auth/callback/google
+http://localhost:8787/api/auth/callback/google
+```
+
+Email/password sign-in works without Google credentials; the Google button hides itself when the two Google secrets are absent. Without `BETTER_AUTH_SECRET` (or the `DB` binding) the Worker reports auth as unavailable and the app stays local-only.
+
+For local testing, create `.dev.vars` (git-ignored) with the same values and run `npm run dev:worker`. Plain `npm run dev` serves Vite without the Worker, so `/api/auth/*` and `/api/notes` do not exist there.
+
+### Step 5: Build and deploy
 
 ```bash
 npm run deploy
@@ -117,27 +146,32 @@ https://aura-notes-pwa.gazarxperia.workers.dev
 
 The app is live at that URL immediately; installed PWAs pick up the new service worker on their next launch (`vite-plugin-pwa` is configured with `registerType: 'autoUpdate'`).
 
-### Sign in with Freebuff (per-user account sync)
+### Accounts (Better Auth, per-user sync)
 
 Signing in is **optional**. The app is fully usable offline and signed out; notes then live in this browser's local storage, and the anonymous vault key (below) still works.
 
-While signed in, notes sync to that visitor's own Cloudflare storage:
+Accounts are self-hosted with **Better Auth** inside the Worker. Email/password and Google sign-in are supported; there is no email provider, so there is no email verification and no self-service password reset (change the password from the account panel while signed in).
+
+While signed in, notes sync to that account's own Cloudflare storage:
 
 | Piece | Where it lives |
 | --- | --- |
-| Identity | Freebuff (`GET /auth/freebuff/session`); session is the SDK's `__Host-freebuff_session` HttpOnly cookie |
-| User rows + note metadata (title, tags, pin, timestamps, tombstones) | D1 `users` and `notes`, keyed by Freebuff `sub` |
-| Full note payload (rich text + ink strokes) | R2 `users/<sub>/notes/<note id>.json` |
+| Identity | Better Auth inside the Worker; `aura.session_token` HttpOnly cookie |
+| Users, sessions, linked OAuth accounts, rate limits | D1 `user`, `session`, `account`, `verification`, `rateLimit` |
+| Note metadata (title, tags, pin, timestamps, tombstones) | D1 `notes`, keyed by Better Auth `user.id` |
+| Full note payload (rich text + ink strokes) | R2 `users/<user id>/notes/<note id>.json` |
 
 Behaviour and guarantees:
 
 1. **Each account starts empty.** Notes already on the device are *not* uploaded on first sign-in; they stay in the signed-out local namespace. The account gets its own local IndexedDB namespace too, so switching accounts never mixes notes.
 2. Sync is last-write-wins per note with tombstones for deletions, and runs on load, after edits, when the tab becomes visible, and from **Sync Now**.
 3. Offline edits stay in IndexedDB and upload when the connection returns.
-4. `/api/notes` is auth-required: every request returns `401` when signed out, and writes must be same-origin (`403` otherwise). The Worker keys all rows on the session's `sub`; no user id is accepted from the request.
+4. `/api/notes` is auth-required: every request returns `401` when signed out, and writes must be same-origin (`403` otherwise). The Worker keys all rows on the session's `user.id`; no user id is accepted from the request.
 5. Signing out reloads the app back into the device's signed-out notes.
+6. Accounts created with the previous Freebuff integration are **not** migrated. Their D1 rows, R2 objects, and local namespaces are left untouched but are no longer reachable.
+7. Password accounts are not auto-linked to a same-email Google sign-in (`disableImplicitLinking`), because email addresses are unverified.
 
-Client code: `src/services/accountSyncService.ts` (sync), `src/services/storage.ts` (`setStorageNamespace`), and `src/App.tsx` (bootstrap + sync triggers). Server code: `handleNotesApi` / `handleAccountApi` in `src/worker.ts`.
+Client code: `src/services/authService.ts` (sign-in/out), `src/services/accountSyncService.ts` (sync), `src/services/storage.ts` (`setStorageNamespace`), and `src/App.tsx` (bootstrap + sync triggers). Server code: `src/auth.ts` (Better Auth config) and `handleNotesApi` in `src/worker.ts`.
 
 ### Cross-Device Sync
 

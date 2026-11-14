@@ -1,4 +1,4 @@
-import { createFreebuffAuth, isSameOriginRequest, type FreebuffAuth } from '@freebuff/auth';
+import { getAuth } from './auth';
 
 interface D1PreparedStatementLike {
   bind: (...values: unknown[]) => D1PreparedStatementLike;
@@ -9,6 +9,8 @@ interface D1PreparedStatementLike {
 
 interface D1DatabaseLike {
   prepare: (query: string) => D1PreparedStatementLike;
+  batch?: (statements: D1PreparedStatementLike[]) => Promise<unknown>;
+  exec?: (query: string) => Promise<unknown>;
 }
 
 interface R2ObjectBodyLike {
@@ -22,11 +24,11 @@ interface R2BucketLike {
 }
 
 interface AuthUser {
-  sub: string;
-  email?: string;
-  name?: string;
-  picture?: string;
-  email_verified?: boolean;
+  id: string;
+  email?: string | null;
+  name?: string | null;
+  image?: string | null;
+  emailVerified?: boolean;
 }
 
 interface Env {
@@ -37,16 +39,17 @@ interface Env {
     get: (key: string) => Promise<string | null>;
     put: (key: string, value: string) => Promise<void>;
   };
-  /** D1 database for users and per-user note metadata. */
+  /** D1 database for Better Auth users/sessions and per-user note metadata. */
   DB?: D1DatabaseLike;
   /** R2 bucket holding full note payloads (rich text + ink strokes). */
   NOTES_BUCKET?: R2BucketLike;
-  /** Public client ID from `npx @freebuff/auth register`. Not a secret. */
-  FREEBUFF_CLIENT_ID?: string;
-  /** Only set for a non-production Freebuff issuer. */
-  FREEBUFF_ISSUER?: string;
-  /** Canonical site origin, e.g. https://aura-notes-pwa.gazarxperia.workers.dev. */
+  /** Canonical site origin, used for same-origin write checks. */
   APP_ORIGIN?: string;
+  /** Better Auth signing secret (Worker secret, at least 32 characters). */
+  BETTER_AUTH_SECRET?: string;
+  /** Google OAuth client credentials (Worker secrets). */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
 }
 
 // In-memory fallback if KV is not configured on Cloudflare
@@ -63,49 +66,38 @@ function jsonResponse(body: unknown, status = 200, extraHeaders: Record<string, 
   });
 }
 
-interface AuthRuntime {
-  wrap: (request: Request, env: Env) => Promise<Response>;
-  getUser: (request: Request) => Promise<AuthUser | null>;
+function requestOrigin(request: Request): string {
+  try {
+    return new URL(request.url).origin;
+  } catch {
+    return '';
+  }
 }
 
-// One auth instance per isolate caches discovery documents and signing keys.
-let authRuntime: AuthRuntime | null = null;
-let authRuntimeKey = '';
+/**
+ * Rejects cross-origin writes while allowing non-browser clients (curl, tests)
+ * that send no origin metadata. Browsers always send at least one of these.
+ */
+function isSameOriginRequest(request: Request, origin: string): boolean {
+  const expected = origin.trim().replace(/\/+$/, '');
+  if (!expected) return false;
 
-function getAuthRuntime(env: Env): AuthRuntime | null {
-  const clientId = env.FREEBUFF_CLIENT_ID?.trim();
-  const origin = (env.APP_ORIGIN || '').trim().replace(/\/+$/, '');
-  if (!clientId || !origin) return null;
+  const originHeader = request.headers.get('origin');
+  if (originHeader) return originHeader === expected;
 
-  const cacheKey = `${clientId}|${origin}|${env.FREEBUFF_ISSUER || ''}`;
-  if (authRuntime && authRuntimeKey === cacheKey) return authRuntime;
-
-  let auth: FreebuffAuth;
-  try {
-    auth = createFreebuffAuth({
-      clientId,
-      baseUrl: origin,
-      ...(env.FREEBUFF_ISSUER ? { issuer: env.FREEBUFF_ISSUER } : {}),
-    });
-  } catch (error) {
-    // A bad client ID or origin must never take the notes app down: sign-in is
-    // optional, local editing and the anonymous vault keep working without it.
-    console.error(
-      'Sign in with Freebuff is misconfigured:',
-      error instanceof Error ? error.message : 'unknown error'
-    );
-    authRuntime = null;
-    authRuntimeKey = '';
-    return null;
+  const referer = request.headers.get('referer');
+  if (referer) {
+    try {
+      return new URL(referer).origin === expected;
+    } catch {
+      return false;
+    }
   }
 
-  authRuntime = {
-    // `wrap` serves /auth/freebuff/* and refreshes the session cookie.
-    wrap: auth.wrap(handleRequest),
-    getUser: (request) => auth.getUser(request),
-  };
-  authRuntimeKey = cacheKey;
-  return authRuntime;
+  const fetchSite = request.headers.get('sec-fetch-site');
+  if (fetchSite) return fetchSite === 'same-origin';
+
+  return true;
 }
 
 /* ----------------------------- Account storage ---------------------------- */
@@ -127,9 +119,9 @@ interface NoteMetaRow {
   sizeBytes: number;
 }
 
-function noteObjectKey(userSub: string, noteId: string): string {
-  // Encode the subject so an unusual `sub` cannot create stray key segments.
-  return `users/${encodeURIComponent(userSub)}/notes/${noteId}.json`;
+function noteObjectKey(userId: string, noteId: string): string {
+  // Encode the user id so unusual characters cannot create stray key segments.
+  return `users/${encodeURIComponent(userId)}/notes/${noteId}.json`;
 }
 
 function parseTags(raw: unknown): string[] {
@@ -150,46 +142,33 @@ function parseTags(raw: unknown): string[] {
 }
 
 async function getRequestUser(request: Request, env: Env): Promise<AuthUser | null> {
-  const runtime = getAuthRuntime(env);
-  if (!runtime) return null;
+  const config = getAuth(env, requestOrigin(request));
+  if (!config) return null;
   try {
-    const user = await runtime.getUser(request);
-    return user && typeof user.sub === 'string' && user.sub ? user : null;
+    const result = await config.auth.api.getSession({ headers: request.headers });
+    const user = result?.user;
+    if (!user || typeof user.id !== 'string' || !user.id) return null;
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      image: user.image,
+      emailVerified: user.emailVerified
+    };
   } catch (error) {
-    console.warn('Could not read Freebuff session:', error instanceof Error ? error.message : 'unknown');
+    console.warn('Could not read auth session:', error instanceof Error ? error.message : 'unknown');
     return null;
   }
-}
-
-async function ensureUserRow(db: D1DatabaseLike, user: AuthUser): Promise<void> {
-  const now = Date.now();
-  // Only touch the row when the profile actually changed, so steady-state
-  // requests stay read-only.
-  await db
-    .prepare(
-      `INSERT INTO users (sub, email, name, picture, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(sub) DO UPDATE SET
-         email = excluded.email,
-         name = excluded.name,
-         picture = excluded.picture,
-         updated_at = excluded.updated_at
-       WHERE users.email IS NOT excluded.email
-          OR users.name IS NOT excluded.name
-          OR users.picture IS NOT excluded.picture`
-    )
-    .bind(user.sub, user.email ?? null, user.name ?? null, user.picture ?? null, now, now)
-    .run();
 }
 
 async function requireAccount(
   request: Request,
   env: Env
 ): Promise<{ user: AuthUser; db: D1DatabaseLike; bucket: R2BucketLike } | Response> {
-  const runtime = getAuthRuntime(env);
-  if (!runtime) {
+  const config = getAuth(env, requestOrigin(request));
+  if (!config) {
     return jsonResponse(
-      { error: 'Sign in with Freebuff is not configured yet', code: 'auth_not_configured' },
+      { error: 'Account sign-in is not configured yet', code: 'auth_not_configured' },
       503,
       NO_STORE
     );
@@ -207,16 +186,10 @@ async function requireAccount(
     return jsonResponse({ error: 'Sign in required', code: 'auth_required' }, 401, NO_STORE);
   }
 
-  try {
-    await ensureUserRow(env.DB, user);
-  } catch (error) {
-    console.warn('Could not upsert user row:', error instanceof Error ? error.message : 'unknown');
-  }
-
   return { user, db: env.DB, bucket: env.NOTES_BUCKET };
 }
 
-async function listNotes(userSub: string, db: D1DatabaseLike): Promise<Response> {
+async function listNotes(userId: string, db: D1DatabaseLike): Promise<Response> {
   const { results } = await db
     .prepare(
       `SELECT id, title, tags, color, pinned,
@@ -226,7 +199,7 @@ async function listNotes(userSub: string, db: D1DatabaseLike): Promise<Response>
        WHERE user_sub = ?
        ORDER BY updated_at DESC`
     )
-    .bind(userSub)
+    .bind(userId)
     .all<NoteMetaRow>();
 
   const notes = (results || []).map((row) => ({
@@ -416,7 +389,7 @@ async function handleNotesApi(request: Request, env: Env, noteId?: string): Prom
     if (method !== 'GET') {
       return jsonResponse({ error: 'Method not allowed' }, 405, NO_STORE);
     }
-    return listNotes(user.sub, db);
+    return listNotes(user.id, db);
   }
 
   if (!NOTE_ID_PATTERN.test(noteId)) {
@@ -424,63 +397,59 @@ async function handleNotesApi(request: Request, env: Env, noteId?: string): Prom
   }
 
   if (method === 'GET') {
-    return getNote(user.sub, db, bucket, noteId);
+    return getNote(user.id, db, bucket, noteId);
   }
 
   if (method !== 'PUT' && method !== 'DELETE') {
     return jsonResponse({ error: 'Method not allowed' }, 405, NO_STORE);
   }
 
-  const origin = (env.APP_ORIGIN || '').trim().replace(/\/+$/, '');
-  if (!origin || !isSameOriginRequest(request, origin)) {
+  const expectedOrigin = requestOrigin(request);
+  if (!expectedOrigin || !isSameOriginRequest(request, expectedOrigin)) {
     return jsonResponse({ error: 'Cross-origin request rejected', code: 'cross_origin' }, 403, NO_STORE);
   }
 
   if (method === 'PUT') {
-    return putNote(request, user.sub, db, bucket, noteId);
+    return putNote(request, user.id, db, bucket, noteId);
   }
-  return deleteNote(user.sub, db, bucket, noteId);
+  return deleteNote(user.id, db, bucket, noteId);
 }
 
 /**
- * Signed-in account API. Returns the current user and persists their account
- * row in D1 so the first request from a new visitor registers them.
+ * Reports whether sign-in is configured and which providers are enabled. The
+ * client hides the account panel when auth routes are absent entirely.
  */
-async function handleAccountApi(request: Request, env: Env): Promise<Response> {
-  const runtime = getAuthRuntime(env);
-  if (!runtime) {
-    return jsonResponse(
-      { error: 'Sign in with Freebuff is not configured yet', code: 'auth_not_configured' },
-      503,
-      NO_STORE
-    );
-  }
-
+function handleAuthConfig(request: Request, env: Env): Response {
   if (request.method !== 'GET') {
     return jsonResponse({ error: 'Method not allowed' }, 405, NO_STORE);
   }
-
-  const user = await getRequestUser(request, env);
-  if (!user) {
-    return jsonResponse({ error: 'Sign in required' }, 401, NO_STORE);
-  }
-
-  if (env.DB) {
-    try {
-      await ensureUserRow(env.DB, user);
-    } catch (error) {
-      console.warn('Could not upsert user row:', error instanceof Error ? error.message : 'unknown');
-    }
-  }
-
-  return jsonResponse({ user }, 200, NO_STORE);
+  const config = getAuth(env, requestOrigin(request));
+  return jsonResponse(
+    { available: Boolean(config), google: Boolean(config?.googleEnabled) },
+    200,
+    NO_STORE
+  );
 }
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === '/api/account') {
-      return handleAccountApi(request, env);
+    if (url.pathname === '/api/auth-config') {
+      return handleAuthConfig(request, env);
+    }
+
+    // Better Auth serves /api/auth/*: sign-up, sign-in, OAuth callbacks and
+    // session cookies. It must run before static assets (run_worker_first).
+    if (url.pathname === '/api/auth' || url.pathname.startsWith('/api/auth/')) {
+      const config = getAuth(env, requestOrigin(request));
+      if (!config) {
+        return jsonResponse(
+          { error: 'Account sign-in is not configured yet', code: 'auth_not_configured' },
+          503,
+          NO_STORE
+        );
+      }
+      return config.auth.handler(request);
     }
 
     // Per-user note storage: /api/notes and /api/notes/:id
@@ -659,10 +628,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const runtime = getAuthRuntime(env);
-    // Auth must run before static assets so /auth/freebuff/* is not swallowed
-    // by the SPA fallback (assets.run_worker_first is set in wrangler config).
-    if (!runtime) return handleRequest(request, env);
-    return runtime.wrap(request, env);
+    return handleRequest(request, env);
   }
 };

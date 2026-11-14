@@ -15,7 +15,7 @@ import {
   saveSettings, 
   syncVaultWithCloud 
 } from './services/syncService';
-import { fetchFreebuffSession, FreebuffUser } from './services/authService';
+import { fetchAuthConfig, fetchAuthSession, AuthUser } from './services/authService';
 import { AccountSyncError, syncAccountNotes } from './services/accountSyncService';
 import { Header, ViewMode } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -45,10 +45,12 @@ export default function App() {
   const [installPrompt, setInstallPrompt] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [account, setAccount] = useState<FreebuffUser | null>(null);
-  // False when the auth routes are absent (plain `vite dev`): the account
-  // panel then hides itself instead of offering a link that 404s.
+  const [account, setAccount] = useState<AuthUser | null>(null);
+  // False when the auth routes are absent (plain `vite dev`) or the Worker has
+  // no auth secret: the account panel then hides itself instead of offering a
+  // form that cannot work.
   const [authAvailable, setAuthAvailable] = useState(true);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
 
   const inkCanvasRef = useRef<InkCanvasRef>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -65,8 +67,8 @@ export default function App() {
   const activeNoteIdRef = useRef<string | null>(activeNoteId);
   activeNoteIdRef.current = activeNoteId;
 
-  // Signed-in Freebuff user, mirrored into a ref for use inside callbacks.
-  const accountRef = useRef<FreebuffUser | null>(null);
+  // Signed-in account user, mirrored into a ref for use inside callbacks.
+  const accountRef = useRef<AuthUser | null>(null);
   accountRef.current = account;
 
   const isSyncingRef = useRef<boolean>(false);
@@ -165,7 +167,7 @@ export default function App() {
 
   /**
    * Account sync for signed-in visitors: D1 metadata + R2 payloads, scoped to
-   * their Freebuff `sub` by the Worker. Notes from this device's anonymous
+   * their Better Auth user id by the Worker. Notes from this device's anonymous
    * namespace are never uploaded.
    */
   const executeAccountSync = useCallback(async () => {
@@ -233,12 +235,16 @@ export default function App() {
       try {
         // 0. Identify the visitor first: signed-in notes live in their own
         //    local namespace and in their Cloudflare account.
-        const session = await fetchFreebuffSession();
+        const [session, authConfig] = await Promise.all([
+          fetchAuthSession(),
+          fetchAuthConfig()
+        ]);
         const user = session.status === 'signed-in' ? session.user : null;
         accountRef.current = user;
         setAccount(user);
-        setAuthAvailable(session.status !== 'unavailable');
-        setStorageNamespace(user ? user.sub : null);
+        setAuthAvailable(authConfig.available);
+        setGoogleEnabled(authConfig.google);
+        setStorageNamespace(user ? user.id : null);
 
         // 1. Load settings
         const loadedSettings = await getSettings();
@@ -559,6 +565,12 @@ export default function App() {
     window.location.reload();
   };
 
+  // Signing in switches to a new namespace; a reload re-runs bootstrap with the
+  // session cookie that Better Auth just set.
+  const handleAccountSignedIn = () => {
+    window.location.reload();
+  };
+
   // Import backup vault
   const handleImportVault = async (importedNotes: Note[], importedSettings?: Partial<AppSettings>) => {
     const current = notesRef.current;
@@ -853,6 +865,8 @@ export default function App() {
         isSyncing={isSyncing}
         syncError={syncError}
         account={authAvailable ? account : undefined}
+        googleEnabled={googleEnabled}
+        onAccountSignedIn={handleAccountSignedIn}
         onAccountSignedOut={handleAccountSignedOut}
       />
 

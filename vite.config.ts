@@ -159,8 +159,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
-        // Never answer auth or API routes from the offline shell: sign-in must
-        // reach the Worker so it can redirect to Freebuff.
+        // Never answer auth or API routes from the offline shell: sign-in, OAuth
+        // callbacks and session checks must reach the Worker.
         navigateFallbackDenylist: [/^\/auth\//, /^\/api\//],
         cleanupOutdatedCaches: true,
         runtimeCaching: [

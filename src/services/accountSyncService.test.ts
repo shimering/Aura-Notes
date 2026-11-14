@@ -114,7 +114,7 @@ function noteMeta(note: Note) {
 describe('Account Sync Service', () => {
   beforeEach(async () => {
     await __resetStorageForTests();
-    setStorageNamespace('freebuff-test-user');
+    setStorageNamespace('account-test-user');
   });
 
   afterEach(() => {

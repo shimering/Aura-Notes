@@ -20,7 +20,7 @@ const MIGRATED_KEY = 'aura_notes_migrated_v2';
 const ACTIVE_NOTE_ID_KEY = 'aura_active_note_id';
 
 /** Current storage owner: null for the signed-out device namespace. */
-let namespaceSub: string | null = null;
+let namespaceUserId: string | null = null;
 
 // In-memory fallback for environments without indexedDB (Node tests, strict private browsing)
 interface MemoryNamespace {
@@ -36,7 +36,7 @@ function hasIndexedDB(): boolean {
 }
 
 function memoryNamespace(): MemoryNamespace {
-  const key = namespaceSub ? `user:${namespaceSub}` : 'anonymous';
+  const key = namespaceUserId ? `user:${namespaceUserId}` : 'anonymous';
   let entry = memoryNamespaces.get(key);
   if (!entry) {
     entry = { notes: new Map(), meta: new Map() };
@@ -58,12 +58,12 @@ function hashString(value: string): string {
  * Points local storage at one visitor's namespace.
  *
  * `null` selects the signed-out device namespace (existing notes, welcome note,
- * legacy migration). A Freebuff `sub` selects that account's own namespace,
+ * legacy migration). A Better Auth user id selects that account's own namespace,
  * which starts empty and never seeds the welcome note.
  */
-export function setStorageNamespace(sub: string | null): void {
-  const next = typeof sub === 'string' && sub.trim() ? sub.trim() : null;
-  namespaceSub = next;
+export function setStorageNamespace(userId: string | null): void {
+  const next = typeof userId === 'string' && userId.trim() ? userId.trim() : null;
+  namespaceUserId = next;
 
   if (!next) {
     notesStore = createStore(ANON_NOTES_DB, 'notes');
@@ -71,15 +71,15 @@ export function setStorageNamespace(sub: string | null): void {
     return;
   }
 
-  const safeSub = next.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80);
-  const tag = `${safeSub}-${hashString(next)}`;
+  const safeId = next.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80);
+  const tag = `${safeId}-${hashString(next)}`;
   notesStore = createStore(`aura-notes-user-${tag}`, 'notes');
   metaStore = createStore(`aura-notes-user-${tag}-meta`, 'meta');
 }
 
-/** Which namespace storage currently targets (Freebuff `sub`, or null). */
+/** Which namespace storage currently targets (account user id, or null). */
 export function getStorageNamespace(): string | null {
-  return namespaceSub;
+  return namespaceUserId;
 }
 
 const INITIAL_WELCOME_NOTE: Note = {
@@ -218,7 +218,7 @@ export async function getAllNotes(): Promise<Note[]> {
 
     // The signed-out device namespace owns the legacy blob and welcome note.
     // Account namespaces start empty and stay empty until notes are created.
-    if (namespaceSub === null) {
+    if (namespaceUserId === null) {
       if (notes.length === 0) {
         const migrated = await migrateLegacyNotesIfNeeded();
         if (migrated) notes = migrated;
@@ -233,7 +233,7 @@ export async function getAllNotes(): Promise<Note[]> {
     return sortNotes(notes);
   } catch (error) {
     console.error('Failed to load notes from storage:', error);
-    if (namespaceSub === null) {
+    if (namespaceUserId === null) {
       // Never silently surface an empty notebook if the legacy blob is readable.
       try {
         const legacy = await readLegacyNotes();
