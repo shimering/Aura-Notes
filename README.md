@@ -175,7 +175,7 @@ Client code: `src/services/authService.ts` (sign-in/out), `src/services/accountS
 
 ### Cross-Device Sync
 
-Sync is anonymous and key-based, with no accounts or sign-in:
+Vault-key sync needs no account. It is anonymous and key-based:
 
 1. Open the app, choose **Enable Cross-Device Sync**, and copy the generated vault key (8–128 characters of letters, numbers, dashes, or underscores).
 2. Open `https://aura-notes-pwa.gazarxperia.workers.dev/?sync=YOUR_VAULT_KEY` on the second device — the key is adopted automatically and the query param is stripped from the URL.
@@ -185,26 +185,18 @@ Because the vault key is the only credential, treat it like a password: anyone h
 
 While signed in, account sync replaces vault-key sync (the vault key is kept in settings and resumes after signing out).
 
-### Push the Source to GitHub (deploys through Workers Builds)
+### Push the Source to GitHub (deploys through GitHub Actions)
 
-`main` deploys itself. Every push to `main` triggers **[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/)** for the `aura-notes-pwa` Worker, using this configuration (Cloudflare → Workers & Pages → `aura-notes-pwa` → Settings → Builds):
+`main` deploys itself. Every push to `main` runs **`.github/workflows/deploy.yml`**, which checks the repository out on GitHub's runner, installs dependencies with `npm ci`, runs `npm test` and `npm run build` (so a failing test publishes nothing), then deploys with `cloudflare/wrangler-action`. `npx wrangler deploy` reads `wrangler.jsonc`, so the Worker name, `assets` directory, bindings, and `run_worker_first` setting all come from the repository — no build variables are needed. Node is pinned to 22 in the workflow. Run logs live under the repository's **Actions** tab.
 
-| Setting | Value |
-| --- | --- |
-| Git repository | `shimering/Aura-Notes` |
-| Production branch | `main` |
-| Build command | `npm test && npm run build` |
-| Deploy command | `npx wrangler deploy` |
-| Root directory | `/` |
-
-Workers Builds checks the repository out on its own build image, installs dependencies with `npm ci`, runs the build command (so a failing test publishes nothing), then runs the deploy command. `npx wrangler deploy` reads `wrangler.jsonc`, so the Worker name, `assets` directory, bindings, and `run_worker_first` setting all come from the repository — no build variables are needed. Node is pinned to 22 by `.nvmrc` / `.node-version`. Build logs live under **Deployments** for the Worker.
-
-`.github/workflows/deploy.yml` is kept as a **manual fallback only** (Actions → Deploy Cloudflare Worker → Run workflow). It no longer runs on push, so Workers Builds and GitHub Actions cannot deploy the same commit twice. If you use it, two repository secrets are required (Settings → Secrets and variables → Actions):
+Two repository secrets are required (Settings → Secrets and variables → Actions):
 
 | Secret | Value |
 | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | API token from the **Edit Cloudflare Workers** template (Cloudflare → My Profile → API Tokens) |
 | `CLOUDFLARE_ACCOUNT_ID` | The account id printed by `npx wrangler whoami` |
+
+The workflow can also be started by hand (Actions → Deploy Cloudflare Worker → Run workflow). Cloudflare's **Workers Builds** Git integration is intentionally *not* connected: when it was linked to the wrong repository it produced stale deployments, so all deploys go through this single pipeline.
 
 Pushes that add or edit files under `.github/workflows/` additionally need a GitHub credential with the `workflow` scope; ordinary source pushes do not.
 
