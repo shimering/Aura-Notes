@@ -11,6 +11,10 @@ export interface AppSettings {
   defaultPenWidth: number;
   defaultEraserWidth: number;
   defaultEraserMode: EraserMode;
+  /** How long the S Pen side button must be held before the eraser arms. */
+  spenHoldEraseMs: number;
+  /** Whether a short S Pen button click opens the quick pen palette. */
+  spenClickOpensMenu: boolean;
   syncVaultKey: string;
   autoSyncEnabled: boolean;
   syncThemeAndLayout: boolean;
@@ -29,6 +33,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultPenWidth: 4,
   defaultEraserWidth: 24,
   defaultEraserMode: 'object',
+  spenHoldEraseMs: 250,
+  spenClickOpensMenu: true,
   syncVaultKey: '',
   autoSyncEnabled: true,
   syncThemeAndLayout: true,

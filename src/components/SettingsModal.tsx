@@ -251,6 +251,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </p>
               </div>
 
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <p className="text-xs font-semibold text-ink-light dark:text-ink-dark">S Pen Hold to Erase</p>
+                  <span className="text-[11px] font-mono text-ink-muted-light dark:text-ink-muted-dark">
+                    {settings.spenHoldEraseMs} ms
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={120}
+                  max={600}
+                  step={10}
+                  value={settings.spenHoldEraseMs}
+                  onChange={(e) => onUpdateSettings({ spenHoldEraseMs: Number(e.target.value) })}
+                  className="w-full accent-rose-500"
+                />
+                <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-1">
+                  Hold the side button this long to erase. Putting the pen down while the button is
+                  already held always erases immediately.
+                </p>
+              </div>
+
+              <label className="flex items-center justify-between cursor-pointer">
+                <div className="pr-3">
+                  <p className="text-xs font-semibold text-ink-light dark:text-ink-dark">
+                    Short Click Opens Quick Palette
+                  </p>
+                  <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-0.5">
+                    A quick press of the side button shows the pen and colour menu instead of erasing.
+                    Turn off to ignore short clicks.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.spenClickOpensMenu}
+                  onChange={(e) => onUpdateSettings({ spenClickOpensMenu: e.target.checked })}
+                  className="w-4 h-4 accent-violet-600 cursor-pointer"
+                />
+              </label>
+
               <label className="flex items-center justify-between cursor-pointer">
                 <div className="pr-3">
                   <p className="text-xs font-semibold text-ink-light dark:text-ink-dark flex items-center gap-1.5">

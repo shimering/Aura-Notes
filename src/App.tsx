@@ -812,6 +812,8 @@ export default function App() {
                   defaultEraserWidth={settings.defaultEraserWidth}
                   defaultEraserMode={settings.defaultEraserMode}
                   defaultStylusOnly={settings.stylusOnly}
+                  spenHoldEraseMs={settings.spenHoldEraseMs}
+                  spenClickOpensMenu={settings.spenClickOpensMenu}
                   background={activeNote.inkBackground}
                   onChangeBackground={handleUpdateBackground}
                 />
