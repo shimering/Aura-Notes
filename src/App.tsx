@@ -7,13 +7,16 @@ import {
   saveAllNotes,
   deleteNote, 
   getActiveNoteId, 
-  setActiveNoteId 
+  setActiveNoteId,
+  setStorageNamespace
 } from './services/storage';
 import { 
   getSettings, 
   saveSettings, 
   syncVaultWithCloud 
 } from './services/syncService';
+import { fetchFreebuffSession, FreebuffUser } from './services/authService';
+import { AccountSyncError, syncAccountNotes } from './services/accountSyncService';
 import { Header, ViewMode } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { TextEditor } from './components/TextEditor';
@@ -42,6 +45,7 @@ export default function App() {
   const [installPrompt, setInstallPrompt] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [account, setAccount] = useState<FreebuffUser | null>(null);
 
   const inkCanvasRef = useRef<InkCanvasRef>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -57,6 +61,10 @@ export default function App() {
 
   const activeNoteIdRef = useRef<string | null>(activeNoteId);
   activeNoteIdRef.current = activeNoteId;
+
+  // Signed-in Freebuff user, mirrored into a ref for use inside callbacks.
+  const accountRef = useRef<FreebuffUser | null>(null);
+  accountRef.current = account;
 
   const isSyncingRef = useRef<boolean>(false);
   const lastLocalEditTimeRef = useRef<number>(0);
@@ -152,10 +160,82 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * Account sync for signed-in visitors: D1 metadata + R2 payloads, scoped to
+   * their Freebuff `sub` by the Worker. Notes from this device's anonymous
+   * namespace are never uploaded.
+   */
+  const executeAccountSync = useCallback(async () => {
+    if (!accountRef.current || isSyncingRef.current) return;
+    isSyncingRef.current = true;
+    setIsSyncing(true);
+    setSyncError(null);
+    const syncStartedAt = Date.now();
+
+    try {
+      const res = await syncAccountNotes();
+      const latestLocal = notesRef.current;
+
+      // Keep anything edited locally while the sync was in flight.
+      const merged = res.notes.map((remoteNote) => {
+        const local = latestLocal.find((n) => n.id === remoteNote.id);
+        if (local && (local.updatedAt || 0) > (remoteNote.updatedAt || 0)) return local;
+        return remoteNote;
+      });
+
+      const remoteIds = new Set(res.notes.map((n) => n.id));
+      for (const local of latestLocal) {
+        if (remoteIds.has(local.id)) continue;
+        // Only rescue notes touched during this sync: notes deleted on another
+        // device must not come back to life.
+        if ((local.updatedAt || 0) > syncStartedAt) {
+          merged.unshift(local);
+          await saveNote(local);
+        }
+      }
+
+      setNotes(merged);
+      notesRef.current = merged;
+
+      if (!merged.some((n) => n.id === activeNoteIdRef.current)) {
+        const nextId = merged.length > 0 ? merged[0].id : null;
+        setActiveNoteIdState(nextId);
+        activeNoteIdRef.current = nextId;
+        if (nextId) await setActiveNoteId(nextId);
+      }
+
+      if (res.pushed || res.pulled || res.deleted) {
+        const updatedSettings = await saveSettings({ lastSyncedAt: res.lastSyncedAt });
+        setSettings(updatedSettings);
+        settingsRef.current = updatedSettings;
+      }
+
+      return res;
+    } catch (err: any) {
+      console.warn('Account sync failed:', err);
+      setSyncError(
+        err instanceof AccountSyncError
+          ? err.message
+          : 'Unable to sync notes with your account. Check your connection.'
+      );
+    } finally {
+      isSyncingRef.current = false;
+      setIsSyncing(false);
+    }
+  }, []);
+
   // Initialize and load notes + settings from local IndexedDB
   useEffect(() => {
     async function loadData() {
       try {
+        // 0. Identify the visitor first: signed-in notes live in their own
+        //    local namespace and in their Cloudflare account.
+        const session = await fetchFreebuffSession();
+        const user = session.status === 'signed-in' ? session.user : null;
+        accountRef.current = user;
+        setAccount(user);
+        setStorageNamespace(user ? user.sub : null);
+
         // 1. Load settings
         const loadedSettings = await getSettings();
         setSettings(loadedSettings);
@@ -197,9 +277,14 @@ export default function App() {
           setActiveNoteIdState(loadedNotes[0].id);
         }
 
-        // 4. Initial cloud sync if vault is configured
-        if (activeVaultKey && loadedSettings.autoSyncEnabled) {
-          executeSync(activeVaultKey, loadedNotes, loadedSettings);
+        // 4. Initial sync: account storage when signed in, otherwise the
+        //    anonymous vault key.
+        if (loadedSettings.autoSyncEnabled) {
+          if (user) {
+            await executeAccountSync();
+          } else if (activeVaultKey) {
+            executeSync(activeVaultKey, loadedNotes, loadedSettings);
+          }
         }
       } catch (err) {
         console.error('Error loading notes & settings:', err);
@@ -208,24 +293,27 @@ export default function App() {
       }
     }
     loadData();
-  }, [executeSync]);
+  }, [executeSync, executeAccountSync]);
 
   // Sync when switching back to tab
   useEffect(() => {
     const handleVisibility = () => {
       if (
         document.visibilityState === 'visible' &&
-        settingsRef.current.syncVaultKey &&
         settingsRef.current.autoSyncEnabled &&
         !isSyncingRef.current &&
         Date.now() - (lastLocalEditTimeRef.current || 0) > 2500
       ) {
-        executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
+        if (accountRef.current) {
+          executeAccountSync();
+        } else if (settingsRef.current.syncVaultKey) {
+          executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [executeSync]);
+  }, [executeSync, executeAccountSync]);
 
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
   const allTags = Array.from(new Set(notes.flatMap((n) => n.tags || []))).sort((a, b) =>
@@ -251,13 +339,19 @@ export default function App() {
     }, 150);
 
     // Fast background cloud push (600ms) with latest notesRef
-    if (settingsRef.current.syncVaultKey && settingsRef.current.autoSyncEnabled) {
+    const autoSyncEnabled = settingsRef.current.autoSyncEnabled;
+    const signedIn = !!accountRef.current;
+    if (autoSyncEnabled && (signedIn || settingsRef.current.syncVaultKey)) {
       if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
       syncTimeoutRef.current = setTimeout(() => {
-        executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
+        if (accountRef.current) {
+          executeAccountSync();
+        } else if (settingsRef.current.syncVaultKey) {
+          executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
+        }
       }, 600);
     }
-  }, [executeSync]);
+  }, [executeSync, executeAccountSync]);
 
   // Update Note Title with timestamp
   const handleUpdateTitle = (title: string) => {
@@ -328,8 +422,12 @@ export default function App() {
     await setActiveNoteId(newNote.id);
     await saveNote(newNote);
 
-    if (settingsRef.current.syncVaultKey && settingsRef.current.autoSyncEnabled) {
-      executeSync(settingsRef.current.syncVaultKey, updatedNotes, settingsRef.current);
+    if (settingsRef.current.autoSyncEnabled) {
+      if (accountRef.current) {
+        executeAccountSync();
+      } else if (settingsRef.current.syncVaultKey) {
+        executeSync(settingsRef.current.syncVaultKey, updatedNotes, settingsRef.current);
+      }
     }
   };
 
@@ -355,8 +453,12 @@ export default function App() {
       if (nextId) await setActiveNoteId(nextId);
     }
 
-    if (settingsRef.current.syncVaultKey && settingsRef.current.autoSyncEnabled) {
-      executeSync(settingsRef.current.syncVaultKey, remaining, settingsRef.current);
+    if (settingsRef.current.autoSyncEnabled) {
+      if (accountRef.current) {
+        executeAccountSync();
+      } else if (settingsRef.current.syncVaultKey) {
+        executeSync(settingsRef.current.syncVaultKey, remaining, settingsRef.current);
+      }
     }
   };
 
@@ -434,10 +536,23 @@ export default function App() {
 
   // Manual Trigger Sync from Sync Modal or Header
   const handleManualSync = async (vaultKey: string) => {
+    if (accountRef.current) {
+      // Account sync replaces vault-key sync while signed in.
+      await executeAccountSync();
+      return;
+    }
     const updatedSettings = await saveSettings({ syncVaultKey: vaultKey });
     setSettings(updatedSettings);
     settingsRef.current = updatedSettings;
     await executeSync(vaultKey, notesRef.current, updatedSettings);
+  };
+
+  // Signing out returns the app to the device's own (anonymous) namespace.
+  const handleAccountSignedOut = () => {
+    accountRef.current = null;
+    setAccount(null);
+    setStorageNamespace(null);
+    window.location.reload();
   };
 
   // Import backup vault
@@ -621,6 +736,7 @@ export default function App() {
         onDownloadApp={() => setIsInstallModalOpen(true)}
         onOpenSync={() => setIsSyncModalOpen(true)}
         syncVaultKey={settings.syncVaultKey}
+        accountSyncActive={!!account}
         searchInputRef={searchInputRef}
       />
 
@@ -646,6 +762,7 @@ export default function App() {
           onOpenSettings={() => setIsSettingsModalOpen(true)}
           isSyncing={isSyncing}
           syncVaultKey={settings.syncVaultKey}
+          accountSyncActive={!!account}
         />
 
         {activeNote ? (
@@ -731,6 +848,8 @@ export default function App() {
         onUpdateSettings={handleUpdateSettings}
         isSyncing={isSyncing}
         syncError={syncError}
+        account={account}
+        onAccountSignedOut={handleAccountSignedOut}
       />
 
       {/* Settings Modal */}

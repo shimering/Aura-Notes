@@ -26,6 +26,7 @@ import {
   parseVaultJson 
 } from '../services/syncService';
 import { AccountPanel } from './AccountPanel';
+import { FreebuffUser } from '../services/authService';
 
 interface SyncModalProps {
   isOpen: boolean;
@@ -37,6 +38,8 @@ interface SyncModalProps {
   onUpdateSettings: (updates: Partial<AppSettings>) => Promise<void>;
   isSyncing: boolean;
   syncError: string | null;
+  account?: FreebuffUser | null;
+  onAccountSignedOut?: () => void;
 }
 
 export const SyncModal: React.FC<SyncModalProps> = ({
@@ -48,7 +51,9 @@ export const SyncModal: React.FC<SyncModalProps> = ({
   onImportVault,
   onUpdateSettings,
   isSyncing,
-  syncError
+  syncError,
+  account = null,
+  onAccountSignedOut
 }) => {
   const [inputVaultKey, setInputVaultKey] = useState('');
   const [copiedKey, setCopiedKey] = useState(false);
@@ -64,7 +69,9 @@ export const SyncModal: React.FC<SyncModalProps> = ({
   if (!isOpen) return null;
 
   const currentVaultKey = settings.syncVaultKey;
-  const isConnected = !!currentVaultKey;
+  // Account storage replaces vault-key sync while signed in.
+  const isAccountMode = !!account;
+  const isConnected = !isAccountMode && !!currentVaultKey;
 
   const handleCopyKey = () => {
     if (!currentVaultKey) return;
@@ -181,9 +188,43 @@ export const SyncModal: React.FC<SyncModalProps> = ({
         {/* Content Body */}
         <div className="p-6 overflow-y-auto space-y-6 text-ink-light dark:text-ink-dark text-sm">
           {/* Optional Sign in with Freebuff account */}
-          <AccountPanel />
+          <AccountPanel user={account} onSignedOut={onAccountSignedOut} />
 
-          {isConnected ? (
+          {isAccountMode ? (
+            /* Signed-in account storage */
+            <div className="space-y-4">
+              <div className="p-5 rounded-3xl bg-gradient-to-br from-violet-500/10 via-indigo-500/10 to-sky-500/10 border border-violet-500/20 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-violet-700 dark:text-violet-300 uppercase tracking-wider">
+                    Account Sync Active
+                  </span>
+                  <div className="flex items-center gap-2 text-xs text-ink-muted-light dark:text-ink-muted-dark">
+                    <span>Last Synced: <strong>{formatLastSync()}</strong></span>
+                  </div>
+                </div>
+
+                <p className="text-xs text-ink-muted-light dark:text-ink-muted-dark leading-relaxed">
+                  Your notes are stored in your own Cloudflare-backed account (metadata in D1, note
+                  content in R2) and load on any device where you sign in with Freebuff. Notes
+                  already on this device stay separate in local storage.
+                </p>
+
+                <div className="flex items-center justify-between pt-1">
+                  <button
+                    onClick={() => onSync(currentVaultKey)}
+                    disabled={isSyncing}
+                    className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold shadow-md active:scale-95 transition flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                    <span>{isSyncing ? 'Syncing Now...' : 'Sync Now'}</span>
+                  </button>
+                  <span className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark">
+                    Offline edits upload when you reconnect
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : isConnected ? (
             /* Active Vault Section */
             <div className="space-y-4">
               <div className="p-5 rounded-3xl bg-gradient-to-br from-violet-500/10 via-indigo-500/10 to-sky-500/10 border border-violet-500/20 space-y-3">

@@ -16,15 +16,27 @@ type PanelState =
   | { status: 'signing-out' }
   | { status: 'error'; message: string };
 
+interface AccountPanelProps {
+  /** Current session from the app shell; omit to let the panel fetch it. */
+  user?: FreebuffUser | null;
+  /** Called after a successful sign-out so the app can swap namespaces. */
+  onSignedOut?: () => void;
+}
+
 /**
  * Optional account section inside the sync modal. Notes stay local and
- * editable while signed out; signing in identifies the visitor so their data
- * can be scoped to them once account storage is available.
+ * editable while signed out; signing in switches the app to that visitor's
+ * account namespace (D1 metadata + R2 payloads).
  */
-export const AccountPanel: React.FC = () => {
+export const AccountPanel: React.FC<AccountPanelProps> = ({ user, onSignedOut }) => {
   const [state, setState] = useState<PanelState>({ status: 'loading' });
 
   useEffect(() => {
+    if (user !== undefined) {
+      setState(user ? { status: 'signed-in', user } : { status: 'signed-out' });
+      return;
+    }
+
     let cancelled = false;
     fetchFreebuffSession().then((session) => {
       if (cancelled) return;
@@ -37,7 +49,7 @@ export const AccountPanel: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [user]);
 
   if (state.status === 'loading' || state.status === 'unavailable') {
     return null;
@@ -48,6 +60,7 @@ export const AccountPanel: React.FC = () => {
     try {
       await signOutOfFreebuff();
       setState({ status: 'signed-out' });
+      onSignedOut?.();
     } catch {
       setState({ status: 'error', message: 'Could not sign out. Check your connection and try again.' });
     }
@@ -89,8 +102,8 @@ export const AccountPanel: React.FC = () => {
           <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark flex items-start gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0 mt-0.5" />
             <span>
-              Identity comes from Freebuff (Google, GitHub or Apple). Your notes stay on this device
-              and in your sync vault.
+              Identity comes from Freebuff (Google, GitHub or Apple). While you're signed in, notes
+              sync to your account's Cloudflare storage and stay available offline on this device.
             </span>
           </p>
         </>
@@ -99,7 +112,8 @@ export const AccountPanel: React.FC = () => {
       {state.status === 'signed-out' && (
         <>
           <p className="text-xs text-ink-muted-light dark:text-ink-muted-dark">
-            Sign in to identify yourself across devices. Notes still save locally while signed out.
+            Sign in to keep your notes in your own Cloudflare-backed account and open them on any
+            device. Notes still save locally while signed out.
           </p>
           <a
             href={buildSignInUrl(window.location.pathname + window.location.search)}

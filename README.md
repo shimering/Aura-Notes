@@ -64,7 +64,9 @@ Production is a **Cloudflare Worker** (`src/worker.ts`), not a static Pages proj
 | Worker entry | `src/worker.ts` |
 | Worker config | `wrangler.jsonc` (mirrored by `wrangler.toml`) |
 | Static assets | `dist/` (built by `npm run build`), served through the `ASSETS` binding with SPA fallback |
-| Sync storage | Workers KV binding `AURA_SYNC_KV` |
+| Anonymous vault storage | Workers KV binding `AURA_SYNC_KV` |
+| Account records + note metadata | D1 binding `DB` (database `aura-notes`) |
+| Signed-in note payloads | R2 binding `NOTES_BUCKET` (bucket `aura-notes-storage`) |
 
 ### Step 1: Sign in with Wrangler
 
@@ -82,7 +84,24 @@ Copy the returned namespace `id` into `kv_namespaces` in `wrangler.jsonc` (and t
 
 If no `AURA_SYNC_KV` binding is present, the Worker still runs but falls back to an in-memory store: sync appears to work and then silently loses data whenever the isolate is recycled. Always bind KV in production.
 
-### Step 3: Build and deploy
+### Step 3: Create the D1 database and R2 bucket (first deployment only)
+
+```bash
+npx wrangler d1 create aura-notes
+npx wrangler r2 bucket create aura-notes-storage
+```
+
+Copy the D1 `database_id` into `d1_databases` (`binding: "DB"`) and the bucket name into `r2_buckets` (`binding: "NOTES_BUCKET"`) in **both** `wrangler.jsonc` and `wrangler.toml`.
+
+Then apply the account schema:
+
+```bash
+npx wrangler d1 execute aura-notes --remote --file migrations/0001_accounts.sql
+```
+
+The migration is idempotent (`CREATE TABLE IF NOT EXISTS`), so it is safe to re-run. Without the `DB` / `NOTES_BUCKET` bindings the app still runs for signed-out visitors, but `/api/notes` returns `503 storage_not_configured`.
+
+### Step 4: Build and deploy
 
 ```bash
 npm run deploy
@@ -98,6 +117,28 @@ https://aura-notes-pwa.gazarxperia.workers.dev
 
 The app is live at that URL immediately; installed PWAs pick up the new service worker on their next launch (`vite-plugin-pwa` is configured with `registerType: 'autoUpdate'`).
 
+### Sign in with Freebuff (per-user account sync)
+
+Signing in is **optional**. The app is fully usable offline and signed out; notes then live in this browser's local storage, and the anonymous vault key (below) still works.
+
+While signed in, notes sync to that visitor's own Cloudflare storage:
+
+| Piece | Where it lives |
+| --- | --- |
+| Identity | Freebuff (`GET /auth/freebuff/session`); session is the SDK's `__Host-freebuff_session` HttpOnly cookie |
+| User rows + note metadata (title, tags, pin, timestamps, tombstones) | D1 `users` and `notes`, keyed by Freebuff `sub` |
+| Full note payload (rich text + ink strokes) | R2 `users/<sub>/notes/<note id>.json` |
+
+Behaviour and guarantees:
+
+1. **Each account starts empty.** Notes already on the device are *not* uploaded on first sign-in; they stay in the signed-out local namespace. The account gets its own local IndexedDB namespace too, so switching accounts never mixes notes.
+2. Sync is last-write-wins per note with tombstones for deletions, and runs on load, after edits, when the tab becomes visible, and from **Sync Now**.
+3. Offline edits stay in IndexedDB and upload when the connection returns.
+4. `/api/notes` is auth-required: every request returns `401` when signed out, and writes must be same-origin (`403` otherwise). The Worker keys all rows on the session's `sub`; no user id is accepted from the request.
+5. Signing out reloads the app back into the device's signed-out notes.
+
+Client code: `src/services/accountSyncService.ts` (sync), `src/services/storage.ts` (`setStorageNamespace`), and `src/App.tsx` (bootstrap + sync triggers). Server code: `handleNotesApi` / `handleAccountApi` in `src/worker.ts`.
+
 ### Cross-Device Sync
 
 Sync is anonymous and key-based, with no accounts or sign-in:
@@ -107,6 +148,8 @@ Sync is anonymous and key-based, with no accounts or sign-in:
 3. Both devices now merge notes into the same vault, last-write-wins per note, with deletions tracked as tombstones.
 
 Because the vault key is the only credential, treat it like a password: anyone holding it can read and write that vault.
+
+While signed in, account sync replaces vault-key sync (the vault key is kept in settings and resumes after signing out).
 
 ### Push the Source to GitHub (deploys through CI)
 

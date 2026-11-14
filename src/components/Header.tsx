@@ -37,6 +37,7 @@ interface HeaderProps {
   onOpenSettings?: () => void;
   isSyncing?: boolean;
   syncVaultKey?: string;
+  accountSyncActive?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -54,7 +55,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenSync,
   onOpenSettings,
   isSyncing = false,
-  syncVaultKey = ''
+  syncVaultKey = '',
+  accountSyncActive = false
 }) => {
   const [isTagEditorOpen, setIsTagEditorOpen] = useState(false);
   const tagButtonRef = useRef<HTMLDivElement>(null);
@@ -215,16 +217,18 @@ export const Header: React.FC<HeaderProps> = ({
           onClick={onOpenSync}
           title={
             isSyncing 
-              ? 'Syncing with cloud vault...' 
-              : syncVaultKey 
-                ? `Cross-Device Sync Active (Vault: ${syncVaultKey})` 
-                : 'Connect Cross-Device Cloud Sync'
+              ? 'Syncing your notes...' 
+              : accountSyncActive
+                ? 'Signed in — notes sync to your account'
+                : syncVaultKey 
+                  ? `Cross-Device Sync Active (Vault: ${syncVaultKey})` 
+                  : 'Connect Cross-Device Cloud Sync'
           }
           className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark transition relative active:scale-95"
         >
           {isSyncing ? (
             <RefreshCw className="w-4 h-4 text-violet-500 animate-spin" />
-          ) : syncVaultKey ? (
+          ) : accountSyncActive || syncVaultKey ? (
             <div className="relative">
               <Cloud className="w-4 h-4 text-emerald-500" />
               <span className="w-2 h-2 rounded-full bg-emerald-500 absolute -top-1 -right-1 ring-2 ring-white dark:ring-surface-dark" />

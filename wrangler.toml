@@ -17,3 +17,14 @@ FREEBUFF_CLIENT_ID = "548d02e3-9df4-4a70-963a-640a4b6474de"
 [[kv_namespaces]]
 binding = "AURA_SYNC_KV"
 id = "53d0a12a7d4747c2b38635e4d9f395c9"
+
+# Per-user account records and note metadata.
+[[d1_databases]]
+binding = "DB"
+database_name = "aura-notes"
+database_id = "2e951020-643b-4f36-8e3e-4ed846f5f726"
+
+# Full note payloads (rich text + ink strokes), keyed per user.
+[[r2_buckets]]
+binding = "NOTES_BUCKET"
+bucket_name = "aura-notes-storage"

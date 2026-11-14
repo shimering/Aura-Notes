@@ -5,6 +5,7 @@ import {
   deleteNote,
   getNoteById,
   compactNote,
+  setStorageNamespace,
   __resetStorageForTests,
   __seedLegacyNotesForTests
 } from './storage';
@@ -109,5 +110,33 @@ describe('Storage Service', () => {
     await saveNote(note);
     const stored = await getNoteById('ink-note');
     expect(stored?.inkStrokes[0].points[0].x).toBe(10.1);
+  });
+
+  it('keeps account namespaces separate from device notes', async () => {
+    await saveNote(makeNote('device-note', { title: 'Device Only' }));
+
+    setStorageNamespace('freebuff-user-123');
+    const accountNotes = await getAllNotes();
+    expect(accountNotes).toHaveLength(0); // accounts start empty, no welcome note
+
+    await saveNote(makeNote('account-note', { title: 'Account Only' }));
+    expect((await getAllNotes()).map((n) => n.id)).toEqual(['account-note']);
+    expect(await getNoteById('device-note')).toBeUndefined();
+
+    setStorageNamespace(null);
+    const deviceNotes = await getAllNotes();
+    expect(deviceNotes.map((n) => n.id)).toEqual(['device-note']);
+    expect(await getNoteById('account-note')).toBeUndefined();
+  });
+
+  it('gives each account its own namespace', async () => {
+    setStorageNamespace('user-a');
+    await saveNote(makeNote('a-note'));
+
+    setStorageNamespace('user-b');
+    expect(await getAllNotes()).toHaveLength(0);
+
+    setStorageNamespace('user-a');
+    expect((await getAllNotes()).map((n) => n.id)).toEqual(['a-note']);
   });
 });

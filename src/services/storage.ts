@@ -2,25 +2,84 @@ import { createStore, get, set, set as setDefault, del, entries, setMany, clear 
 import { Note } from '../types/note';
 import { recordDeletedNoteId } from './syncService';
 
+// Anonymous device storage. Signed-in visitors get their own namespace so an
+// account's notes never mix with the notes already on this device.
+const ANON_NOTES_DB = 'aura-notes-db';
+const ANON_META_DB = 'aura-notes-meta';
+
 // Per-note records live in their own object store so a single edit rewrites only
 // the affected note instead of the entire notes array.
-const notesStore = createStore('aura-notes-db', 'notes');
+let notesStore = createStore(ANON_NOTES_DB, 'notes');
 // Separate database on purpose: idb-keyval creates one object store per DB
 // version, so requesting a second store from the same DB would never be created.
-const metaStore = createStore('aura-notes-meta', 'meta');
+let metaStore = createStore(ANON_META_DB, 'meta');
 
 // Legacy single-blob key (pre-v2). Migrated on first load and then deleted.
 const LEGACY_NOTES_KEY = 'aura_notes_list';
 const MIGRATED_KEY = 'aura_notes_migrated_v2';
 const ACTIVE_NOTE_ID_KEY = 'aura_active_note_id';
 
+/** Current storage owner: null for the signed-out device namespace. */
+let namespaceSub: string | null = null;
+
 // In-memory fallback for environments without indexedDB (Node tests, strict private browsing)
-const memoryNotes = new Map<string, Note>();
-const memoryMeta = new Map<string, any>();
-let memoryLegacyNotes: Note[] | undefined;
+interface MemoryNamespace {
+  notes: Map<string, Note>;
+  meta: Map<string, any>;
+  legacy?: Note[];
+}
+
+const memoryNamespaces = new Map<string, MemoryNamespace>();
 
 function hasIndexedDB(): boolean {
   return typeof window !== 'undefined' && typeof indexedDB !== 'undefined';
+}
+
+function memoryNamespace(): MemoryNamespace {
+  const key = namespaceSub ? `user:${namespaceSub}` : 'anonymous';
+  let entry = memoryNamespaces.get(key);
+  if (!entry) {
+    entry = { notes: new Map(), meta: new Map() };
+    memoryNamespaces.set(key, entry);
+  }
+  return entry;
+}
+
+/** Short stable hash so sanitized storage names cannot collide. */
+function hashString(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * Points local storage at one visitor's namespace.
+ *
+ * `null` selects the signed-out device namespace (existing notes, welcome note,
+ * legacy migration). A Freebuff `sub` selects that account's own namespace,
+ * which starts empty and never seeds the welcome note.
+ */
+export function setStorageNamespace(sub: string | null): void {
+  const next = typeof sub === 'string' && sub.trim() ? sub.trim() : null;
+  namespaceSub = next;
+
+  if (!next) {
+    notesStore = createStore(ANON_NOTES_DB, 'notes');
+    metaStore = createStore(ANON_META_DB, 'meta');
+    return;
+  }
+
+  const safeSub = next.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80);
+  const tag = `${safeSub}-${hashString(next)}`;
+  notesStore = createStore(`aura-notes-user-${tag}`, 'notes');
+  metaStore = createStore(`aura-notes-user-${tag}-meta`, 'meta');
+}
+
+/** Which namespace storage currently targets (Freebuff `sub`, or null). */
+export function getStorageNamespace(): string | null {
+  return namespaceSub;
 }
 
 const INITIAL_WELCOME_NOTE: Note = {
@@ -82,7 +141,7 @@ async function readAllNotes(): Promise<Note[]> {
     const rows = await entries<string, Note>(notesStore);
     return rows.map(([, note]) => note).filter(Boolean);
   }
-  return Array.from(memoryNotes.values());
+  return Array.from(memoryNamespace().notes.values());
 }
 
 async function writeAllNotes(notes: Note[]): Promise<void> {
@@ -93,9 +152,10 @@ async function writeAllNotes(notes: Note[]): Promise<void> {
     }
     return;
   }
-  memoryNotes.clear();
+  const memory = memoryNamespace();
+  memory.notes.clear();
   for (const note of notes) {
-    memoryNotes.set(note.id, compactNote(note));
+    memory.notes.set(note.id, compactNote(note));
   }
 }
 
@@ -103,7 +163,7 @@ async function readMeta<T>(key: string): Promise<T | undefined> {
   if (hasIndexedDB()) {
     return await get<T>(key, metaStore);
   }
-  return memoryMeta.get(key);
+  return memoryNamespace().meta.get(key);
 }
 
 async function writeMeta(key: string, value: any): Promise<void> {
@@ -111,18 +171,19 @@ async function writeMeta(key: string, value: any): Promise<void> {
     await set(key, value, metaStore);
     return;
   }
-  memoryMeta.set(key, value);
+  memoryNamespace().meta.set(key, value);
 }
 
 async function readLegacyNotes(): Promise<Note[] | undefined> {
   if (hasIndexedDB()) {
     return await get<Note[]>(LEGACY_NOTES_KEY);
   }
-  return memoryLegacyNotes;
+  return memoryNamespace().legacy;
 }
 
 /**
  * Migrates the pre-v2 single notes blob into per-note records exactly once.
+ * Only the signed-out device namespace has a legacy blob.
  */
 async function migrateLegacyNotesIfNeeded(): Promise<Note[] | null> {
   try {
@@ -139,7 +200,7 @@ async function migrateLegacyNotesIfNeeded(): Promise<Note[] | null> {
       if (hasIndexedDB()) {
         await del(LEGACY_NOTES_KEY);
       } else {
-        memoryLegacyNotes = undefined;
+        memoryNamespace().legacy = undefined;
       }
     } catch {
       // Non-fatal: keep the legacy key around if deletion fails.
@@ -155,26 +216,34 @@ export async function getAllNotes(): Promise<Note[]> {
   try {
     let notes = await readAllNotes();
 
-    if (notes.length === 0) {
-      const migrated = await migrateLegacyNotesIfNeeded();
-      if (migrated) notes = migrated;
+    // The signed-out device namespace owns the legacy blob and welcome note.
+    // Account namespaces start empty and stay empty until notes are created.
+    if (namespaceSub === null) {
+      if (notes.length === 0) {
+        const migrated = await migrateLegacyNotesIfNeeded();
+        if (migrated) notes = migrated;
+      }
+
+      if (notes.length === 0) {
+        await saveNote(INITIAL_WELCOME_NOTE);
+        return [INITIAL_WELCOME_NOTE];
+      }
     }
 
-    if (notes.length === 0) {
-      await saveNote(INITIAL_WELCOME_NOTE);
-      return [INITIAL_WELCOME_NOTE];
-    }
     return sortNotes(notes);
   } catch (error) {
     console.error('Failed to load notes from storage:', error);
-    // Never silently surface an empty notebook if the legacy blob is readable.
-    try {
-      const legacy = await readLegacyNotes();
-      if (legacy && legacy.length > 0) return sortNotes(legacy);
-    } catch {
-      // ignore
+    if (namespaceSub === null) {
+      // Never silently surface an empty notebook if the legacy blob is readable.
+      try {
+        const legacy = await readLegacyNotes();
+        if (legacy && legacy.length > 0) return sortNotes(legacy);
+      } catch {
+        // ignore
+      }
+      return [INITIAL_WELCOME_NOTE];
     }
-    return [INITIAL_WELCOME_NOTE];
+    return [];
   }
 }
 
@@ -183,7 +252,7 @@ export async function getNoteById(id: string): Promise<Note | undefined> {
     if (hasIndexedDB()) {
       return await get<Note>(id, notesStore);
     }
-    return memoryNotes.get(id);
+    return memoryNamespace().notes.get(id);
   } catch (error) {
     console.error('Failed to load note from storage:', error);
     return undefined;
@@ -200,7 +269,7 @@ export async function saveNote(note: Note): Promise<void> {
     if (hasIndexedDB()) {
       await set(stored.id, stored, notesStore);
     } else {
-      memoryNotes.set(stored.id, stored);
+      memoryNamespace().notes.set(stored.id, stored);
     }
   } catch (error) {
     console.error('Failed to save note to storage:', error);
@@ -217,18 +286,37 @@ export async function saveAllNotes(notes: Note[]): Promise<void> {
   }
 }
 
+/**
+ * Removes a note and records a tombstone so cloud syncs propagate the delete.
+ */
 export async function deleteNote(id: string): Promise<void> {
   try {
     await recordDeletedNoteId(id);
-
-    if (hasIndexedDB()) {
-      await del(id, notesStore);
-    } else {
-      memoryNotes.delete(id);
-    }
+    await removeNoteRecord(id);
   } catch (error) {
     console.error('Failed to delete note from storage:', error);
     throw error;
+  }
+}
+
+/**
+ * Removes a note locally without recording a tombstone. Used when the server
+ * already reports the note as deleted, so no delete needs to be pushed back.
+ */
+export async function deleteNoteLocally(id: string): Promise<void> {
+  try {
+    await removeNoteRecord(id);
+  } catch (error) {
+    console.error('Failed to delete note from storage:', error);
+    throw error;
+  }
+}
+
+async function removeNoteRecord(id: string): Promise<void> {
+  if (hasIndexedDB()) {
+    await del(id, notesStore);
+  } else {
+    memoryNamespace().notes.delete(id);
   }
 }
 
@@ -249,16 +337,16 @@ export async function setActiveNoteId(id: string): Promise<void> {
 }
 
 /**
- * Test helper: clears both IndexedDB stores and the in-memory fallback.
+ * Test helper: clears IndexedDB stores and every in-memory namespace, and
+ * returns storage to the signed-out device namespace.
  */
 export async function __resetStorageForTests(): Promise<void> {
+  setStorageNamespace(null);
   if (hasIndexedDB()) {
     await clear(notesStore);
     await clear(metaStore);
   }
-  memoryNotes.clear();
-  memoryMeta.clear();
-  memoryLegacyNotes = undefined;
+  memoryNamespaces.clear();
 }
 
 /**
@@ -269,5 +357,5 @@ export async function __seedLegacyNotesForTests(notes: Note[]): Promise<void> {
     await setDefault(LEGACY_NOTES_KEY, notes);
     return;
   }
-  memoryLegacyNotes = notes;
+  memoryNamespace().legacy = notes;
 }

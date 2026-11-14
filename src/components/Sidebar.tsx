@@ -29,6 +29,7 @@ interface SidebarProps {
   onDownloadApp?: () => void;
   onOpenSync?: () => void;
   syncVaultKey?: string;
+  accountSyncActive?: boolean;
   searchInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
@@ -44,6 +45,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDownloadApp,
   onOpenSync,
   syncVaultKey = '',
+  accountSyncActive = false,
   searchInputRef,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -322,10 +324,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold rounded-xl bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60 text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark border border-surface-subtle-light dark:border-surface-subtle-dark transition active:scale-95"
             >
               <div className="flex items-center gap-2">
-                <Cloud className={`w-3.5 h-3.5 ${syncVaultKey ? 'text-emerald-500' : 'text-violet-500'}`} />
-                <span>{syncVaultKey ? 'Cross-Device Sync: Active' : 'Enable Cross-Device Sync'}</span>
+                <Cloud className={`w-3.5 h-3.5 ${accountSyncActive || syncVaultKey ? 'text-emerald-500' : 'text-violet-500'}`} />
+                <span>
+                  {accountSyncActive
+                    ? 'Account Sync: Active'
+                    : syncVaultKey
+                      ? 'Cross-Device Sync: Active'
+                      : 'Enable Cross-Device Sync'}
+                </span>
               </div>
-              {syncVaultKey && (
+              {(accountSyncActive || syncVaultKey) && (
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               )}
             </button>

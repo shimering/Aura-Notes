@@ -1,4 +1,33 @@
-import { createFreebuffAuth, type FreebuffAuth } from '@freebuff/auth';
+import { createFreebuffAuth, isSameOriginRequest, type FreebuffAuth } from '@freebuff/auth';
+
+interface D1PreparedStatementLike {
+  bind: (...values: unknown[]) => D1PreparedStatementLike;
+  first: <T = Record<string, unknown>>() => Promise<T | null>;
+  all: <T = Record<string, unknown>>() => Promise<{ results?: T[] }>;
+  run: () => Promise<{ meta?: { changes?: number } }>;
+}
+
+interface D1DatabaseLike {
+  prepare: (query: string) => D1PreparedStatementLike;
+}
+
+interface R2ObjectBodyLike {
+  text: () => Promise<string>;
+}
+
+interface R2BucketLike {
+  get: (key: string) => Promise<R2ObjectBodyLike | null>;
+  put: (key: string, value: string, options?: { httpMetadata?: { contentType?: string } }) => Promise<unknown>;
+  delete: (key: string) => Promise<void>;
+}
+
+interface AuthUser {
+  sub: string;
+  email?: string;
+  name?: string;
+  picture?: string;
+  email_verified?: boolean;
+}
 
 interface Env {
   ASSETS: {
@@ -8,6 +37,10 @@ interface Env {
     get: (key: string) => Promise<string | null>;
     put: (key: string, value: string) => Promise<void>;
   };
+  /** D1 database for users and per-user note metadata. */
+  DB?: D1DatabaseLike;
+  /** R2 bucket holding full note payloads (rich text + ink strokes). */
+  NOTES_BUCKET?: R2BucketLike;
   /** Public client ID from `npx @freebuff/auth register`. Not a secret. */
   FREEBUFF_CLIENT_ID?: string;
   /** Only set for a non-production Freebuff issuer. */
@@ -32,7 +65,7 @@ function jsonResponse(body: unknown, status = 200, extraHeaders: Record<string, 
 
 interface AuthRuntime {
   wrap: (request: Request, env: Env) => Promise<Response>;
-  getUser: (request: Request) => Promise<{ sub: string; email?: string; name?: string; picture?: string } | null>;
+  getUser: (request: Request) => Promise<AuthUser | null>;
 }
 
 // One auth instance per isolate caches discovery documents and signing keys.
@@ -75,29 +108,372 @@ function getAuthRuntime(env: Env): AuthRuntime | null {
   return authRuntime;
 }
 
+/* ----------------------------- Account storage ---------------------------- */
+
+const NO_STORE = { 'Cache-Control': 'private, no-store' };
+const NOTE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const MAX_NOTE_BYTES = 10 * 1024 * 1024;
+const MAX_NOTE_TAGS = 100;
+
+interface NoteMetaRow {
+  id: string;
+  title: string;
+  tags: string;
+  color: string;
+  pinned: number;
+  createdAt: number;
+  updatedAt: number;
+  deleted: number;
+  sizeBytes: number;
+}
+
+function noteObjectKey(userSub: string, noteId: string): string {
+  // Encode the subject so an unusual `sub` cannot create stray key segments.
+  return `users/${encodeURIComponent(userSub)}/notes/${noteId}.json`;
+}
+
+function parseTags(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((tag): tag is string => typeof tag === 'string');
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter((tag): tag is string => typeof tag === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+async function getRequestUser(request: Request, env: Env): Promise<AuthUser | null> {
+  const runtime = getAuthRuntime(env);
+  if (!runtime) return null;
+  try {
+    const user = await runtime.getUser(request);
+    return user && typeof user.sub === 'string' && user.sub ? user : null;
+  } catch (error) {
+    console.warn('Could not read Freebuff session:', error instanceof Error ? error.message : 'unknown');
+    return null;
+  }
+}
+
+async function ensureUserRow(db: D1DatabaseLike, user: AuthUser): Promise<void> {
+  const now = Date.now();
+  // Only touch the row when the profile actually changed, so steady-state
+  // requests stay read-only.
+  await db
+    .prepare(
+      `INSERT INTO users (sub, email, name, picture, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(sub) DO UPDATE SET
+         email = excluded.email,
+         name = excluded.name,
+         picture = excluded.picture,
+         updated_at = excluded.updated_at
+       WHERE users.email IS NOT excluded.email
+          OR users.name IS NOT excluded.name
+          OR users.picture IS NOT excluded.picture`
+    )
+    .bind(user.sub, user.email ?? null, user.name ?? null, user.picture ?? null, now, now)
+    .run();
+}
+
+async function requireAccount(
+  request: Request,
+  env: Env
+): Promise<{ user: AuthUser; db: D1DatabaseLike; bucket: R2BucketLike } | Response> {
+  const runtime = getAuthRuntime(env);
+  if (!runtime) {
+    return jsonResponse(
+      { error: 'Sign in with Freebuff is not configured yet', code: 'auth_not_configured' },
+      503,
+      NO_STORE
+    );
+  }
+  if (!env.DB || !env.NOTES_BUCKET) {
+    return jsonResponse(
+      { error: 'Account storage is not configured', code: 'storage_not_configured' },
+      503,
+      NO_STORE
+    );
+  }
+
+  const user = await getRequestUser(request, env);
+  if (!user) {
+    return jsonResponse({ error: 'Sign in required', code: 'auth_required' }, 401, NO_STORE);
+  }
+
+  try {
+    await ensureUserRow(env.DB, user);
+  } catch (error) {
+    console.warn('Could not upsert user row:', error instanceof Error ? error.message : 'unknown');
+  }
+
+  return { user, db: env.DB, bucket: env.NOTES_BUCKET };
+}
+
+async function listNotes(userSub: string, db: D1DatabaseLike): Promise<Response> {
+  const { results } = await db
+    .prepare(
+      `SELECT id, title, tags, color, pinned,
+              created_at AS createdAt, updated_at AS updatedAt,
+              deleted, size_bytes AS sizeBytes
+       FROM notes
+       WHERE user_sub = ?
+       ORDER BY updated_at DESC`
+    )
+    .bind(userSub)
+    .all<NoteMetaRow>();
+
+  const notes = (results || []).map((row) => ({
+    id: row.id,
+    title: row.title || '',
+    tags: parseTags(row.tags),
+    color: row.color || '',
+    pinned: !!row.pinned,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deleted: !!row.deleted,
+    sizeBytes: row.sizeBytes || 0
+  }));
+
+  return jsonResponse({ notes }, 200, NO_STORE);
+}
+
+async function getNote(
+  userId: string,
+  db: D1DatabaseLike,
+  bucket: R2BucketLike,
+  noteId: string
+): Promise<Response> {
+  const row = await db
+    .prepare('SELECT deleted FROM notes WHERE user_sub = ? AND id = ?')
+    .bind(userId, noteId)
+    .first<{ deleted: number }>();
+
+  if (!row || row.deleted) {
+    return jsonResponse({ error: 'Note not found', code: 'not_found' }, 404, NO_STORE);
+  }
+
+  const object = await bucket.get(noteObjectKey(userId, noteId));
+  if (!object) {
+    return jsonResponse({ error: 'Note content not found', code: 'not_found' }, 404, NO_STORE);
+  }
+
+  return new Response(await object.text(), {
+    status: 200,
+    headers: { ...NO_STORE, 'Content-Type': 'application/json' }
+  });
+}
+
+function validateNote(value: unknown, noteId: string): string | null {
+  if (!value || typeof value !== 'object') return 'Note must be a JSON object';
+  const note = value as Record<string, unknown>;
+  if (note.id !== noteId) return 'Note id must match the URL';
+  if (typeof note.title !== 'string') return 'Note title must be a string';
+  if (typeof note.content !== 'string') return 'Note content must be a string';
+  if (!Array.isArray(note.inkStrokes)) return 'Note inkStrokes must be an array';
+  if (!Array.isArray(note.tags)) return 'Note tags must be an array';
+  if (!Number.isFinite(note.createdAt) || !Number.isFinite(note.updatedAt)) {
+    return 'Note timestamps must be numbers';
+  }
+  if ((note.createdAt as number) <= 0 || (note.updatedAt as number) <= 0) {
+    return 'Note timestamps must be positive';
+  }
+  return null;
+}
+
+async function putNote(
+  request: Request,
+  userId: string,
+  db: D1DatabaseLike,
+  bucket: R2BucketLike,
+  noteId: string
+): Promise<Response> {
+  const declaredLength = Number(request.headers.get('content-length') || 0);
+  if (declaredLength > MAX_NOTE_BYTES) {
+    return jsonResponse({ error: 'Note is too large', code: 'too_large' }, 413, NO_STORE);
+  }
+
+  const raw = await request.text();
+  if (raw.length > MAX_NOTE_BYTES) {
+    return jsonResponse({ error: 'Note is too large', code: 'too_large' }, 413, NO_STORE);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return jsonResponse({ error: 'Note body must be valid JSON', code: 'invalid_json' }, 400, NO_STORE);
+  }
+
+  const invalid = validateNote(parsed, noteId);
+  if (invalid) {
+    return jsonResponse({ error: invalid, code: 'invalid_note' }, 400, NO_STORE);
+  }
+
+  const note = parsed as {
+    id: string;
+    title: string;
+    content: string;
+    inkStrokes: unknown[];
+    tags: string[];
+    color?: string;
+    pinned?: boolean;
+    createdAt: number;
+    updatedAt: number;
+  };
+
+  const existing = await db
+    .prepare('SELECT updated_at AS updatedAt, deleted FROM notes WHERE user_sub = ? AND id = ?')
+    .bind(userId, noteId)
+    .first<{ updatedAt: number; deleted: number }>();
+
+  if (existing && !existing.deleted && existing.updatedAt > note.updatedAt) {
+    return jsonResponse(
+      { error: 'A newer version of this note already exists', code: 'stale_write', updatedAt: existing.updatedAt },
+      409,
+      NO_STORE
+    );
+  }
+
+  const body = JSON.stringify(note);
+  await bucket.put(noteObjectKey(userId, noteId), body, {
+    httpMetadata: { contentType: 'application/json' }
+  });
+
+  const tags = note.tags
+    .filter((tag): tag is string => typeof tag === 'string')
+    .slice(0, MAX_NOTE_TAGS);
+
+  await db
+    .prepare(
+      `INSERT INTO notes
+         (user_sub, id, title, tags, color, pinned, created_at, updated_at, deleted, size_bytes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+       ON CONFLICT(user_sub, id) DO UPDATE SET
+         title = excluded.title,
+         tags = excluded.tags,
+         color = excluded.color,
+         pinned = excluded.pinned,
+         created_at = excluded.created_at,
+         updated_at = excluded.updated_at,
+         deleted = 0,
+         size_bytes = excluded.size_bytes`
+    )
+    .bind(
+      userId,
+      noteId,
+      note.title,
+      JSON.stringify(tags),
+      typeof note.color === 'string' ? note.color : '',
+      note.pinned ? 1 : 0,
+      note.createdAt,
+      note.updatedAt,
+      body.length
+    )
+    .run();
+
+  return jsonResponse({ ok: true, id: noteId, updatedAt: note.updatedAt }, 200, NO_STORE);
+}
+
+async function deleteNote(
+  userId: string,
+  db: D1DatabaseLike,
+  bucket: R2BucketLike,
+  noteId: string
+): Promise<Response> {
+  const now = Date.now();
+  await db
+    .prepare(
+      `INSERT INTO notes
+         (user_sub, id, title, tags, color, pinned, created_at, updated_at, deleted, size_bytes)
+       VALUES (?, ?, '', '[]', '', 0, ?, ?, 1, 0)
+       ON CONFLICT(user_sub, id) DO UPDATE SET
+         deleted = 1,
+         updated_at = excluded.updated_at,
+         size_bytes = 0`
+    )
+    .bind(userId, noteId, now, now)
+    .run();
+
+  await bucket.delete(noteObjectKey(userId, noteId));
+  return new Response(null, { status: 204, headers: NO_STORE });
+}
+
+async function handleNotesApi(request: Request, env: Env, noteId?: string): Promise<Response> {
+  const account = await requireAccount(request, env);
+  if (account instanceof Response) return account;
+
+  const { user, db, bucket } = account;
+  const method = request.method.toUpperCase();
+
+  if (!noteId) {
+    if (method !== 'GET') {
+      return jsonResponse({ error: 'Method not allowed' }, 405, NO_STORE);
+    }
+    return listNotes(user.sub, db);
+  }
+
+  if (!NOTE_ID_PATTERN.test(noteId)) {
+    return jsonResponse({ error: 'Invalid note id', code: 'invalid_note_id' }, 400, NO_STORE);
+  }
+
+  if (method === 'GET') {
+    return getNote(user.sub, db, bucket, noteId);
+  }
+
+  if (method !== 'PUT' && method !== 'DELETE') {
+    return jsonResponse({ error: 'Method not allowed' }, 405, NO_STORE);
+  }
+
+  const origin = (env.APP_ORIGIN || '').trim().replace(/\/+$/, '');
+  if (!origin || !isSameOriginRequest(request, origin)) {
+    return jsonResponse({ error: 'Cross-origin request rejected', code: 'cross_origin' }, 403, NO_STORE);
+  }
+
+  if (method === 'PUT') {
+    return putNote(request, user.sub, db, bucket, noteId);
+  }
+  return deleteNote(user.sub, db, bucket, noteId);
+}
+
 /**
- * Signed-in account API. Only used by the UI to show who is signed in; the
- * vault sync routes stay anonymous until per-user storage lands.
+ * Signed-in account API. Returns the current user and persists their account
+ * row in D1 so the first request from a new visitor registers them.
  */
 async function handleAccountApi(request: Request, env: Env): Promise<Response> {
   const runtime = getAuthRuntime(env);
   if (!runtime) {
     return jsonResponse(
       { error: 'Sign in with Freebuff is not configured yet', code: 'auth_not_configured' },
-      503
+      503,
+      NO_STORE
     );
   }
 
   if (request.method !== 'GET') {
-    return jsonResponse({ error: 'Method not allowed' }, 405);
+    return jsonResponse({ error: 'Method not allowed' }, 405, NO_STORE);
   }
 
-  const user = await runtime.getUser(request);
+  const user = await getRequestUser(request, env);
   if (!user) {
-    return jsonResponse({ error: 'Sign in required' }, 401, { 'Cache-Control': 'private, no-store' });
+    return jsonResponse({ error: 'Sign in required' }, 401, NO_STORE);
   }
 
-  return jsonResponse({ user }, 200, { 'Cache-Control': 'private, no-store' });
+  if (env.DB) {
+    try {
+      await ensureUserRow(env.DB, user);
+    } catch (error) {
+      console.warn('Could not upsert user row:', error instanceof Error ? error.message : 'unknown');
+    }
+  }
+
+  return jsonResponse({ user }, 200, NO_STORE);
 }
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
@@ -105,6 +481,20 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
     if (url.pathname === '/api/account') {
       return handleAccountApi(request, env);
+    }
+
+    // Per-user note storage: /api/notes and /api/notes/:id
+    const notesMatch = url.pathname.match(/^\/api\/notes(?:\/([^/]+))?\/?$/);
+    if (notesMatch) {
+      let noteId: string | undefined;
+      if (notesMatch[1] !== undefined) {
+        try {
+          noteId = decodeURIComponent(notesMatch[1]);
+        } catch {
+          return jsonResponse({ error: 'Invalid note id', code: 'invalid_note_id' }, 400, NO_STORE);
+        }
+      }
+      return handleNotesApi(request, env, noteId);
     }
 
 
