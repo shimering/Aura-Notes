@@ -185,17 +185,21 @@ Because the vault key is the only credential, treat it like a password: anyone h
 
 While signed in, account sync replaces vault-key sync (the vault key is kept in settings and resumes after signing out).
 
-### Push the Source to GitHub (deploys through CI)
+### Push the Source to GitHub (deploys through Workers Builds)
 
-`main` deploys itself. Every push to `main` runs `.github/workflows/deploy.yml`, which:
+`main` deploys itself. Every push to `main` triggers **[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/)** for the `aura-notes-pwa` Worker, using this configuration (Cloudflare → Workers & Pages → `aura-notes-pwa` → Settings → Builds):
 
-1. checks the Cloudflare secrets are present and fails fast with an actionable message when they are not,
-2. installs dependencies, runs `npm test` and `npm run build`,
-3. deploys the Worker with `cloudflare/wrangler-action` (`command: deploy`), reading `wrangler.jsonc`.
+| Setting | Value |
+| --- | --- |
+| Git repository | `shimering/Aura-Notes` |
+| Production branch | `main` |
+| Build command | `npm test && npm run build` |
+| Deploy command | `npx wrangler deploy` |
+| Root directory | `/` |
 
-The workflow can also be run by hand from **Actions → Deploy Cloudflare Worker → Run workflow**. It is gated on tests and the production build, so a failing check publishes nothing.
+Workers Builds checks the repository out on its own build image, installs dependencies with `npm ci`, runs the build command (so a failing test publishes nothing), then runs the deploy command. `npx wrangler deploy` reads `wrangler.jsonc`, so the Worker name, `assets` directory, bindings, and `run_worker_first` setting all come from the repository — no build variables are needed. Node is pinned to 22 by `.nvmrc` / `.node-version`. Build logs live under **Deployments** for the Worker.
 
-Two repository secrets are required (Settings → Secrets and variables → Actions):
+`.github/workflows/deploy.yml` is kept as a **manual fallback only** (Actions → Deploy Cloudflare Worker → Run workflow). It no longer runs on push, so Workers Builds and GitHub Actions cannot deploy the same commit twice. If you use it, two repository secrets are required (Settings → Secrets and variables → Actions):
 
 | Secret | Value |
 | --- | --- |

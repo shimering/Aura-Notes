@@ -1,9 +1,8 @@
 name: Deploy Cloudflare Worker
 
+# Pushes to main deploy through Cloudflare Workers Builds (see README).
+# This workflow is a manual fallback so the same commit cannot be deployed twice.
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
