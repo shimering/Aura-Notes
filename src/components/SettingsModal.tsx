@@ -268,8 +268,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full accent-rose-500"
                 />
                 <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-1">
-                  Hold the side button this long to erase. Putting the pen down while the button is
-                  already held always erases immediately.
+                  The eraser arms the moment you press the button. Presses shorter than this are
+                  treated as a click and open the quick palette instead.
                 </p>
               </div>
 

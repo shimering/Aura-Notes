@@ -11,7 +11,7 @@ export interface AppSettings {
   defaultPenWidth: number;
   defaultEraserWidth: number;
   defaultEraserMode: EraserMode;
-  /** How long the S Pen side button must be held before the eraser arms. */
+  /** Shortest S Pen button press treated as a hold; shorter presses open the quick palette. */
   spenHoldEraseMs: number;
   /** Whether a short S Pen button click opens the quick pen palette. */
   spenClickOpensMenu: boolean;

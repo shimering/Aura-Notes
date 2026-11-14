@@ -177,7 +177,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // quick pen menu. Presses never begin or end on tip contact changes.
   const spenButtonPressStartRef = useRef<number | null>(null);
   const spenButtonReleaseEvidenceAtRef = useRef<number | null>(null);
-  const spenButtonHoldTimerRef = useRef<number | null>(null);
   const spenButtonSawContactRef = useRef<boolean>(false);
   // Consecutive in-contact samples carrying the barrel bit; two are required
   // before a mid-stroke press arms the eraser, so one glitchy sample cannot
@@ -664,47 +663,36 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }));
   }, [cancelScheduledSpenDeactivation, logSpenSample]);
 
-  const cancelSpenHoldTimer = useCallback(() => {
-    if (spenButtonHoldTimerRef.current !== null) {
-      window.clearTimeout(spenButtonHoldTimerRef.current);
-      spenButtonHoldTimerRef.current = null;
-    }
-  }, []);
-
   const openQuickMenu = useCallback((position: { x: number; y: number } | null) => {
     setQuickMenuPos(position);
     setIsQuickMenuOpen(true);
   }, []);
 
   /**
-   * Starts tracking an S Pen button press. The eraser only arms once the hold
-   * threshold is reached, so a short click never flashes the eraser. Landing
-   * the tip while the button is already held is unambiguously an erase and
-   * arms immediately.
+   * Starts tracking an S Pen button press and arms the momentary eraser right
+   * away. Delaying the arm behind a hold threshold broke the ordinary
+   * press-then-draw gesture: the first ~250ms of the drag was painted with the
+   * pen, so the button looked dead. The threshold now only classifies the
+   * release (short click opens the palette, hold erases).
    */
   const beginSpenButtonPress = useCallback((source: string) => {
     cancelScheduledSpenDeactivation();
     spenButtonReleaseEvidenceAtRef.current = null;
-    if (spenButtonPressStartRef.current !== null) return;
 
-    spenButtonPressStartRef.current = Date.now();
-
-    if (isPenDownRef.current || isEraserDrawingRef.current) {
-      // Tip already on the glass with the button held: erase now, this is not
-      // a menu click.
-      spenButtonSawContactRef.current = true;
-      activateSpenEraser(source);
+    if (spenButtonPressStartRef.current !== null) {
+      // The press is already tracked (it started in mid-air). Landing the tip
+      // must still erase immediately rather than wait for the hold threshold.
+      if ((isPenDownRef.current || isEraserDrawingRef.current) && !isSpenEraserArmedRef.current) {
+        spenButtonSawContactRef.current = true;
+        activateSpenEraser(`${source} (contact)`);
+      }
       return;
     }
 
-    cancelSpenHoldTimer();
-    const holdMs = spenHoldEraseMsRef.current;
-    spenButtonHoldTimerRef.current = window.setTimeout(() => {
-      spenButtonHoldTimerRef.current = null;
-      if (spenButtonPressStartRef.current === null) return;
-      activateSpenEraser(`${source} (held ${holdMs}ms)`);
-    }, holdMs);
-  }, [activateSpenEraser, cancelScheduledSpenDeactivation, cancelSpenHoldTimer]);
+    spenButtonPressStartRef.current = Date.now();
+    spenButtonSawContactRef.current = isPenDownRef.current || isEraserDrawingRef.current;
+    activateSpenEraser(source);
+  }, [activateSpenEraser, cancelScheduledSpenDeactivation]);
 
   /**
    * Concludes a press: a hold releases the momentary eraser, a short click
@@ -714,19 +702,20 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const startedAt = spenButtonPressStartRef.current;
     if (startedAt === null && !isSpenEraserArmedRef.current) return;
 
-    cancelSpenHoldTimer();
     // Use the moment the release evidence arrived, not the debounce firing
     // time, otherwise the confirmation delay would classify clicks as holds.
     const holdMs = spenHoldEraseMsRef.current;
     const releasedAt = spenButtonReleaseEvidenceAtRef.current ?? Date.now();
     const durationMs = startedAt === null ? holdMs : releasedAt - startedAt;
-    const worked = spenButtonSawContactRef.current || isSpenEraserArmedRef.current;
+    // The eraser arms on every press now, so only real tip contact during the
+    // press proves the button was used to erase instead of tapped.
+    const usedEraser = spenButtonSawContactRef.current;
 
     spenButtonPressStartRef.current = null;
     spenButtonReleaseEvidenceAtRef.current = null;
     spenButtonSawContactRef.current = false;
 
-    const action = evaluateSpenButtonAction(durationMs, worked, false, holdMs);
+    const action = evaluateSpenButtonAction(durationMs, usedEraser, false, holdMs);
 
     if (action === 'hold-eraser') {
       if (isSpenEraserArmedRef.current) deactivateSpenEraser(source);
@@ -748,7 +737,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       lastTrigger: `${source}: QUICK MENU (${Math.round(durationMs)}ms click)`
     }));
     openQuickMenu(lastPenClientPosRef.current);
-  }, [cancelSpenHoldTimer, deactivateSpenEraser, openQuickMenu]);
+  }, [deactivateSpenEraser, openQuickMenu]);
 
   /**
    * Debounces a *confirmed* eraser release. Only evidence that the physical
@@ -780,10 +769,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   useEffect(() => {
     return () => cancelScheduledSpenDeactivation();
   }, [cancelScheduledSpenDeactivation]);
-
-  useEffect(() => {
-    return () => cancelSpenHoldTimer();
-  }, [cancelSpenHoldTimer]);
 
   // Global window listeners for capturing S Pen hardware button interrupts across all browser layers
   useEffect(() => {
