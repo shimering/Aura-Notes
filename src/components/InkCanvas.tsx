@@ -294,6 +294,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const selectionPointerRef = useRef<number | null>(null);
   const selectionStartClient = useRef<Point | null>(null);
   const selectionDragged = useRef(false);
+  const selectionDismissedText = useRef(false);
   const [selectedBoxes, setSelectedBoxes] = useState<HTMLElement[]>([]);
   const selectedBoxesRef = useRef<HTMLElement[]>([]);
   const [tableCell, setTableCell] = useState<HTMLTableCellElement | null>(null);
@@ -1637,12 +1638,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     return hits;
   };
 
-  const handleSelectPointerDown = (e: React.PointerEvent) => {
+  const handleSelectPointerDown = (e: React.PointerEvent, dismissedEditor: boolean) => {
     const pointerType = e.pointerType;
     selectPointerTypeRef.current = pointerType;
     const client = { x: e.clientX, y: e.clientY };
     const point = getPagePoint(client.x, client.y);
-    const hits = pickObjects(point, client, (e.pointerType === 'touch' ? 10 : 6) / zoomRef.current);
+    const hits = pickObjects(point, client, (pointerType === 'touch' ? 10 : 6) / zoomRef.current);
+    const dismissText = pointerType === 'touch' && !hits.length &&
+      (dismissedEditor || selectedBoxesRef.current.some((box) => !box.matches(tableBoxSelector)));
     const selectedHit = hits.find(({ box, picture, ids }) =>
       (box && selectedBoxesRef.current.includes(box)) ||
       (picture && selectedPicturesRef.current.includes(picture)) ||
@@ -1656,7 +1659,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (object.cell) setTableCell(object.cell);
     };
 
-    if (hit || insideFrame) {
+    if (!dismissText && (hit || insideFrame)) {
       if (hit && !selectedHit) selectHit(hit);
       beginTransform('move', null, e, {
         tap: () => {
@@ -1688,6 +1691,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     selectionPointerRef.current = e.pointerId;
     selectionStartClient.current = client;
     selectionDragged.current = false;
+    selectionDismissedText.current = dismissText;
     marqueeRef.current = geometry;
   };
 
@@ -1720,7 +1724,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const isTap = !selectionDragged.current && selectionTravel(clientX, clientY) < SELECTION_TAP_SLOP;
     if (isTap) {
-      if (selectPointerTypeRef.current === 'touch' || selectedToolRef.current === 'text') {
+      if (!selectionDismissedText.current &&
+        (selectPointerTypeRef.current === 'touch' || selectedToolRef.current === 'text')) {
         startTextBox(geometry.start);
       }
       return;
@@ -1754,6 +1759,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (touch && (!e.isPrimary || touchCountRef.current > 1 || isStylusActiveRef.current ||
       e.width > 40 || e.height > 40)) return;
 
+    let dismissedEditor = false;
     if (activeTool === 'text') {
       const target = e.target instanceof Element ? e.target : null;
       if (target?.closest('a[download]')) return;
@@ -1765,7 +1771,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         return;
       }
       if (target?.closest('[contenteditable="true"]')) return;
+      dismissedEditor = touch && !!getEditor()?.querySelector(
+        `:scope > ${boxSelector}:not(${tableBoxSelector})[contenteditable="true"]`,
+      );
       textEditor?.current?.finishEditing();
+      if (dismissedEditor) textEditor?.current?.savePageObjects();
     }
 
     try {
@@ -1776,7 +1786,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     if (selecting) {
       e.preventDefault();
-      handleSelectPointerDown(e);
+      handleSelectPointerDown(e, dismissedEditor);
       return;
     }
 

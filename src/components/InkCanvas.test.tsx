@@ -84,25 +84,43 @@ it('dismisses the quick palette by tapping outside, closing it, or choosing a to
 
 it('opens Insert and focuses a new box from the ribbon or a blank touch at its original page coordinates', () => {
   const editorRef = createRef<TextEditorRef>();
+  const save = vi.fn();
   const note = { id: 'scratch', title: 'Scratch', content: '<p>Existing text</p>', inkStrokes: [],
     tags: [], color: '', createdAt: 0, updatedAt: 0 };
   act(() => root.render(<InkCanvas noteId={note.id} defaultTool="pen" strokes={note.inkStrokes}
     onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} onChangeBackground={() => {}}
     textEditor={editorRef}
-    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
+    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={save} embedded />} />));
 
   expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Insert');
   const textBoxButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Text Box');
   act(() => textBoxButton?.click());
   expect(container.querySelectorAll('[data-note-positioned]')).toHaveLength(2);
   expect(document.activeElement).toBe(container.querySelector('[data-note-positioned]:last-child'));
+  const edited = document.activeElement as HTMLElement;
+  edited.textContent = 'Keep this edit';
 
   const canvas = container.querySelector<HTMLCanvasElement>('.ink-canvas')!;
-  const pointer = (type: string) => {
-    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 132, clientY: 81 });
+  const pointer = (type: string, clientX = 132, clientY = 81) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
     Object.assign(event, { pointerId: 1, pointerType: 'touch', isPrimary: true, width: 10, height: 10 });
     act(() => canvas.dispatchEvent(event));
   };
+  pointer('pointerdown');
+  pointer('pointerup');
+  expect(edited.hasAttribute('contenteditable')).toBe(false);
+  expect(save).toHaveBeenLastCalledWith(expect.stringContaining('Keep this edit'));
+  expect(container.querySelectorAll('[data-note-positioned]')).toHaveLength(2);
+
+  Object.defineProperties(edited, { offsetWidth: { value: 96 }, offsetHeight: { value: 35 } });
+  pointer('pointerdown', 45, 15);
+  pointer('pointerup', 45, 15);
+  expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
+  pointer('pointerdown');
+  pointer('pointerup');
+  expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
+  expect(container.querySelectorAll('[data-note-positioned]')).toHaveLength(2);
+
   pointer('pointerdown');
   // Dismissing contextual controls can shift the sheet before the finger lifts.
   vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 40, 0, 0));
@@ -111,5 +129,10 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
   expect(inserted.dataset.notePositioned).toBe('true');
   expect(inserted.style.left).toBe('132px');
   expect(inserted.style.top).toBe('81px');
+
+  pointer('pointerdown', 45, 55);
+  pointer('pointerup', 45, 55);
+  expect(inserted.isConnected).toBe(false);
+  expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
   expect(onChangeStrokes).not.toHaveBeenCalled();
 });
