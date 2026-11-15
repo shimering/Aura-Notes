@@ -242,8 +242,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full accent-rose-500"
                 />
                 <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-1">
-                  The eraser arms the moment you press the button. A press shorter than this counts
-                  as one of the two clicks that open the quick palette.
+                  Hold the side button for this long to switch to the eraser. Release it to return
+                  to your selected tool.
                 </p>
               </div>
 
@@ -253,8 +253,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     Double Press Opens Quick Palette
                   </p>
                   <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-0.5">
-                    Press the side button twice while the pen hovers in the air to open the pen and
-                    colour menu. A single press never opens it, so lifting the pen cannot trigger it.
+                    Press the side button twice quickly to open the pen and colour palette.
                   </p>
                 </div>
                 <input

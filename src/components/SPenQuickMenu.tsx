@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { 
   PenTool as PenToolType,
   EraserMode
@@ -41,8 +41,6 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
   eraserMode = 'object',
   onChangeEraserMode
 }) => {
-  const menuRef = useRef<HTMLDivElement>(null);
-
   // Close when tapping outside or pressing escape
   useEffect(() => {
     if (!isOpen) return;
@@ -51,17 +49,9 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
       if (e.key === 'Escape') onClose();
     };
 
-    const handlePointerDownOutside = (e: PointerEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('pointerdown', handlePointerDownOutside);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('pointerdown', handlePointerDownOutside);
     };
   }, [isOpen, onClose]);
 
@@ -116,14 +106,13 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
   const currentColors = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
 
   return (
-    <div 
-      className="fixed inset-0 z-50 pointer-events-none"
-    >
+    <div className="fixed inset-0 z-50" data-ink-ui="spen-quick-menu">
+      <button type="button" tabIndex={-1} aria-label="Dismiss quick palette" onClick={onClose} className="absolute inset-0 touch-none" />
       <div
-        ref={menuRef}
+        role="dialog"
+        aria-label="S Pen Quick Palette"
         style={getMenuStyle()}
-        data-ink-ui="spen-quick-menu"
-        className="fixed pointer-events-auto w-80 rounded-3xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-2xl border border-surface-subtle-light/80 dark:border-surface-subtle-dark/80 shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-150 select-none"
+        className="fixed max-h-[calc(100dvh-2rem)] w-80 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-3xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-2xl border border-surface-subtle-light/80 dark:border-surface-subtle-dark/80 shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-150 select-none"
       >
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-surface-subtle-light dark:border-surface-subtle-dark">
@@ -141,6 +130,8 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
             </div>
           </div>
           <button
+            type="button"
+            aria-label="Close quick palette"
             onClick={onClose}
             className="p-1 rounded-lg text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark transition"
           >

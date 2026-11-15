@@ -24,12 +24,8 @@ import {
   unionBounds
 } from '../utils/inkSelection';
 import { SelectionOverlay, ResizeCorner } from './SelectionOverlay';
-import { 
-  isSpenBarrelOrEraser, 
-  isSpenHoverButton,
-  isSpenHardwareKeyEvent,
-  evaluateSpenButtonAction
-} from '../utils/spenDetection';
+import { isSpenHardwareKeyEvent } from '../utils/spenDetection';
+import { createSpenGesture } from '../utils/spenGesture';
 import { PenToolbar } from './PenToolbar';
 import { SPenQuickMenu } from './SPenQuickMenu';
 import {
@@ -94,7 +90,7 @@ interface InkCanvasProps {
   defaultStylusOnly?: boolean;
   /** Hold time (Settings) before the S Pen button arms the eraser. */
   spenHoldEraseMs?: number;
-  /** Whether a hover double-press of the S Pen button opens the quick palette (Settings). */
+  /** Whether a double-press of the S Pen button opens the quick palette (Settings). */
   spenDoublePressOpensMenu?: boolean;
 }
 
@@ -135,34 +131,7 @@ function playToggleAudioFeedback(isEraser: boolean) {
 
 const INK_UI_CONTROL_SELECTOR = 'button, [role="button"], input, label, select';
 
-/**
- * Confirmation window for a mid-stroke S Pen button release. While the tip is
- * in contact the barrel bit is the only release evidence, so the bit must be
- * absent for this long before the drag is handed back to the pen. Short enough
- * to feel instant, long enough that a single glitchy sample cannot split a
- * stroke.
- */
-const SPEN_MID_STROKE_RELEASE_MS = 120;
-
-/**
- * How long the S Pen button must be held before it arms the momentary eraser.
- * Anything shorter is treated as a button click and opens the quick pen menu.
- */
 const SPEN_HOLD_ERASE_MS = 250;
-
-/**
- * Longest gap between a released click and the next press that still counts as
- * a double press. The palette only opens on a double press while hovering, so a
- * stray sample after a lift can never open it.
- */
-const SPEN_DOUBLE_PRESS_MS = 450;
-
-/**
- * Grace period after the tip lifts. The pen reports its own buttons = 1 for a
- * moment after leaving the glass, which looks exactly like the side button on
- * Samsung hardware, so hover samples in this window never arm the eraser.
- */
-const SPEN_POST_LIFT_GUARD_MS = 150;
 
 /**
  * A finger touchdown starts an ink stroke right away, but a tap that never
@@ -208,7 +177,7 @@ function isInkUiTarget(target: EventTarget | null): boolean {
   return (
     typeof Element !== 'undefined' &&
     target instanceof Element &&
-    !!target.closest('[data-ink-ui]')
+    !!target.closest('[data-ink-ui]:not([data-ink-ui=page-viewport])')
   );
 }
 
@@ -273,10 +242,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   } | null>(null);
   /** Open two-finger gesture and its starting geometry. */
   const isPinchingRef = useRef<boolean>(false);
-  const pinchStartRef = useRef<{ distance: number; zoom: number } | null>(null);
   /** Number of fingers currently touching the page viewport. */
   const touchCountRef = useRef<number>(0);
-  const pinchFocalRef = useRef<{ x: number; y: number } | null>(null);
 
   // Detect dark mode for initial ink color
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
@@ -427,29 +394,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // while the side button is held). Pressure-less pens never set this.
   const dragSawPressureRef = useRef<boolean>(false);
   const zeroPressureSamplesRef = useRef<number>(0);
-  /** Sticky proof that this pen reports real pressure at all. */
-  const penReportsPressureRef = useRef<boolean>(false);
-  // Mid-stroke button release tracking: when the barrel bit first went missing
-  // during the current eraser drag, and how many contact samples proved this
-  // device actually reports the bit while touching (see handlePointerMove).
-  const eraserReleasePendingSinceRef = useRef<number | null>(null);
-  const eraserDragButtonSamplesRef = useRef<number>(0);
-  // S Pen button press lifecycle: hold arms the eraser, a short click opens the
-  // quick pen menu. Presses never begin or end on tip contact changes.
-  const spenButtonPressStartRef = useRef<number | null>(null);
-  const spenButtonReleaseEvidenceAtRef = useRef<number | null>(null);
-  const spenButtonSawContactRef = useRef<boolean>(false);
-  // Consecutive in-contact samples carrying the barrel bit; two are required
-  // before a mid-stroke press arms the eraser, so one glitchy sample cannot
-  // split an ink stroke.
-  const spenContactButtonSamplesRef = useRef<number>(0);
-  // Consecutive hover samples carrying the Samsung "primary button in the air"
-  // signal; two are required so the stale sample after a lift cannot arm it.
-  const spenHoverButtonSamplesRef = useRef<number>(0);
-  const lastPenLiftAtRef = useRef<number>(0);
   const lastPenClientPosRef = useRef<{ x: number; y: number } | null>(null);
-  const isPenDownRef = useRef<boolean>(false);
-  const spenDeactivateTimerRef = useRef<number | null>(null);
+  const spenTipDownRef = useRef(false);
   const lastInkUiClickRef = useRef<{ control: HTMLElement; time: number } | null>(null);
 
   // Effective tool: If S Pen eraser is armed, tool is 'eraser', else selectedTool
@@ -547,8 +493,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // window-level pointer handlers always read the current value.
   const spenHoldEraseMsRef = useRef<number>(spenHoldEraseMs);
   const spenDoublePressOpensMenuRef = useRef<boolean>(spenDoublePressOpensMenu);
-  /** Release time of the last clean hover click, for double-press detection. */
-  const spenLastHoverClickRef = useRef<number | null>(null);
 
   useEffect(() => {
     spenHoldEraseMsRef.current = Math.max(0, Math.min(2000, spenHoldEraseMs));
@@ -985,16 +929,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    * page spot. The actual scroll correction runs in a layout effect below,
    * after the new transform has been applied.
    */
-  const applyZoom = useCallback((nextZoom: number, focal?: { x: number; y: number }) => {
+  const applyZoom = useCallback((nextZoom: number, focal?: Point, target = focal) => {
     const clamped = clampPageZoom(nextZoom);
     const page = pageRef.current;
     const current = zoomRef.current || 1;
 
-    if (focal && page) {
+    if (focal && target && page) {
       const rect = page.getBoundingClientRect();
       zoomAnchorRef.current = {
-        clientX: focal.x,
-        clientY: focal.y,
+        clientX: target.x,
+        clientY: target.y,
         pageX: (focal.x - rect.left) / current,
         pageY: (focal.y - rect.top) / current
       };
@@ -1084,71 +1028,103 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const node = scrollRef.current;
     if (!node) return;
 
-    const onTouchStart = (event: TouchEvent) => {
-      touchCountRef.current = event.touches.length;
-      if (event.touches.length !== 2 || isStylusActiveRef.current) return;
-      event.preventDefault();
+    type Gesture = {
+      ids: [number, number];
+      focal: Point;
+      startDistance: number;
+      startZoom: number;
+      zooming: boolean;
+    };
+    let gesture: Gesture | null = null;
+    let single: { id: number; start: Point; last: Point; scrolling: boolean } | null = null;
 
-      const [first, second] = [event.touches[0], event.touches[1]];
-      const distance = Math.hypot(
-        second.clientX - first.clientX,
-        second.clientY - first.clientY
-      );
-      const focal = {
-        x: (first.clientX + second.clientX) / 2,
-        y: (first.clientY + second.clientY) / 2
+    const touchesInViewport = (event: TouchEvent) =>
+      Array.from(event.touches).filter((touch) => node.contains(touch.target as Node));
+
+    const geometry = (first: Touch, second: Touch) => ({
+      focal: { x: (first.clientX + second.clientX) / 2, y: (first.clientY + second.clientY) / 2 },
+      distance: Math.max(1, Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY))
+    });
+    const pan = (from: Point, to: Point) => {
+      node.scrollLeft -= to.x - from.x;
+      node.scrollTop -= to.y - from.y;
+    };
+    const updateGesture = (touches: Touch[]) => {
+      touchCountRef.current = touches.length;
+      if (touches.length < 2 || isStylusActiveRef.current || spenTipDownRef.current) return;
+      if (gesture?.ids.every((id) => touches.some((touch) => touch.identifier === id))) return;
+      const [first, second] = touches;
+      const { focal, distance } = geometry(first, second);
+      if (!isPinchingRef.current) abortActiveCanvasDrag();
+      isPinchingRef.current = true;
+      single = null;
+      gesture = {
+        ids: [first.identifier, second.identifier],
+        focal,
+        startDistance: distance,
+        startZoom: zoomRef.current,
+        zooming: false
       };
+    };
 
-      if (!isPinchingRef.current) {
-        isPinchingRef.current = true;
-        pinchStartRef.current = {
-          distance: Math.max(1, distance),
-          zoom: zoomRef.current
-        };
-        pinchFocalRef.current = focal;
-        abortActiveCanvasDrag();
+    const onTouchStart = (event: TouchEvent) => {
+      const touches = touchesInViewport(event);
+      updateGesture(touches);
+      if (isPinchingRef.current) {
+        event.preventDefault();
+      } else if (touches.length === 1 && !(event.target as Element).closest('.ink-canvas, [data-ink-ui=selection]')) {
+        // Text and the desk can still scroll with one finger. Let a stationary
+        // touch place the caret or activate a control normally.
+        const [touch] = touches;
+        const point = { x: touch.clientX, y: touch.clientY };
+        single = { id: touch.identifier, start: point, last: point, scrolling: false };
       }
     };
 
     const onTouchMove = (event: TouchEvent) => {
-      touchCountRef.current = event.touches.length;
-      if (!isPinchingRef.current || event.touches.length < 2) return;
-      event.preventDefault();
-
-      const [first, second] = [event.touches[0], event.touches[1]];
-      const distance = Math.hypot(
-        second.clientX - first.clientX,
-        second.clientY - first.clientY
-      );
-      const focal = {
-        x: (first.clientX + second.clientX) / 2,
-        y: (first.clientY + second.clientY) / 2
-      };
-      const start = pinchStartRef.current;
-      if (!start) return;
-
-      const before = zoomRef.current;
-      applyZoom(start.zoom * (distance / start.distance), focal);
-
-      // Once a zoom limit is reached the same two fingers still pan the sheet.
-      if (Math.abs(zoomRef.current - before) < 0.001) {
-        const previousFocal = pinchFocalRef.current;
-        if (previousFocal) {
-          node.scrollLeft -= focal.x - previousFocal.x;
-          node.scrollTop -= focal.y - previousFocal.y;
-        }
+      const touches = touchesInViewport(event);
+      updateGesture(touches);
+      if (!isPinchingRef.current) {
+        if (!single || isStylusActiveRef.current || spenTipDownRef.current) return;
+        const touch = touches.find(({ identifier }) => identifier === single?.id);
+        if (!touch) return;
+        const point = { x: touch.clientX, y: touch.clientY };
+        if (!single.scrolling && Math.hypot(point.x - single.start.x, point.y - single.start.y) < 8) return;
+        event.preventDefault();
+        single.scrolling = true;
+        pan(single.last, point);
+        single.last = point;
+        return;
       }
-      pinchFocalRef.current = focal;
+
+      event.preventDefault();
+      if (!gesture || touches.length < 2 || isStylusActiveRef.current || spenTipDownRef.current) return;
+      const first = touches.find(({ identifier }) => identifier === gesture?.ids[0]);
+      const second = touches.find(({ identifier }) => identifier === gesture?.ids[1]);
+      if (!first || !second) return;
+      const { focal, distance } = geometry(first, second);
+
+      // Allow a little finger-spacing drift during a pan before starting zoom.
+      if (!gesture.zooming && Math.abs(distance - gesture.startDistance) >= Math.max(12, gesture.startDistance * 0.08)) {
+        gesture.zooming = true;
+        gesture.startDistance = distance;
+        gesture.startZoom = zoomRef.current;
+      }
+      const before = zoomRef.current;
+      if (gesture.zooming) {
+        applyZoom(gesture.startZoom * distance / gesture.startDistance, gesture.focal, focal);
+      }
+      if (zoomRef.current === before) pan(gesture.focal, focal);
+      gesture.focal = focal;
     };
 
     const onTouchEnd = (event: TouchEvent) => {
-      touchCountRef.current = event.touches.length;
-      if (!isPinchingRef.current || event.touches.length >= 2) return;
-      isPinchingRef.current = false;
-      pinchStartRef.current = null;
-      pinchFocalRef.current = null;
-      // Redraw the ink sharply at the settled zoom.
-      window.setTimeout(() => resizeCanvas(), 0);
+      const touches = touchesInViewport(event);
+      updateGesture(touches);
+      if (!touches.some(({ identifier }) => identifier === single?.id)) single = null;
+      if (touches.length < 2) gesture = null;
+      // Suppress ink until both fingers from the gesture are off the page.
+      if (touches.length === 0) isPinchingRef.current = false;
     };
 
     // Desktop pinch arrives as a ctrl/meta wheel gesture from the trackpad.
@@ -1172,7 +1148,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       node.removeEventListener('touchcancel', onTouchEnd);
       node.removeEventListener('wheel', onWheel);
     };
-  }, [abortActiveCanvasDrag, applyZoom, resizeCanvas]);
+  }, [abortActiveCanvasDrag, applyZoom]);
 
   /**
    * Rotates the sheet. Ink drawn on a wider page is scaled down so switching
@@ -1264,434 +1240,112 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
   };
 
-  /**
-   * Cancels a pending (confirmed) S Pen eraser release — for example when a
-   * barrel-button hover sample arrives between the release signal and the
-   * debounce firing.
-   */
-  const cancelScheduledSpenDeactivation = useCallback(() => {
-    if (spenDeactivateTimerRef.current !== null) {
-      window.clearTimeout(spenDeactivateTimerRef.current);
-      spenDeactivateTimerRef.current = null;
-    }
-  }, []);
-
-  /**
-   * Activates Eraser mode while S Pen button is pressed.
-   */
-  const activateSpenEraser = useCallback((source: string = 'press') => {
-    cancelScheduledSpenDeactivation();
-    if (isSpenEraserArmedRef.current) return;
-    isSpenEraserArmedRef.current = true;
-    setIsSpenEraserArmed(true);
-
-    playToggleAudioFeedback(true);
-    try {
-      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        navigator.vibrate(35);
-      }
-    } catch {}
-
-    logSpenSample('tool', { note: `${source}: eraser armed` });
-    setStylusTelemetry((prev) => ({
-      ...prev,
-      lastTrigger: `${source}: ERASER ACTIVATED (${new Date().toLocaleTimeString()})`
-    }));
-  }, [cancelScheduledSpenDeactivation, logSpenSample]);
-
-  /**
-   * Deactivates Eraser mode immediately when S Pen button is released.
-   */
-  const deactivateSpenEraser = useCallback((source: string = 'release') => {
-    cancelScheduledSpenDeactivation();
-    if (!isSpenEraserArmedRef.current) return;
-    isSpenEraserArmedRef.current = false;
-    setIsSpenEraserArmed(false);
-    isEraserDrawingRef.current = false;
-
-    // Guaranteed revert to writing pen (never stay trapped in eraser!)
-    const targetTool = lastWritingToolRef.current || 'fountain';
-    if (selectedToolRef.current === 'eraser') {
-      setSelectedTool(targetTool);
-      selectedToolRef.current = targetTool;
-    }
-
-    playToggleAudioFeedback(false);
-
-    logSpenSample('tool', { note: `${source}: reverted to pen` });
-    setStylusTelemetry((prev) => ({
-      ...prev,
-      lastTrigger: `${source}: REVERTED TO PEN (${new Date().toLocaleTimeString()})`
-    }));
-  }, [cancelScheduledSpenDeactivation, logSpenSample]);
-
   const openQuickMenu = useCallback((position: { x: number; y: number } | null) => {
     setQuickMenuPos(position);
     setIsQuickMenuOpen(true);
   }, []);
 
-  /**
-   * Concludes a press: a hold releases the momentary eraser, and two quick
-   * clicks in a row while hovering open the quick pen menu at the stylus.
-   */
-  const finishSpenButtonPress = useCallback((source: string) => {
-    const startedAt = spenButtonPressStartRef.current;
-    if (startedAt === null && !isSpenEraserArmedRef.current) return;
-
-    // Use the moment the release evidence arrived, not the debounce firing
-    // time, otherwise the confirmation delay would classify clicks as holds.
-    const holdMs = spenHoldEraseMsRef.current;
-    const releasedAt = spenButtonReleaseEvidenceAtRef.current ?? Date.now();
-    const durationMs = startedAt === null ? holdMs : releasedAt - startedAt;
-    // The eraser arms on every press now, so only real tip contact during the
-    // press proves the button was used to erase instead of tapped.
-    const usedEraser = spenButtonSawContactRef.current;
-
-    spenButtonPressStartRef.current = null;
-    spenButtonReleaseEvidenceAtRef.current = null;
-    spenButtonSawContactRef.current = false;
-
-    const action = evaluateSpenButtonAction(durationMs, usedEraser, false, holdMs);
-
-    if (action === 'hold-eraser') {
-      // A hold — or a press that ever touched the paper — ends the click pair.
-      spenLastHoverClickRef.current = null;
-      if (isSpenEraserArmedRef.current) deactivateSpenEraser(source);
-      return;
-    }
-
-    if (isSpenEraserArmedRef.current) deactivateSpenEraser(`${source}: click`);
-
-    // Only a clean click while the pen is off the glass can count towards the
-    // double press: a lift, or a press used for erasing, resets the pair.
-    if (usedEraser || isPenDownRef.current || isEraserDrawingRef.current) {
-      spenLastHoverClickRef.current = null;
-      return;
-    }
-
-    const previousClickAt = spenLastHoverClickRef.current;
-    spenLastHoverClickRef.current = null;
-    const gapMs = previousClickAt === null || startedAt === null
-      ? Number.POSITIVE_INFINITY
-      : startedAt - previousClickAt;
-
-    if (gapMs > SPEN_DOUBLE_PRESS_MS) {
-      spenLastHoverClickRef.current = releasedAt;
-      setStylusTelemetry((prev) => ({
-        ...prev,
-        lastTrigger: `${source}: click ${Math.round(durationMs)}ms (double-press for palette)`
-      }));
-      return;
-    }
-
-    if (!spenDoublePressOpensMenuRef.current) {
-      setStylusTelemetry((prev) => ({
-        ...prev,
-        lastTrigger: `${source}: DOUBLE PRESS IGNORED (palette gesture off)`
-      }));
-      return;
-    }
-
-    setStylusTelemetry((prev) => ({
-      ...prev,
-      lastTrigger: `${source}: QUICK MENU (double press)`
-    }));
-    openQuickMenu(lastPenClientPosRef.current);
-  }, [deactivateSpenEraser, openQuickMenu]);
-
-  /**
-   * Starts tracking an S Pen button press and arms the momentary eraser right
-   * away. Delaying the arm behind a hold threshold broke the ordinary
-   * press-then-draw gesture: the first ~250ms of the drag was painted with the
-   * pen, so the button looked dead. The threshold now only classifies the
-   * release, and only a double press opens the palette.
-   */
-  const beginSpenButtonPress = useCallback((source: string) => {
-    cancelScheduledSpenDeactivation();
-
-    if (spenButtonPressStartRef.current !== null) {
-      if (spenButtonReleaseEvidenceAtRef.current !== null) {
-        // A new press arrived while the previous release was still inside its
-        // confirmation window. That press is over, so conclude it now —
-        // otherwise two quick clicks would merge into one long press.
-        finishSpenButtonPress(`${source}: press-reopened`);
-      } else {
-        // The press is already tracked (it started in mid-air). Landing the tip
-        // must still erase immediately rather than wait for the hold threshold.
-        if (isPenDownRef.current && !isSpenEraserArmedRef.current) {
-          spenButtonSawContactRef.current = true;
-          activateSpenEraser(`${source} (contact)`);
-        }
-        return;
-      }
-    }
-
-    spenButtonReleaseEvidenceAtRef.current = null;
-    spenButtonPressStartRef.current = Date.now();
-    spenButtonSawContactRef.current = isPenDownRef.current;
-    activateSpenEraser(source);
-  }, [activateSpenEraser, cancelScheduledSpenDeactivation, finishSpenButtonPress]);
-
-  /**
-   * Debounces a *confirmed* eraser release. Only evidence that the physical
-   * button is no longer held starts this timer: a hover sample without a
-   * barrel/eraser bit, or a stylus hardware keyup. Lifting the tip never
-   * starts it, because pointerup/mouseup report buttons = 0 even while the
-   * button is still held — that was the eraser ↔ pen flicker on lift.
-   */
-  const scheduleSpenReleaseConfirmation = useCallback((source: string) => {
-    if (spenDeactivateTimerRef.current !== null) return;
-    spenDeactivateTimerRef.current = window.setTimeout(() => {
-      spenDeactivateTimerRef.current = null;
-      if (isEraserDrawingRef.current) return;
-      finishSpenButtonPress(source);
-    }, 200);
-  }, [finishSpenButtonPress]);
-
-  /**
-   * Records that a release signal arrived and starts its confirmation window.
-   * The timestamp is kept so click-vs-hold uses the real release time.
-   */
-  const noteSpenReleaseEvidence = useCallback((source: string) => {
-    // No press in flight means there is nothing to conclude; every evidence
-    // source can call this unconditionally.
-    if (spenButtonPressStartRef.current === null && !isSpenEraserArmedRef.current) return;
-    if (spenButtonReleaseEvidenceAtRef.current === null) {
-      spenButtonReleaseEvidenceAtRef.current = Date.now();
-    }
-    scheduleSpenReleaseConfirmation(source);
-  }, [scheduleSpenReleaseConfirmation]);
+  // Saving a drag can rerender the note while the side button is still held.
+  // Keep the gesture listener alive and call the latest drag callbacks.
+  const spenDragActions = useRef({ commitActiveDrag, finishEraserDragPreview });
+  useLayoutEffect(() => {
+    spenDragActions.current = { commitActiveDrag, finishEraserDragPreview };
+  }, [commitActiveDrag, finishEraserDragPreview]);
 
   useEffect(() => {
-    return () => cancelScheduledSpenDeactivation();
-  }, [cancelScheduledSpenDeactivation]);
-
-  // Global window listeners for capturing S Pen hardware button interrupts across all browser layers
-  useEffect(() => {
-    const handleGlobalPointerMove = (e: PointerEvent) => {
-      if (e.pointerType === 'pen') {
-        lastStylusActiveTimeRef.current = Date.now();
-        lastPenClientPosRef.current = { x: e.clientX, y: e.clientY };
-
-        if (e.pressure > 0.05) {
-          penReportsPressureRef.current = true;
+    let active = true;
+    const gesture = createSpenGesture({
+      holdMs: () => spenHoldEraseMsRef.current,
+      onEraser: (armed) => {
+        if (!active) return;
+        isSpenEraserArmedRef.current = armed;
+        setIsSpenEraserArmed(armed);
+        if (!armed && isEraserDrawingRef.current && selectedToolRef.current !== 'eraser') {
+          spenDragActions.current.finishEraserDragPreview();
         }
-        // Zero pressure from a pen that is known to report pressure means the
-        // tip is off the glass — even when pointerup never arrived (Chromium
-        // can drop stylus events while the side button is held). Self-healing
-        // this keeps the eraser arming again on the next button press.
-        const pressureProvesHover = e.pressure <= 0.05 && penReportsPressureRef.current;
-        if (pressureProvesHover) {
-          isPenDownRef.current = false;
-        }
-        const isHovering = pressureProvesHover || (!isPenDownRef.current && e.pressure <= 0.05);
-        const hasBarrelButton = isSpenBarrelOrEraser(e.buttons, e.button);
-        // Samsung/Chromium send the side button as buttons = 1 while the pen is
-        // in the air; the spec's barrel bits are accepted as well.
-        const hoverButtonBit = isSpenHoverButton(e.buttons, e.pressure);
+        playToggleAudioFeedback(armed);
+        logSpenSample('tool', { note: armed ? 'Hold: eraser' : 'Release: selected tool' });
+        setStylusTelemetry((prev) => ({ ...prev, lastTrigger: armed ? 'HOLD: ERASER' : 'RELEASE: SELECTED TOOL' }));
+      },
+      onDoublePress: () => {
+        if (!spenDoublePressOpensMenuRef.current) return;
+        logSpenSample('menu', { note: 'Double press: quick palette' });
+        openQuickMenu(lastPenClientPosRef.current);
+      }
+    });
 
-        setStylusTelemetry((prev) => ({
-          ...prev,
-          status: isHovering ? 'hovering' : 'drawing',
-          buttons: e.buttons,
-          button: e.button,
-          pressure: e.pressure
-        }));
-
-        // Log moves only when the button/contact state changes, or as a ~16Hz
-        // heartbeat, so a 120Hz stylus cannot flood the buffer.
-        const contact = isPenDownRef.current || e.pressure > 0.05;
-        const lastMove = lastLoggedMoveRef.current;
-        const nowMs = Date.now();
-        if (e.buttons !== lastMove.buttons || contact !== lastMove.contact || nowMs - lastMove.time >= 60) {
-          lastLoggedMoveRef.current = { time: nowMs, buttons: e.buttons, contact };
-          logSpenSample('move', {
-            pointerType: e.pointerType,
-            buttons: e.buttons,
-            button: e.button,
-            pressure: e.pressure,
-            contact,
-            note: hasBarrelButton ? 'barrel-bit' : hoverButtonBit ? 'hover-primary' : undefined
-          });
-        }
-
-        // Arm the eraser from the hover signal. On Samsung hardware the barrel
-        // bit never appears; the side button is buttons = 1 with zero pressure.
-        if (isHovering) {
-          const staleAfterLift = Date.now() - lastPenLiftAtRef.current < SPEN_POST_LIFT_GUARD_MS;
-
-          if (hoverButtonBit && staleAfterLift) {
-            // Neither arm nor release: this sample is the pen's own buttons = 1
-            // lingering after the tip left the glass.
-          } else if (hoverButtonBit) {
-            spenHoverButtonSamplesRef.current += 1;
-            // Spec barrel bits are trustworthy on their own; the primary-button
-            // form needs two consecutive samples.
-            if (hasBarrelButton || spenHoverButtonSamplesRef.current >= 2) {
-              beginSpenButtonPress(`hover-press (buttons=${e.buttons})`);
-            }
-          } else {
-            spenHoverButtonSamplesRef.current = 0;
-            noteSpenReleaseEvidence('hover-release');
-          }
-        } else if (hasBarrelButton) {
-          // Button pressed with the tip already on the glass: the canvas hands
-          // this drag over from ink to erasing at the press point.
-          spenContactButtonSamplesRef.current += 1;
-          if (spenContactButtonSamplesRef.current >= 2 && !isSpenEraserArmedRef.current) {
-            beginSpenButtonPress(`contact-press (buttons=${e.buttons})`);
-          }
-        } else {
-          spenContactButtonSamplesRef.current = 0;
-        }
+    const onPointer = (e: PointerEvent) => {
+      if (e.pointerType !== 'pen') return;
+      const kind = e.type === 'pointerdown' ? 'down' : e.type === 'pointerup' ? 'up' : e.type === 'pointercancel' ? 'cancel' : 'move';
+      const onControl = isInkUiTarget(e.target);
+      lastStylusActiveTimeRef.current = Date.now();
+      lastPenClientPosRef.current = { x: e.clientX, y: e.clientY };
+      gesture.pointer(kind, e, !onControl);
+      spenTipDownRef.current = gesture.tipDown;
+      const contact = gesture.tipDown;
+      setStylusTelemetry((prev) => ({
+        ...prev,
+        status: contact ? 'drawing' : 'hovering',
+        buttons: e.buttons,
+        button: e.button,
+        pressure: e.pressure
+      }));
+      const last = lastLoggedMoveRef.current;
+      const now = Date.now();
+      if (kind !== 'move' || e.buttons !== last.buttons || contact !== last.contact || now - last.time >= 60) {
+        lastLoggedMoveRef.current = { time: now, buttons: e.buttons, contact };
+        logSpenSample(kind, { pointerType: e.pointerType, buttons: e.buttons, button: e.button, pressure: e.pressure, contact });
       }
     };
 
-    // Global pointerup. Lifting the tip is NOT a button release: buttons is 0
-    // here even while the barrel button is physically held, so the tool must
-    // not change. Only hover samples and hardware key events switch tools.
-    const handleGlobalPointerUp = (e: PointerEvent) => {
-      if (e.pointerType === 'pen') {
-        isPenDownRef.current = false;
-        spenContactButtonSamplesRef.current = 0;
-        spenHoverButtonSamplesRef.current = 0;
-        lastPenLiftAtRef.current = Date.now();
-        logSpenSample('up', {
-          pointerType: e.pointerType,
-          buttons: e.buttons,
-          button: e.button,
-          pressure: e.pressure,
-          contact: false
-        });
-      }
-    };
-
-    const handleGlobalPointerDown = (e: PointerEvent) => {
-      if (e.pointerType === 'pen') {
-        // A tip touch sets buttons = 1 by itself. Only an auxiliary/barrel bit
-        // proves the S Pen button is physically held.
-        const hasBarrel = isSpenBarrelOrEraser(e.buttons, e.button);
-        isPenDownRef.current = true;
-        spenHoverButtonSamplesRef.current = 0;
-        spenContactButtonSamplesRef.current = hasBarrel ? 1 : 0;
-        logSpenSample('down', {
-          pointerType: e.pointerType,
-          buttons: e.buttons,
-          button: e.button,
-          pressure: e.pressure,
-          contact: true,
-          note: hasBarrel ? 'barrel-bit' : 'tip-only'
-        });
-        if (isInkUiTarget(e.target)) return;
-        if (hasBarrel) {
-          spenButtonSawContactRef.current = true;
-          if (!isSpenEraserArmedRef.current) {
-            beginSpenButtonPress(`global-pointerdown-press (buttons=${e.buttons})`);
-          }
-        }
-      }
-    };
-
-    // Samsung One UI Context Menu (Fired by Samsung Internet when S Pen button is clicked in the air)
-    const handleGlobalContextMenu = (e: MouseEvent) => {
-      const isPenEvent = (e as any).pointerType === 'pen';
-      const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
-
+    // Compatibility mouse events can be emitted on an ordinary tip touch.
+    // They may act on controls but must never change the side-button state.
+    const onCompatibilityClick = (e: MouseEvent) => {
+      const isPen = (e as PointerEvent).pointerType === 'pen';
+      const recentPen = Date.now() - lastStylusActiveTimeRef.current < 400;
+      if (!isPen && !recentPen) return;
       if (isInkUiTarget(e.target)) {
-        if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
-          e.preventDefault();
-          e.stopPropagation();
-          clickInkUiControl(e.target);
-        }
-        return;
-      }
-
-      if (isPenEvent || isRecentPen) {
         e.preventDefault();
-        e.stopPropagation();
-        const hasBarrel = isSpenBarrelOrEraser(e.buttons, e.button);
-        logSpenSample('contextmenu', { buttons: e.buttons, button: e.button, note: hasBarrel ? 'barrel-bit' : 'no-barrel-bit' });
-        if (hasBarrel) {
-          beginSpenButtonPress('contextmenu-press');
-        } else {
-          noteSpenReleaseEvidence('contextmenu-release');
-        }
+        clickInkUiControl(e.target);
       }
     };
 
-    // Aux Click (Middle/Aux button click on Android Chromium)
-    const handleGlobalAuxClick = (e: MouseEvent) => {
-      const isPenEvent = (e as any).pointerType === 'pen';
-      const isRecentPen = Date.now() - lastStylusActiveTimeRef.current < 2000;
-
-      if (isInkUiTarget(e.target)) {
-        if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
-          e.preventDefault();
-          e.stopPropagation();
-          clickInkUiControl(e.target);
-        }
-        return;
-      }
-
-      if (isPenEvent || isRecentPen || isSpenBarrelOrEraser(e.buttons, e.button)) {
-        e.preventDefault();
-        e.stopPropagation();
-        const hasBarrel = isSpenBarrelOrEraser(e.buttons, e.button);
-        logSpenSample('auxclick', { buttons: e.buttons, button: e.button, note: hasBarrel ? 'barrel-bit' : 'no-barrel-bit' });
-        if (hasBarrel) {
-          beginSpenButtonPress('auxclick-press');
-        } else {
-          noteSpenReleaseEvidence('auxclick-release');
-        }
-      }
+    const onKey = (e: KeyboardEvent) => {
+      if (!isSpenHardwareKeyEvent(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      logSpenSample(e.type, { note: e.code || String(e.keyCode) });
+      if (e.type === 'keyup') gesture.keyUp();
+      else if (!e.repeat) gesture.keyDown();
     };
 
-    // Android 14+ Stylus Hardware Button Key Events (Keycode 308 / 309)
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (isSpenHardwareKeyEvent(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        logSpenSample('keydown', { note: e.keyCode ? `keyCode=${e.keyCode}` : `code=${e.code}` });
-        beginSpenButtonPress(`key-down-${e.keyCode || e.code}`);
+    const reset = () => {
+      gesture.reset();
+      spenTipDownRef.current = false;
+      if (isStylusActiveRef.current) {
+        spenDragActions.current.commitActiveDrag();
+        isStylusActiveRef.current = false;
       }
     };
-
-    const handleGlobalKeyUp = (e: KeyboardEvent) => {
-      if (isSpenHardwareKeyEvent(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        logSpenSample('keyup', { note: e.keyCode ? `keyCode=${e.keyCode}` : `code=${e.code}` });
-        noteSpenReleaseEvidence(`key-up-${e.keyCode || e.code}`);
-      }
-    };
-
-    window.addEventListener('pointermove', handleGlobalPointerMove, { capture: true, passive: true });
-    window.addEventListener('pointerdown', handleGlobalPointerDown, { capture: true });
-    window.addEventListener('pointerup', handleGlobalPointerUp, { capture: true });
-    window.addEventListener('pointercancel', handleGlobalPointerUp, { capture: true });
-    window.addEventListener('contextmenu', handleGlobalContextMenu, { capture: true });
-    window.addEventListener('auxclick', handleGlobalAuxClick, { capture: true });
-    window.addEventListener('keydown', handleGlobalKeyDown, { capture: true });
-    window.addEventListener('keyup', handleGlobalKeyUp, { capture: true });
-
-    if ('onpointerrawupdate' in window) {
-      window.addEventListener('pointerrawupdate' as any, handleGlobalPointerMove as any, { capture: true, passive: true });
-    }
-
+    const pointerEvents = ['pointermove', 'pointerdown', 'pointerup', 'pointercancel'] as const;
+    pointerEvents.forEach((type) => window.addEventListener(type, onPointer, true));
+    window.addEventListener('contextmenu', onCompatibilityClick, true);
+    window.addEventListener('auxclick', onCompatibilityClick, true);
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('keyup', onKey, true);
+    window.addEventListener('blur', reset);
     return () => {
-      window.removeEventListener('pointermove', handleGlobalPointerMove, { capture: true });
-      window.removeEventListener('pointerdown', handleGlobalPointerDown, { capture: true });
-      window.removeEventListener('pointerup', handleGlobalPointerUp, { capture: true });
-      window.removeEventListener('pointercancel', handleGlobalPointerUp, { capture: true });
-      window.removeEventListener('contextmenu', handleGlobalContextMenu, { capture: true });
-      window.removeEventListener('auxclick', handleGlobalAuxClick, { capture: true });
-      window.removeEventListener('keydown', handleGlobalKeyDown, { capture: true });
-      window.removeEventListener('keyup', handleGlobalKeyUp, { capture: true });
-      if ('onpointerrawupdate' in window) {
-        window.removeEventListener('pointerrawupdate' as any, handleGlobalPointerMove as any, { capture: true });
-      }
+      active = false;
+      gesture.reset();
+      isSpenEraserArmedRef.current = false;
+      pointerEvents.forEach((type) => window.removeEventListener(type, onPointer, true));
+      window.removeEventListener('contextmenu', onCompatibilityClick, true);
+      window.removeEventListener('auxclick', onCompatibilityClick, true);
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keyup', onKey, true);
+      window.removeEventListener('blur', reset);
     };
-  }, [beginSpenButtonPress, clickInkUiControl, logSpenSample, noteSpenReleaseEvidence]);
+  }, [clickInkUiControl, logSpenSample, openQuickMenu]);
 
   /**
    * Applies the currently selected eraser mode at a canvas point.
@@ -1970,10 +1624,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Down (stylus touches screen)
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    eraserReleasePendingSinceRef.current = null;
-    eraserDragButtonSamplesRef.current = 0;
-    // Touching the paper breaks any pending double-press pair.
-    spenLastHoverClickRef.current = null;
+    if (e.pointerType === 'pen' && (!spenTipDownRef.current || isPinchingRef.current)) return;
     dragSawPressureRef.current = false;
     zeroPressureSamplesRef.current = 0;
 
@@ -1998,17 +1649,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       return;
     }
 
-    // 4. A second finger means the gesture is a pinch, not a stroke. The first
-    // finger may already have started ink; discard it and let the zoom handlers
-    // take over.
-    if (e.pointerType === 'touch' && (isPinchingRef.current || touchCountRef.current > 0)) {
-      fingerTapRef.current = null;
-      abortActiveCanvasDrag();
-      return;
-    }
+    // Touch events take ownership from the first finger once the second lands.
+    if (e.pointerType === 'touch' && (isPinchingRef.current || !e.isPrimary || touchCountRef.current > 1)) return;
 
-    // Press-on-touchdown is handled by the global capture pointerdown listener,
-    // which always runs before this canvas handler.
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
@@ -2059,9 +1702,18 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Move (coalesced 120Hz events loop)
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (isPinchingRef.current) return;
+    if (isPinchingRef.current || (e.pointerType === 'touch' && !e.isPrimary)) return;
     if (isStylusOnly && e.pointerType !== 'pen' && activeTool !== 'select') return;
     if (isStylusActiveRef.current && e.pointerType === 'touch') return;
+
+    if (e.pointerType === 'pen' && !spenTipDownRef.current) {
+      if (isStylusActiveRef.current) handlePointerUp(e);
+      return;
+    }
+    if (e.pointerType === 'pen' && spenTipDownRef.current && !isStylusActiveRef.current) {
+      handlePointerDown(e);
+      return;
+    }
 
     if (activeTool === 'select') {
       if (marqueeRef.current) updateMarquee(getPagePoint(e.clientX, e.clientY));
@@ -2083,75 +1735,39 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const nativeEvent = e.nativeEvent as PointerEvent;
 
-    // A pen that has reported pressure and now reports none is off the glass.
+    // Don't add points when a pressure-sensitive pen briefly reports zero.
     // Such a sample must never extend a stroke or erase: if the browser dropped
     // the pointerup (Chromium does while the side button is held), the drag is
     // still open and hovering used to keep carving ink away. Close it after a
     // second sample so one odd reading cannot split a stroke; pens that never
     // report pressure keep the old behaviour.
-    if (nativeEvent.pressure <= 0.05 && dragSawPressureRef.current) {
+    if (e.pointerType === 'pen' && nativeEvent.pressure === 0 && dragSawPressureRef.current) {
       zeroPressureSamplesRef.current += 1;
       if (zeroPressureSamplesRef.current >= 2) {
         commitActiveDrag();
+        isStylusActiveRef.current = false;
       }
       return;
     }
-    if (nativeEvent.pressure > 0.05) {
+    if (e.pointerType === 'pen' && nativeEvent.pressure > 0) {
       dragSawPressureRef.current = true;
-      penReportsPressureRef.current = true;
       zeroPressureSamplesRef.current = 0;
     }
 
     const rawEvents = nativeEvent.getCoalescedEvents?.() ?? [];
     const coalescedEvents = rawEvents.length > 0 ? rawEvents : [nativeEvent];
 
-    // MID-STROKE BUTTON RELEASE: while the tip stays down, a vanishing barrel
-    // bit is the only release evidence. Commit what has been erased and hand
-    // the rest of the drag to the pen, without waiting for a lift.
-    if (isEraserDrawingRef.current) {
-      const sampleHasButton = coalescedEvents.some(
-        (ce) => isSpenBarrelOrEraser(ce.buttons, ce.button)
-      );
-
-      if (sampleHasButton) {
-        eraserDragButtonSamplesRef.current += 1;
-        eraserReleasePendingSinceRef.current = null;
-      } else if (eraserDragButtonSamplesRef.current > 0) {
-        // Only treat a missing bit as a release once this device has shown it
-        // reports the bit on contact samples; otherwise keep erasing until lift.
-        const now = Date.now();
-        if (eraserReleasePendingSinceRef.current === null) {
-          eraserReleasePendingSinceRef.current = now;
-        } else if (now - eraserReleasePendingSinceRef.current >= SPEN_MID_STROKE_RELEASE_MS) {
-          eraserReleasePendingSinceRef.current = null;
-          eraserDragButtonSamplesRef.current = 0;
-          finishEraserDragPreview();
-          finishSpenButtonPress('mid-stroke-button-release');
-          currentStrokeRef.current = buildInkStroke(getCanvasPoint(e));
-          redraw();
-        }
-      }
-    }
-
-    // MID-STROKE BUTTON PRESS: the eraser just armed while the tip is still
-    // down. Commit the ink drawn so far as one step and continue this same drag
-    // as erasing, starting at the current point.
-    if (isSpenEraserArmedRef.current && !isEraserDrawingRef.current && currentStrokeRef.current) {
-      const inkStroke = currentStrokeRef.current;
-      currentStrokeRef.current = null;
-      if (inkStroke.points.length > 1) {
-        commitStrokes([...strokesRef.current, inkStroke]);
-      }
-      isEraserDrawingRef.current = true;
-      previewStrokesRef.current = strokesRef.current;
-      eraserReleasePendingSinceRef.current = null;
-      // The arming sample proved this device reports the bit while touching,
-      // so a later missing bit can be trusted as a release.
-      eraserDragButtonSamplesRef.current = 1;
-    }
-
     const isEraserNow = isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser';
-
+    if (e.pointerType === 'pen' && isStylusActiveRef.current && spenTipDownRef.current) {
+      if (isEraserNow && !isEraserDrawingRef.current) {
+        commitActiveDrag();
+        isEraserDrawingRef.current = true;
+        previewStrokesRef.current = strokesRef.current;
+      } else if (!isEraserNow && !currentStrokeRef.current && selectedToolRef.current !== 'text') {
+        currentStrokeRef.current = buildInkStroke(getCanvasPoint(e));
+        return;
+      }
+    }
     // ERASER MODE: preview erasing locally; committed as one undoable step on lift
     if (isEraserNow && isEraserDrawingRef.current) {
       let currentStrokes = previewStrokesRef.current ?? strokesRef.current;
@@ -2196,15 +1812,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     redraw();
   };
 
-  // Pointer Up (stylus leaves screen - auto returns to pen if S Pen button is released!)
+  // End the drag without changing the independent side-button state.
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     // Lifting a finger during a pinch must not commit the stroke the first
     // finger started (it was already discarded when the pinch began).
-    if (isPinchingRef.current) {
-      fingerTapRef.current = null;
-      return;
-    }
+    if (isPinchingRef.current || (e.pointerType === 'touch' && (!e.isPrimary || isStylusActiveRef.current))) return;
 
+    if (e.pointerType === 'pen' && spenTipDownRef.current) return;
     if (activeTool === 'select') {
       if (e.currentTarget.hasPointerCapture(e.pointerId)) {
         try {
@@ -2218,8 +1832,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       return;
     }
 
-    eraserReleasePendingSinceRef.current = null;
-    eraserDragButtonSamplesRef.current = 0;
     dragSawPressureRef.current = false;
     zeroPressureSamplesRef.current = 0;
 
@@ -2279,11 +1891,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handleManualToolSelect = (tool: PenTool) => {
-    cancelScheduledSpenDeactivation();
     setSelectedTool(tool);
     selectedToolRef.current = tool;
-    setIsSpenEraserArmed(false);
-    isSpenEraserArmedRef.current = false;
 
     if (tool === 'text') {
       onRequestTextFocus?.();
@@ -2389,7 +1998,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           hasStrokes={strokes.length > 0}
           isStylusOnly={isStylusOnly}
           onToggleStylusOnly={() => setIsStylusOnly(!isStylusOnly)}
-          onOpenSPenMenu={() => setIsQuickMenuOpen(true)}
+          onOpenSPenMenu={() => openQuickMenu(null)}
           lastWritingTool={lastWritingToolRef.current}
           background={background}
           onChangeBackground={onChangeBackground}
@@ -2700,10 +2309,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         onClose={() => setIsQuickMenuOpen(false)}
         position={quickMenuPos}
         activeTool={activeTool}
-        onSelectTool={(tool) => {
-          handleManualToolSelect(tool);
-          setIsQuickMenuOpen(false);
-        }}
+        onSelectTool={handleManualToolSelect}
         color={penColor}
         onChangeColor={(newColor) => {
           setPenColor(newColor);
