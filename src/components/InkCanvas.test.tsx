@@ -103,7 +103,7 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
   const canvas = container.querySelector<HTMLCanvasElement>('.ink-canvas')!;
   const pointer = (type: string, clientX = 132, clientY = 81) => {
     const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
-    Object.assign(event, { pointerId: 1, pointerType: 'touch', isPrimary: true, width: 10, height: 10 });
+    Object.assign(event, { pointerId: 1, pointerType: 'touch', isPrimary: true, width: 48, height: 44 });
     act(() => canvas.dispatchEvent(event));
   };
   pointer('pointerdown');
@@ -131,9 +131,11 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
   expect(inserted.style.top).toBe('81px');
 
   for (let tap = 0; tap < 2; tap++) {
-    const event = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 140, clientY: 130 });
-    Object.assign(event, { pointerId: 2, pointerType: 'touch', isPrimary: true, width: 10, height: 10 });
-    act(() => inserted.dispatchEvent(event));
+    for (const type of ['pointerdown', 'pointerup']) {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 140, clientY: 130 });
+      Object.assign(event, { pointerId: 2, pointerType: 'touch', isPrimary: true, width: 10, height: 10 });
+      act(() => inserted.dispatchEvent(event));
+    }
   }
   expect(inserted.hasAttribute('contenteditable')).toBe(false);
   expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
@@ -143,5 +145,15 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
   pointer('pointerup', 45, 55);
   expect(inserted.isConnected).toBe(false);
   expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
+
+  act(() => editorRef.current?.editBox(edited));
+  for (const [type, x, y] of [['pointerdown', 45, 55], ['pointermove', 160, 130], ['pointerup', 160, 130]] as const) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+    Object.assign(event, { pointerId: 3, pointerType: 'touch', isPrimary: true, width: 48, height: 44 });
+    act(() => edited.dispatchEvent(event));
+  }
+  expect(edited.hasAttribute('contenteditable')).toBe(false);
+  expect(edited.style.left).not.toBe('0px');
+  expect(save).toHaveBeenLastCalledWith(expect.stringContaining('Keep this edit'));
   expect(onChangeStrokes).not.toHaveBeenCalled();
 });
