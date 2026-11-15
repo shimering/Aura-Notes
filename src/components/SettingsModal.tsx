@@ -5,7 +5,6 @@ import {
   Sun,
   Moon,
   Type,
-  Columns,
   PenTool,
   Cloud,
   Feather,
@@ -117,10 +116,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             <div className="p-3 rounded-2xl bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60">
               <p className="text-xs font-semibold text-ink-light dark:text-ink-dark mb-2">Default Layout</p>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-2 gap-1.5">
                 {[
                   { id: 'text' as const, label: 'Text', icon: <Type className="w-3.5 h-3.5" /> },
-                  { id: 'both' as const, label: 'Split', icon: <Columns className="w-3.5 h-3.5" /> },
                   { id: 'ink' as const, label: 'Canvas', icon: <PenTool className="w-3.5 h-3.5" /> }
                 ].map((mode) => (
                   <button

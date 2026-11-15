@@ -27,14 +27,26 @@ import { SyncModal } from './components/SyncModal';
 import { SettingsModal } from './components/SettingsModal';
 import { getNoteTemplate } from './utils/templates';
 
+/**
+ * The workspace is a single surface. Older builds could save a 'both' (split)
+ * layout; anything that is not the note sheet collapses to the Draw surface.
+ */
+function normalizeViewMode(mode?: string | null): ViewMode {
+  return mode === 'text' ? 'text' : 'ink';
+}
+
 export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNoteId, setActiveNoteIdState] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    return window.innerWidth >= 1024 ? 'both' : 'text';
+    // One surface per device: touch hardware opens on the Draw canvas so the
+    // pen is live immediately, a keyboard/mouse desktop on the note sheet.
+    return navigator.maxTouchPoints > 0 ? 'ink' : 'text';
   });
+  // Bumped when the Draw surface hands the caret back to the note sheet.
+  const [textFocusRequest, setTextFocusRequest] = useState(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 1024);
   const [isScribbleModalOpen, setIsScribbleModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
@@ -153,7 +165,7 @@ export default function App() {
         } else {
           document.documentElement.classList.remove('dark');
         }
-        setViewMode(res.settings.viewMode);
+        setViewMode(normalizeViewMode(res.settings.viewMode));
       }
       return res;
     } catch (err: any) {
@@ -258,9 +270,8 @@ export default function App() {
           document.documentElement.classList.remove('dark');
         }
 
-        if (loadedSettings.viewMode) {
-          setViewMode(loadedSettings.viewMode);
-        }
+        // A split ('both') layout saved by an older build collapses to Draw.
+        setViewMode(normalizeViewMode(loadedSettings.viewMode));
 
         // 2. Check URL for 1-click sync link (?sync=KEY)
         let activeVaultKey = loadedSettings.syncVaultKey;
@@ -515,6 +526,31 @@ export default function App() {
     scheduleSave(updated);
   };
 
+  /**
+   * Touching the note sheet with the pen hands the workspace to the Draw
+   * surface, where the pen tools and the eraser are already in the toolbar.
+   */
+  useEffect(() => {
+    const handlePenContact = (e: PointerEvent) => {
+      if (e.pointerType !== 'pen') return;
+      const target = e.target as Element | null;
+      if (!target || typeof target.closest !== 'function') return;
+      if (!target.closest('[data-note-surface="text"]')) return;
+      setViewMode('ink');
+    };
+    window.addEventListener('pointerdown', handlePenContact, { capture: true });
+    return () => window.removeEventListener('pointerdown', handlePenContact, { capture: true });
+  }, []);
+
+  /**
+   * A single finger tap on the Draw surface shows the writing cursor: the note
+   * sheet takes over with a blinking caret waiting for the keyboard.
+   */
+  const handleFingerTap = useCallback(() => {
+    setViewMode('text');
+    setTextFocusRequest((request) => request + 1);
+  }, []);
+
   // Update View Mode with settings persistence
   const handleChangeViewMode = async (mode: ViewMode) => {
     setViewMode(mode);
@@ -537,7 +573,7 @@ export default function App() {
       }
     }
     if (updates.viewMode) {
-      setViewMode(updates.viewMode);
+      setViewMode(normalizeViewMode(updates.viewMode));
     }
     if (typeof updates.isSidebarOpen === 'boolean') {
       setIsSidebarOpen(updates.isSidebarOpen);
@@ -782,23 +818,20 @@ export default function App() {
         />
 
         {activeNote ? (
-          <div className="flex-1 flex flex-col lg:flex-row h-full min-h-0 overflow-hidden relative transition-all duration-300">
+          <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden relative transition-all duration-300">
             {/* Keyboard Rich Text Editor View */}
-            {(viewMode === 'text' || viewMode === 'both') && (
-              <div 
-                className={`h-full min-h-0 overflow-hidden flex flex-col transition-all duration-300 ${
-                  viewMode === 'both' ? 'flex-1 lg:border-r border-surface-subtle-light dark:border-surface-subtle-dark' : 'flex-1'
-                }`}
-              >
+            {viewMode === 'text' && (
+              <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col transition-all duration-300">
                 <TextEditor
                   note={activeNote}
                   onChangeContent={handleUpdateContent}
+                  focusRequest={textFocusRequest}
                 />
               </div>
             )}
 
             {/* Stylus Ink Drawing Canvas (S Pen & Apple Pencil) */}
-            {(viewMode === 'ink' || viewMode === 'both') && (
+            {viewMode === 'ink' && (
               <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col relative transition-all duration-300">
                 <InkCanvas
                   ref={inkCanvasRef}
@@ -806,6 +839,7 @@ export default function App() {
                   strokes={activeNote.inkStrokes || []}
                   onChangeStrokes={handleUpdateStrokes}
                   onScribbleToText={() => setIsScribbleModalOpen(true)}
+                  onFingerTap={handleFingerTap}
                   defaultTool={settings.defaultPenTool}
                   defaultColor={settings.defaultPenColor}
                   defaultWidth={settings.defaultPenWidth}

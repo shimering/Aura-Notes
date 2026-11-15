@@ -9,7 +9,6 @@ import {
   Sparkles,
   Type, 
   PenTool, 
-  Columns,
   Share2,
   Cloud,
   RefreshCw,
@@ -19,7 +18,7 @@ import {
 import { Note } from '../types/note';
 import { TagEditor } from './TagEditor';
 
-export type ViewMode = 'both' | 'text' | 'ink';
+export type ViewMode = 'text' | 'ink';
 
 interface HeaderProps {
   note: Note | null;
@@ -170,11 +169,11 @@ export const Header: React.FC<HeaderProps> = ({
         </span>
       </div>
 
-      {/* Middle: Mode Switcher (Split, Text Only, Ink Only) */}
+      {/* Middle: Surface Switcher (note sheet vs. stylus Draw surface) */}
       <div className="flex items-center bg-surface-subtle-light dark:bg-surface-subtle-dark p-1 rounded-xl gap-1">
         <button
           onClick={() => onChangeViewMode('text')}
-          title="Keyboard Text Mode"
+          title="Text mode — a finger tap shows the writing cursor"
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
             viewMode === 'text'
               ? 'bg-surface-light dark:bg-surface-dark text-violet-600 dark:text-violet-400 shadow-sm'
@@ -185,20 +184,8 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="hidden md:inline">Text</span>
         </button>
         <button
-          onClick={() => onChangeViewMode('both')}
-          title="Split View: Stylus + Keyboard"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-            viewMode === 'both'
-              ? 'bg-surface-light dark:bg-surface-dark text-violet-600 dark:text-violet-400 shadow-sm'
-              : 'text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light'
-          }`}
-        >
-          <Columns className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">Split</span>
-        </button>
-        <button
           onClick={() => onChangeViewMode('ink')}
-          title="Stylus Drawing Mode (S Pen / Apple Pencil)"
+          title="Draw mode — pen tools & eraser; a pen touch switches here automatically"
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
             viewMode === 'ink'
               ? 'bg-surface-light dark:bg-surface-dark text-violet-600 dark:text-violet-400 shadow-sm'
@@ -206,7 +193,7 @@ export const Header: React.FC<HeaderProps> = ({
           }`}
         >
           <PenTool className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">Stylus Canvas</span>
+          <span className="hidden md:inline">Draw</span>
         </button>
       </div>
 

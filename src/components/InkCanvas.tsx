@@ -27,6 +27,8 @@ interface InkCanvasProps {
   strokes: Stroke[];
   onChangeStrokes: (strokes: Stroke[]) => void;
   onScribbleToText: () => void;
+  /** A finger tap that never travelled: the note sheet should take the caret. */
+  onFingerTap?: () => void;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
   defaultTool?: PenTool;
@@ -107,6 +109,14 @@ const SPEN_DOUBLE_PRESS_MS = 450;
  */
 const SPEN_POST_LIFT_GUARD_MS = 150;
 
+/**
+ * A finger touchdown starts an ink stroke right away, but a tap that never
+ * travels is a text gesture, not a drawing one: on lift it hands the caret to
+ * the note sheet instead. A swipe past this slop keeps the stroke.
+ */
+const FINGER_TAP_SLOP_PX = 8;
+const FINGER_TAP_MAX_MS = 600;
+
 /** One captured S Pen sample for on-device diagnostics. */
 type SpenLogEntry = {
   t: number;
@@ -151,6 +161,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   strokes,
   onChangeStrokes,
   onScribbleToText,
+  onFingerTap,
   background = 'none',
   onChangeBackground,
   defaultTool = 'fountain',
@@ -404,6 +415,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const previewStrokesRef = useRef<Stroke[] | null>(null);
   const currentStrokeRef = useRef<Stroke | null>(null);
   const isStylusActiveRef = useRef<boolean>(false);
+
+  /** Open finger contact, so a tap can be told apart from a swipe on lift. */
+  const fingerTapRef = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    time: number;
+    moved: boolean;
+    drawsInk: boolean;
+  } | null>(null);
 
   const syncHistoryFlags = useCallback(() => {
     setCanUndo(historyRef.current.canUndo);
@@ -1137,6 +1158,21 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     // which always runs before this canvas handler.
     e.currentTarget.setPointerCapture(e.pointerId);
 
+    // Finger contact is ambiguous until it moves: remember the touchdown so a
+    // stationary tap can hand the caret to the note sheet on lift.
+    if (e.pointerType === 'touch') {
+      fingerTapRef.current = {
+        pointerId: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        time: Date.now(),
+        moved: false,
+        drawsInk: !(isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser')
+      };
+    } else {
+      fingerTapRef.current = null;
+    }
+
     const isEraserNow = isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser';
     const startPoint = getCanvasPoint(e);
 
@@ -1160,6 +1196,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (isStylusOnly && e.pointerType !== 'pen') return;
     if (isStylusActiveRef.current && e.pointerType === 'touch') return;
+
+    // A finger that travels is swiping (insert drawing), not tapping.
+    const fingerTap = fingerTapRef.current;
+    if (fingerTap && fingerTap.pointerId === e.pointerId && !fingerTap.moved) {
+      const dx = e.clientX - fingerTap.x;
+      const dy = e.clientY - fingerTap.y;
+      if (dx * dx + dy * dy > FINGER_TAP_SLOP_PX * FINGER_TAP_SLOP_PX) {
+        fingerTap.moved = true;
+      }
+    }
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1299,9 +1345,26 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     // Commit the eraser drag or ink stroke as a single undoable step
     commitActiveDrag();
+
+    // A finger tap that never travelled shows the writing cursor instead: the
+    // single-point dot it drew was discarded by commitActiveDrag above.
+    const fingerTap = fingerTapRef.current;
+    fingerTapRef.current = null;
+    if (
+      fingerTap &&
+      e.pointerType === 'touch' &&
+      fingerTap.pointerId === e.pointerId &&
+      !fingerTap.moved &&
+      fingerTap.drawsInk &&
+      Date.now() - fingerTap.time <= FINGER_TAP_MAX_MS
+    ) {
+      onFingerTap?.();
+    }
   };
 
   const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // A cancelled touch is never a tap: only a clean lift hands over the caret.
+    fingerTapRef.current = null;
     handlePointerUp(e);
   };
 

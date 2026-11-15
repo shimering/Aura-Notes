@@ -395,7 +395,7 @@ export const SyncModal: React.FC<SyncModalProps> = ({
                     Sync Theme &amp; View Mode
                   </p>
                   <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-0.5">
-                    Sync Dark/Light mode and Split/Text/Canvas view across devices
+                    Sync Dark/Light mode and Text/Draw view across devices
                   </p>
                 </div>
                 <input

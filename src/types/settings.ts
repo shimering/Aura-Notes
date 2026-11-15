@@ -25,7 +25,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
-  viewMode: 'both',
+  viewMode: 'ink',
   isSidebarOpen: true,
   stylusOnly: false,
   defaultPenTool: 'fountain',
