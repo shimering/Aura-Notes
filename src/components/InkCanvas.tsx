@@ -1,5 +1,5 @@
-import React, { useRef, useEffect, useState, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
-import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode, TextBlockLayout } from '../types/note';
+import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
+import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode, TextBlockLayout, PageLayout } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint, eraseStrokesPartial } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
 import { drawInkBackground } from '../utils/inkBackground';
@@ -32,7 +32,24 @@ import {
 } from '../utils/spenDetection';
 import { PenToolbar } from './PenToolbar';
 import { SPenQuickMenu } from './SPenQuickMenu';
-import { Eraser, Sparkles, Feather, Activity, ClipboardCopy, Download, Trash2 } from 'lucide-react';
+import {
+  clampPageZoom,
+  getFitWidthZoom,
+  getPageSize,
+  PAGE_ZOOM_STEP
+} from '../utils/pageLayout';
+import {
+  Eraser,
+  Sparkles,
+  Feather,
+  Activity,
+  ClipboardCopy,
+  Download,
+  Trash2,
+  ZoomIn,
+  ZoomOut,
+  Maximize2
+} from 'lucide-react';
 
 export interface InkCanvasRef {
   getCanvasElement: () => HTMLCanvasElement | null;
@@ -60,6 +77,9 @@ interface InkCanvasProps {
   toolbarExtra?: React.ReactNode;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
+  /** A4 orientation of the note sheet. */
+  pageLayout?: PageLayout;
+  onChangePageLayout?: (layout: PageLayout) => void;
   /** Saved page placement of the typed text block. */
   textLayout?: TextBlockLayout;
   /** Reports a move / resize / rotate of the typed text block. */
@@ -212,6 +232,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   toolbarExtra,
   background = 'none',
   onChangeBackground,
+  pageLayout = 'portrait',
+  onChangePageLayout,
   textLayout,
   onChangeTextLayout,
   onDeleteText,
@@ -229,7 +251,32 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // Ink assigned to the note's back layer is painted on this canvas, behind the text.
   const backCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // ---- Page sheet: A4 size, orientation and zoom -------------------------
+  const pageSize = useMemo(() => getPageSize(pageLayout), [pageLayout]);
+  /** Measured height of the sheet in page pixels (A4 minimum, grows with text). */
+  const [pageHeight, setPageHeight] = useState<number>(pageSize.height);
+  const [zoom, setZoom] = useState<number>(1);
+  const zoomRef = useRef<number>(1);
+  /** Device-pixel scale of the bitmap currently backing the canvases. */
+  const renderScaleRef = useRef<number>(
+    typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
+  );
+  /** Focal point captured before a zoom change, applied after React paints. */
+  const zoomAnchorRef = useRef<{
+    clientX: number;
+    clientY: number;
+    pageX: number;
+    pageY: number;
+  } | null>(null);
+  /** Open two-finger gesture and its starting geometry. */
+  const isPinchingRef = useRef<boolean>(false);
+  const pinchStartRef = useRef<{ distance: number; zoom: number } | null>(null);
+  /** Number of fingers currently touching the page viewport. */
+  const touchCountRef = useRef<number>(0);
+  const pinchFocalRef = useRef<{ x: number; y: number } | null>(null);
 
   // Detect dark mode for initial ink color
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
@@ -330,13 +377,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     wrapper.style.transform = previousTransform;
 
+    // Client rects include the page's CSS zoom (a transformed ancestor). The
+    // block layout is stored in page pixels, so undo the zoom here.
+    const scale = zoomRef.current || 1;
+
     return {
       hasText: true,
       box: {
-        x: rect.left - wrapperRect.left,
-        y: rect.top - wrapperRect.top,
-        width: Math.max(1, rect.right - rect.left),
-        height: Math.max(1, rect.bottom - rect.top)
+        x: (rect.left - wrapperRect.left) / scale,
+        y: (rect.top - wrapperRect.top) / scale,
+        width: Math.max(1, rect.right - rect.left) / scale,
+        height: Math.max(1, rect.bottom - rect.top) / scale
       }
     };
   }, []);
@@ -723,7 +774,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (!ctx) return;
     const backCtx = backCanvas ? backCanvas.getContext('2d') : null;
 
-    const dpr = window.devicePixelRatio || 1;
+    const scale = renderScaleRef.current || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (backCanvas && backCtx) {
       backCtx.clearRect(0, 0, backCanvas.width, backCanvas.height);
@@ -732,15 +783,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const visibleStrokes = previewStrokesRef.current ?? strokesRef.current;
     for (const stroke of visibleStrokes) {
       if ((stroke.layer ?? 'front') === 'back' && backCtx) {
-        renderStroke(backCtx, stroke, dpr);
+        renderStroke(backCtx, stroke, scale);
       } else {
-        renderStroke(ctx, stroke, dpr);
+        renderStroke(ctx, stroke, scale);
       }
     }
 
     // Render current active stroke live
     if (currentStrokeRef.current) {
-      renderStroke(ctx, currentStrokeRef.current, dpr);
+      renderStroke(ctx, currentStrokeRef.current, scale);
     }
   }, []);
 
@@ -751,9 +802,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
+    const scale = renderScaleRef.current || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawInkBackground(ctx, canvas.width, canvas.height, dpr, background);
+    drawInkBackground(ctx, canvas.width, canvas.height, scale, background);
   }, [background]);
 
   useEffect(() => {
@@ -817,6 +868,24 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   }, [commitStrokes, finishEraserDragPreview, redraw]);
 
+  /**
+   * Drops whatever drag is open without committing it. A second finger landing
+   * on the page means the user is pinching, not inking, so the few points the
+   * first finger painted are discarded rather than saved as a stray stroke.
+   */
+  const abortActiveCanvasDrag = useCallback(() => {
+    fingerTapRef.current = null;
+    currentStrokeRef.current = null;
+    isEraserDrawingRef.current = false;
+    previewStrokesRef.current = null;
+    if (transformDragRef.current) transformCleanupRef.current?.();
+    if (marqueeRef.current) {
+      marqueeRef.current = null;
+      setMarquee(null);
+    }
+    redraw();
+  }, [redraw]);
+
   const handleUndo = useCallback(() => {
     if (currentStrokeRef.current || isEraserDrawingRef.current) return;
     const previous = historyRef.current.undo(strokesRef.current);
@@ -845,31 +914,41 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const container = containerRef.current;
     if (!canvas || !container) return;
 
-    const rect = container.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
+    // Offset sizes are the page's layout pixels, untouched by the CSS zoom
+    // transform, so ink coordinates stay stable at every zoom level.
+    const width = container.offsetWidth;
+    const height = container.offsetHeight;
+    if (width === 0 || height === 0) return;
 
     const dpr = window.devicePixelRatio || 1;
+    // Render the sheet a little sharper than the screen while zoomed in, but
+    // cap the bitmap so four canvases cannot exhaust tablet memory.
+    const scale = Math.max(1, Math.min(3, dpr * zoomRef.current));
+    renderScaleRef.current = scale;
 
-    canvas.width = Math.floor(rect.width * dpr);
-    canvas.height = Math.floor(rect.height * dpr);
-    canvas.style.width = `${rect.width}px`;
-    canvas.style.height = `${rect.height}px`;
+    canvas.width = Math.floor(width * scale);
+    canvas.height = Math.floor(height * scale);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
 
     const bgCanvas = backgroundCanvasRef.current;
     if (bgCanvas) {
       bgCanvas.width = canvas.width;
       bgCanvas.height = canvas.height;
-      bgCanvas.style.width = `${rect.width}px`;
-      bgCanvas.style.height = `${rect.height}px`;
+      bgCanvas.style.width = `${width}px`;
+      bgCanvas.style.height = `${height}px`;
     }
 
     const backCanvas = backCanvasRef.current;
     if (backCanvas) {
       backCanvas.width = canvas.width;
       backCanvas.height = canvas.height;
-      backCanvas.style.width = `${rect.width}px`;
-      backCanvas.style.height = `${rect.height}px`;
+      backCanvas.style.width = `${width}px`;
+      backCanvas.style.height = `${height}px`;
     }
+
+    // The sheet grows with its text; the viewport spacer must grow with it.
+    setPageHeight((current) => (current === height ? current : height));
 
     drawBackground();
     redraw();
@@ -900,14 +979,275 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     redraw();
   }, [redraw]);
 
+  // ---- Page zoom ---------------------------------------------------------
+  /**
+   * Changes the sheet zoom while keeping `focal` (a client point) over the same
+   * page spot. The actual scroll correction runs in a layout effect below,
+   * after the new transform has been applied.
+   */
+  const applyZoom = useCallback((nextZoom: number, focal?: { x: number; y: number }) => {
+    const clamped = clampPageZoom(nextZoom);
+    const page = pageRef.current;
+    const current = zoomRef.current || 1;
+
+    if (focal && page) {
+      const rect = page.getBoundingClientRect();
+      zoomAnchorRef.current = {
+        clientX: focal.x,
+        clientY: focal.y,
+        pageX: (focal.x - rect.left) / current,
+        pageY: (focal.y - rect.top) / current
+      };
+    }
+
+    if (Math.abs(clamped - current) < 0.001) {
+      zoomAnchorRef.current = null;
+      return;
+    }
+
+    zoomRef.current = clamped;
+    setZoom(clamped);
+  }, []);
+
+  // Keep the focal page point under the user's fingers after the transform.
+  useLayoutEffect(() => {
+    const anchor = zoomAnchorRef.current;
+    zoomAnchorRef.current = null;
+    const page = pageRef.current;
+    const scroll = scrollRef.current;
+    if (!anchor || !page || !scroll) return;
+
+    const rect = page.getBoundingClientRect();
+    scroll.scrollLeft += rect.left + anchor.pageX * zoom - anchor.clientX;
+    scroll.scrollTop += rect.top + anchor.pageY * zoom - anchor.clientY;
+  }, [zoom]);
+
+  // Re-render the ink bitmap at the settled zoom level. During the pinch the
+  // existing bitmap is simply scaled by CSS, which keeps the gesture smooth.
+  useEffect(() => {
+    const timer = window.setTimeout(() => resizeCanvas(), 140);
+    return () => window.clearTimeout(timer);
+  }, [zoom, resizeCanvas]);
+
+  /** Opens small screens at a readable width instead of a cropped A4 sheet. */
+  const initialFitDoneRef = useRef(false);
+  useLayoutEffect(() => {
+    if (initialFitDoneRef.current) return;
+    initialFitDoneRef.current = true;
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const fit = getFitWidthZoom(scroll.clientWidth, pageSize.width, 24);
+    if (fit < 1) applyZoom(fit);
+    // The opening fit is intentionally computed once, from the first layout.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const zoomBy = useCallback(
+    (factor: number) => {
+      const scroll = scrollRef.current;
+      if (!scroll) return;
+      const rect = scroll.getBoundingClientRect();
+      applyZoom(zoomRef.current * factor, {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2
+      });
+    },
+    [applyZoom]
+  );
+
+  const fitPageWidth = useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const rect = scroll.getBoundingClientRect();
+    applyZoom(getFitWidthZoom(rect.width, pageSize.width, 24), {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2
+    });
+  }, [applyZoom, pageSize.width]);
+
+  const resetZoom = useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const rect = scroll.getBoundingClientRect();
+    applyZoom(1, {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2
+    });
+  }, [applyZoom]);
+
+  /**
+   * Two-finger pinch on the page viewport (paper or desk), plus trackpad pinch
+   * (reported as Ctrl + wheel). Finger touches on the canvas normally draw ink,
+   * so the gesture handlers explicitly take the drag away on a second finger.
+   */
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+
+    const onTouchStart = (event: TouchEvent) => {
+      touchCountRef.current = event.touches.length;
+      if (event.touches.length !== 2 || isStylusActiveRef.current) return;
+      event.preventDefault();
+
+      const [first, second] = [event.touches[0], event.touches[1]];
+      const distance = Math.hypot(
+        second.clientX - first.clientX,
+        second.clientY - first.clientY
+      );
+      const focal = {
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2
+      };
+
+      if (!isPinchingRef.current) {
+        isPinchingRef.current = true;
+        pinchStartRef.current = {
+          distance: Math.max(1, distance),
+          zoom: zoomRef.current
+        };
+        pinchFocalRef.current = focal;
+        abortActiveCanvasDrag();
+      }
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      touchCountRef.current = event.touches.length;
+      if (!isPinchingRef.current || event.touches.length < 2) return;
+      event.preventDefault();
+
+      const [first, second] = [event.touches[0], event.touches[1]];
+      const distance = Math.hypot(
+        second.clientX - first.clientX,
+        second.clientY - first.clientY
+      );
+      const focal = {
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2
+      };
+      const start = pinchStartRef.current;
+      if (!start) return;
+
+      const before = zoomRef.current;
+      applyZoom(start.zoom * (distance / start.distance), focal);
+
+      // Once a zoom limit is reached the same two fingers still pan the sheet.
+      if (Math.abs(zoomRef.current - before) < 0.001) {
+        const previousFocal = pinchFocalRef.current;
+        if (previousFocal) {
+          node.scrollLeft -= focal.x - previousFocal.x;
+          node.scrollTop -= focal.y - previousFocal.y;
+        }
+      }
+      pinchFocalRef.current = focal;
+    };
+
+    const onTouchEnd = (event: TouchEvent) => {
+      touchCountRef.current = event.touches.length;
+      if (!isPinchingRef.current || event.touches.length >= 2) return;
+      isPinchingRef.current = false;
+      pinchStartRef.current = null;
+      pinchFocalRef.current = null;
+      // Redraw the ink sharply at the settled zoom.
+      window.setTimeout(() => resizeCanvas(), 0);
+    };
+
+    // Desktop pinch arrives as a ctrl/meta wheel gesture from the trackpad.
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const factor = Math.exp(-event.deltaY * 0.0025);
+      applyZoom(zoomRef.current * factor, { x: event.clientX, y: event.clientY });
+    };
+
+    node.addEventListener('touchstart', onTouchStart, { passive: false });
+    node.addEventListener('touchmove', onTouchMove, { passive: false });
+    node.addEventListener('touchend', onTouchEnd, { passive: false });
+    node.addEventListener('touchcancel', onTouchEnd, { passive: false });
+    node.addEventListener('wheel', onWheel, { passive: false });
+
+    return () => {
+      node.removeEventListener('touchstart', onTouchStart);
+      node.removeEventListener('touchmove', onTouchMove);
+      node.removeEventListener('touchend', onTouchEnd);
+      node.removeEventListener('touchcancel', onTouchEnd);
+      node.removeEventListener('wheel', onWheel);
+    };
+  }, [abortActiveCanvasDrag, applyZoom, resizeCanvas]);
+
+  /**
+   * Rotates the sheet. Ink drawn on a wider page is scaled down so switching
+   * between landscape and portrait never hides strokes off the right edge.
+   */
+  const changePageLayout = useCallback(
+    (next: PageLayout) => {
+      if (next === pageLayout) return;
+
+      const nextSize = getPageSize(next);
+      const bounds = getStrokesBounds(strokesRef.current);
+      const contentRight = bounds ? bounds.x + bounds.width : 0;
+      if (contentRight > nextSize.width) {
+        const factor = nextSize.width / contentRight;
+        commitStrokes(
+          strokesRef.current.map((stroke) => ({
+            ...stroke,
+            points: stroke.points.map((point) => ({
+              ...point,
+              x: point.x * factor,
+              y: point.y * factor
+            }))
+          }))
+        );
+        setSelection([]);
+      }
+
+      onChangePageLayout?.(next);
+    },
+    [commitStrokes, onChangePageLayout, pageLayout, setSelection]
+  );
+
+  // Fit legacy ink (drawn before notes had a fixed A4 sheet) onto the page the
+  // first time it is opened, so old strokes are not left off the right edge.
+  const normalizedNoteRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (normalizedNoteRef.current === noteId) return;
+    normalizedNoteRef.current = noteId;
+    const bounds = getStrokesBounds(strokesRef.current);
+    const contentRight = bounds ? bounds.x + bounds.width : 0;
+    if (contentRight <= pageSize.width) return;
+    const factor = pageSize.width / contentRight;
+    commitStrokes(
+      strokesRef.current.map((stroke) => ({
+        ...stroke,
+        points: stroke.points.map((point) => ({
+          ...point,
+          x: point.x * factor,
+          y: point.y * factor
+        }))
+      }))
+    );
+  }, [noteId, pageSize.width, commitStrokes]);
+
+  /**
+   * Converts a client point to page CSS pixels. The sheet is CSS-scaled for
+   * zoom, so the bitmap-to-client ratio is undone here; ink always stores
+   * coordinates in the page's own coordinate space.
+   */
+  const getPagePointFromClient = useCallback((clientX: number, clientY: number): Point => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width ? canvas.offsetWidth / rect.width : 1;
+    const scaleY = rect.height ? canvas.offsetHeight / rect.height : 1;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY
+    };
+  }, []);
+
   // Extract pointer coordinates relative to canvas
   const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>): StrokePoint => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0, pressure: 0.5, time: Date.now() };
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const point = getPagePointFromClient(e.clientX, e.clientY);
+    const { x, y } = point;
 
     let pressure = e.pressure;
     if (pressure === 0 && e.pointerType === 'pen') {
@@ -1378,12 +1718,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // ---- Select tool: marquee, transforms and layering ---------------------
 
-  const getPagePoint = useCallback((clientX: number, clientY: number): Point => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  }, []);
+  const getPagePoint = useCallback(
+    (clientX: number, clientY: number): Point => getPagePointFromClient(clientX, clientY),
+    [getPagePointFromClient]
+  );
 
   const deleteSelection = useCallback(() => {
     const ids = new Set(selectedIdsRef.current);
@@ -1660,6 +1998,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       return;
     }
 
+    // 4. A second finger means the gesture is a pinch, not a stroke. The first
+    // finger may already have started ink; discard it and let the zoom handlers
+    // take over.
+    if (e.pointerType === 'touch' && (isPinchingRef.current || touchCountRef.current > 0)) {
+      fingerTapRef.current = null;
+      abortActiveCanvasDrag();
+      return;
+    }
+
     // Press-on-touchdown is handled by the global capture pointerdown listener,
     // which always runs before this canvas handler.
     try {
@@ -1712,6 +2059,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Move (coalesced 120Hz events loop)
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (isPinchingRef.current) return;
     if (isStylusOnly && e.pointerType !== 'pen' && activeTool !== 'select') return;
     if (isStylusActiveRef.current && e.pointerType === 'touch') return;
 
@@ -1732,7 +2080,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
 
     const nativeEvent = e.nativeEvent as PointerEvent;
 
@@ -1811,9 +2158,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       let anyErased = false;
 
       for (const ce of coalescedEvents) {
-        const ptX = ce.clientX - rect.left;
-        const ptY = ce.clientY - rect.top;
-        const res = eraseAtPoint(currentStrokes, ptX, ptY);
+        const point = getPagePointFromClient(ce.clientX, ce.clientY);
+        const res = eraseAtPoint(currentStrokes, point.x, point.y);
         if (res.hasErased) {
           currentStrokes = res.remaining;
           anyErased = true;
@@ -1838,9 +2184,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         pressure = 0.5;
       }
 
+      const point = getPagePointFromClient(ce.clientX, ce.clientY);
       currentStrokeRef.current.points.push({
-        x: ce.clientX - rect.left,
-        y: ce.clientY - rect.top,
+        x: point.x,
+        y: point.y,
         pressure,
         time: Date.now()
       });
@@ -1851,6 +2198,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Up (stylus leaves screen - auto returns to pen if S Pen button is released!)
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // Lifting a finger during a pinch must not commit the stroke the first
+    // finger started (it was already discarded when the pinch began).
+    if (isPinchingRef.current) {
+      fingerTapRef.current = null;
+      return;
+    }
+
     if (activeTool === 'select') {
       if (e.currentTarget.hasPointerCapture(e.pointerId)) {
         try {
@@ -2039,83 +2393,111 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           lastWritingTool={lastWritingToolRef.current}
           background={background}
           onChangeBackground={onChangeBackground}
+          pageLayout={pageLayout}
+          onChangePageLayout={changePageLayout}
           selectMode={selectMode}
           onChangeSelectMode={setSelectMode}
           extra={toolbarExtra}
         />
       </div>
 
-      {/* The note page: ruling, back ink, typed text, front ink. One surface. */}
+      {/* The note page: an A4 sheet floating on the desk. Ruling, back ink,
+          typed text and front ink all live on the one paper surface. */}
       <div className="relative flex-1 min-h-0 z-0">
-        <div ref={scrollRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden">
-          <div
-            ref={containerRef}
-            onContextMenu={suppressCanvasMenu}
-            onAuxClick={suppressCanvasMenu}
-            className="relative w-full"
-            style={{ minHeight: '100%' }}
-          >
-            <canvas
-              ref={backgroundCanvasRef}
-              aria-hidden="true"
-              className="absolute inset-0 z-0 block pointer-events-none"
-            />
-            <canvas
-              ref={backCanvasRef}
-              aria-hidden="true"
-              className="absolute inset-0 z-10 block pointer-events-none"
-            />
-
-            {/* Typed text lives between the back and front ink layers. Its
-                saved layout moves / scales / rotates the whole block. */}
+        <div
+          ref={scrollRef}
+          className="note-desk absolute inset-0 overflow-auto"
+          data-ink-ui="page-viewport"
+        >
+          <div className="note-desk-inner px-3 py-4 sm:px-6 sm:py-8">
             <div
-              ref={textLayerRef}
-              className={`relative z-20 ${activeTool === 'text' ? '' : 'pointer-events-none'}`}
-              style={textLayerStyle}
-            >
-              {textLayer}
-            </div>
-
-            <canvas
-              ref={canvasRef}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerCancel={handlePointerCancel}
-              onPointerLeave={(e) => {
-                // A rubber band or a selection drag may legitimately travel
-                // past the page edge; only ink drags end on leave.
-                if (activeTool !== 'select') handlePointerCancel(e);
-              }}
-              onContextMenu={suppressCanvasMenu}
-              onAuxClick={suppressCanvasMenu}
-              className={`ink-canvas absolute inset-0 z-30 block ${activeTool === 'text' ? 'pointer-events-none' : ''}`}
+              className="mx-auto"
               style={{
-                cursor: activeTool === 'select' ? 'default' : 'crosshair',
-                touchAction: 'none'
+                width: `${pageSize.width * zoom}px`,
+                height: `${Math.max(pageHeight, pageSize.height) * zoom}px`
               }}
-            />
+            >
+              <div
+                ref={pageRef}
+                className="note-paper relative"
+                style={{
+                  width: `${pageSize.width}px`,
+                  minHeight: `${pageSize.height}px`,
+                  transform: `scale(${zoom})`,
+                  transformOrigin: 'top left'
+                }}
+              >
+                <div
+                  ref={containerRef}
+                  onContextMenu={suppressCanvasMenu}
+                  onAuxClick={suppressCanvasMenu}
+                  className="relative w-full"
+                  style={{ minHeight: `${pageSize.height}px` }}
+                >
+                  <canvas
+                    ref={backgroundCanvasRef}
+                    aria-hidden="true"
+                    className="absolute inset-0 z-0 block pointer-events-none"
+                  />
+                  <canvas
+                    ref={backCanvasRef}
+                    aria-hidden="true"
+                    className="absolute inset-0 z-10 block pointer-events-none"
+                  />
 
-            {activeTool === 'select' && marquee && (
-              <svg className="absolute inset-0 z-40 w-full h-full pointer-events-none" aria-hidden="true">
-                {renderMarquee(marquee)}
-              </svg>
-            )}
+                  {/* Typed text lives between the back and front ink layers. Its
+                      saved layout moves / scales / rotates the whole block. */}
+                  <div
+                    ref={textLayerRef}
+                    className={`relative z-20 ${activeTool === 'text' ? '' : 'pointer-events-none'}`}
+                    style={textLayerStyle}
+                  >
+                    {textLayer}
+                  </div>
 
-            {activeTool === 'select' && selectionBounds && (
-              <SelectionOverlay
-                bounds={selectionBounds}
-                transform={liveTransform}
-                count={selectedIdSet.size}
-                textSelected={isTextSelected}
-                onStartMove={startSelectionMove}
-                onStartResize={(corner, e) => beginTransform('resize', corner, e)}
-                onStartRotate={(e) => beginTransform('rotate', null, e)}
-                onBringToFront={bringSelectionToFront}
-                onSendToBack={sendSelectionToBack}
-                onDelete={deleteSelection}
-              />
-            )}
+                  <canvas
+                    ref={canvasRef}
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    onPointerCancel={handlePointerCancel}
+                    onPointerLeave={(e) => {
+                      // A rubber band or a selection drag may legitimately travel
+                      // past the page edge; only ink drags end on leave.
+                      if (activeTool !== 'select') handlePointerCancel(e);
+                    }}
+                    onContextMenu={suppressCanvasMenu}
+                    onAuxClick={suppressCanvasMenu}
+                    className={`ink-canvas absolute inset-0 z-30 block ${activeTool === 'text' ? 'pointer-events-none' : ''}`}
+                    style={{
+                      cursor: activeTool === 'select' ? 'default' : 'crosshair',
+                      touchAction: 'none'
+                    }}
+                  />
+
+                  {activeTool === 'select' && marquee && (
+                    <svg className="absolute inset-0 z-40 w-full h-full pointer-events-none" aria-hidden="true">
+                      {renderMarquee(marquee)}
+                    </svg>
+                  )}
+
+                  {activeTool === 'select' && selectionBounds && (
+                    <SelectionOverlay
+                      bounds={selectionBounds}
+                      transform={liveTransform}
+                      count={selectedIdSet.size}
+                      textSelected={isTextSelected}
+                      onStartMove={startSelectionMove}
+                      onStartResize={(corner, e) => beginTransform('resize', corner, e)}
+                      onStartRotate={(e) => beginTransform('rotate', null, e)}
+                      onBringToFront={bringSelectionToFront}
+                      onSendToBack={sendSelectionToBack}
+                      onDelete={deleteSelection}
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -2224,6 +2606,49 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
               </div>
             </div>
           )}
+        </div>
+
+        {/* Bottom Center: page zoom. Pinch and trackpad pinch do the same. */}
+        <div
+          className="pointer-events-auto absolute bottom-4 left-1/2 z-10 hidden -translate-x-1/2 items-center gap-0.5 rounded-2xl border border-surface-subtle-light bg-surface-light/90 px-1 py-1 shadow-floating backdrop-blur-md dark:border-surface-subtle-dark dark:bg-surface-dark/90 md:flex"
+          data-ink-ui="zoom-controls"
+        >
+          <button
+            type="button"
+            onClick={() => zoomBy(1 / (1 + PAGE_ZOOM_STEP))}
+            title="Zoom out"
+            aria-label="Zoom out"
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-ink-light transition hover:bg-surface-subtle-light active:scale-95 dark:text-ink-dark dark:hover:bg-surface-subtle-dark"
+          >
+            <ZoomOut className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={resetZoom}
+            title="Actual size (100%)"
+            className="min-w-[3.25rem] rounded-lg px-1.5 py-1 text-[11px] font-semibold tabular-nums text-ink-muted-light transition hover:bg-surface-subtle-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:bg-surface-subtle-dark dark:hover:text-ink-dark"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button
+            type="button"
+            onClick={() => zoomBy(1 + PAGE_ZOOM_STEP)}
+            title="Zoom in"
+            aria-label="Zoom in"
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-ink-light transition hover:bg-surface-subtle-light active:scale-95 dark:text-ink-dark dark:hover:bg-surface-subtle-dark"
+          >
+            <ZoomIn className="w-4 h-4" />
+          </button>
+          <span className="mx-0.5 h-5 w-px bg-surface-subtle-light dark:bg-surface-subtle-dark" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={fitPageWidth}
+            title="Fit page width"
+            aria-label="Fit page width"
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-ink-light transition hover:bg-surface-subtle-light active:scale-95 dark:text-ink-dark dark:hover:bg-surface-subtle-dark"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
         </div>
 
         {/* Bottom Right: Quick S Pen Floating Trigger Badge */}

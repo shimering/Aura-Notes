@@ -19,9 +19,11 @@ import {
   Type,
   MousePointer2,
   Lasso,
-  Bold
+  Bold,
+  RectangleVertical,
+  RectangleHorizontal
 } from 'lucide-react';
-import { PenTool, InkBackground, EraserMode, SelectMode } from '../types/note';
+import { PenTool, InkBackground, EraserMode, SelectMode, PageLayout } from '../types/note';
 import { INK_BACKGROUNDS } from '../utils/inkBackground';
 
 export const INK_PALETTE = [
@@ -70,6 +72,9 @@ interface PenToolbarProps {
   lastWritingTool?: PenTool;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
+  /** A4 orientation of the note sheet. */
+  pageLayout?: PageLayout;
+  onChangePageLayout?: (layout: PageLayout) => void;
   selectMode?: SelectMode;
   onChangeSelectMode?: (mode: SelectMode) => void;
   /** Toolbar content for the active tool, e.g. text formatting while typing. */
@@ -158,6 +163,21 @@ const BACKGROUND_ICONS: Record<InkBackground, React.ReactNode> = {
   dotted: <Circle className="w-4 h-4" />
 };
 
+const PAGE_LAYOUTS: { id: PageLayout; label: string; hint: string; icon: React.ReactNode }[] = [
+  {
+    id: 'portrait',
+    label: 'Portrait',
+    hint: 'Vertical A4',
+    icon: <RectangleVertical className="w-4 h-4" />
+  },
+  {
+    id: 'landscape',
+    label: 'Landscape',
+    hint: 'Horizontal A4',
+    icon: <RectangleHorizontal className="w-4 h-4" />
+  }
+];
+
 const ERASER_MODES: {
   id: EraserMode;
   label: string;
@@ -225,6 +245,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   lastWritingTool,
   background = 'none',
   onChangeBackground,
+  pageLayout = 'portrait',
+  onChangePageLayout,
   selectMode = 'rect',
   onChangeSelectMode,
   extra
@@ -345,12 +367,14 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
         <ChevronDown className="w-3 h-3 opacity-60" />
       </button>
 
-      {/* Page background */}
-      {onChangeBackground && (
+      {/* Page setup: A4 orientation and ruling */}
+      {(onChangeBackground || onChangePageLayout) && (
         <button
           type="button"
           onClick={() => toggleMenu('page')}
-          title={`Page background: ${INK_BACKGROUNDS.find((item) => item.id === background)?.label ?? 'Blank'}`}
+          title={`Page setup — ${pageLayout === 'landscape' ? 'Horizontal' : 'Vertical'} A4, ${
+            INK_BACKGROUNDS.find((item) => item.id === background)?.label ?? 'Blank'
+          }`}
           aria-haspopup="menu"
           aria-expanded={openMenu === 'page'}
           className={triggerClass(
@@ -677,33 +701,78 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
         </div>
       )}
 
-      {openMenu === 'page' && onChangeBackground && (
-        <div className={`${PANEL} w-[196px]`} role="menu" aria-label="Page background">
-          <MenuHeading>Page background</MenuHeading>
-          <div className="grid grid-cols-2 gap-1">
-            {INK_BACKGROUNDS.map((item) => {
-              const isSelected = background === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    onChangeBackground(item.id);
-                    closeMenu();
-                  }}
-                  aria-pressed={isSelected}
-                  className={`flex items-center gap-2 rounded-xl px-2 py-2 text-xs transition active:scale-95 ${
-                    isSelected
-                      ? 'bg-violet-600 font-semibold text-white shadow-md'
-                      : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
-                  }`}
-                >
-                  {BACKGROUND_ICONS[item.id]}
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
+      {openMenu === 'page' && (onChangeBackground || onChangePageLayout) && (
+        <div className={`${PANEL} w-[232px]`} role="menu" aria-label="Page setup">
+          {onChangePageLayout && (
+            <>
+              <MenuHeading>Page layout · A4</MenuHeading>
+              <div className="grid grid-cols-2 gap-1">
+                {PAGE_LAYOUTS.map((item) => {
+                  const isSelected = pageLayout === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        onChangePageLayout(item.id);
+                        closeMenu();
+                      }}
+                      title={`${item.label} — ${item.hint}`}
+                      aria-pressed={isSelected}
+                      className={`flex flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-violet-600 font-semibold text-white shadow-md'
+                          : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+                      }`}
+                    >
+                      {item.icon}
+                      <span>{item.label}</span>
+                      <span
+                        className={`text-[9px] ${
+                          isSelected
+                            ? 'text-white/75'
+                            : 'text-ink-muted-light dark:text-ink-muted-dark'
+                        }`}
+                      >
+                        {item.hint}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {onChangeBackground && (
+            <>
+              <div className="my-2 h-px bg-surface-subtle-light dark:bg-surface-subtle-dark" />
+              <MenuHeading>Page background</MenuHeading>
+              <div className="grid grid-cols-2 gap-1">
+                {INK_BACKGROUNDS.map((item) => {
+                  const isSelected = background === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        onChangeBackground(item.id);
+                        closeMenu();
+                      }}
+                      aria-pressed={isSelected}
+                      className={`flex items-center gap-2 rounded-xl px-2 py-2 text-xs transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-violet-600 font-semibold text-white shadow-md'
+                          : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+                      }`}
+                    >
+                      {BACKGROUND_ICONS[item.id]}
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

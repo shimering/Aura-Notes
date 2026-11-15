@@ -27,6 +27,12 @@ export type EraserMode = 'object' | 'pixel';
 
 export type InkBackground = 'none' | 'ruled' | 'grid' | 'dotted';
 
+/**
+ * Orientation of the note's A4 sheet. Portrait is the default for existing
+ * notes that predate page layouts.
+ */
+export type PageLayout = 'portrait' | 'landscape';
+
 export interface Stroke {
   id: string;
   points: StrokePoint[];
@@ -57,6 +63,8 @@ export interface Note {
   inkStrokes: Stroke[]; // vector ink strokes for S Pen / Apple Pencil
   inkPreviewUrl?: string; // cached low-res thumbnail
   inkBackground?: InkBackground; // ruled / grid / dotted page style
+  /** A4 page orientation for this note. Defaults to portrait. */
+  pageLayout?: PageLayout;
   /** Move / resize / rotate applied to the typed text block. */
   textLayout?: TextBlockLayout;
   recognizedText?: string; // OCR'd handwriting, included in search

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Note, Stroke, InkBackground, PenTool, TextBlockLayout } from './types/note';
+import { Note, Stroke, InkBackground, PenTool, TextBlockLayout, PageLayout } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
@@ -546,6 +546,11 @@ export default function App() {
     updateActiveNote((current) => ({ ...current, inkBackground: background }));
   };
 
+  // Rotate the note's A4 sheet between vertical and horizontal
+  const handleUpdatePageLayout = (pageLayout: PageLayout) => {
+    updateActiveNote((current) => ({ ...current, pageLayout }));
+  };
+
   /**
    * A single finger tap on the page shows the writing cursor: the text sheet
    * takes over with a blinking caret waiting for the keyboard.
@@ -853,6 +858,8 @@ export default function App() {
               spenDoublePressOpensMenu={settings.spenDoublePressOpensMenu}
               background={activeNote.inkBackground}
               onChangeBackground={handleUpdateBackground}
+              pageLayout={activeNote.pageLayout}
+              onChangePageLayout={handleUpdatePageLayout}
               textLayout={activeNote.textLayout}
               onChangeTextLayout={handleUpdateTextLayout}
               onDeleteText={handleDeleteText}

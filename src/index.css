@@ -91,6 +91,45 @@ canvas.ink-canvas {
   color: #9a9a9f;
 }
 
+/* Page viewport: a quiet desk around the floating A4 sheet. */
+.note-desk {
+  background-color: #e8e8e5;
+  background-image: radial-gradient(rgba(15, 23, 42, 0.07) 1px, transparent 1px);
+  background-size: 18px 18px;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dark .note-desk {
+  background-color: #0d0d0f;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+}
+
+.note-desk-inner {
+  min-height: 100%;
+}
+
+/* One A4 sheet of paper: crisp edge, soft lift, no layout border. */
+.note-paper {
+  background-color: #fffefb;
+  border-radius: 2px;
+  outline: 1px solid rgba(15, 23, 42, 0.09);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.08),
+    0 18px 44px -20px rgba(15, 23, 42, 0.4);
+  transform-origin: top left;
+  will-change: transform;
+}
+
+.dark .note-paper {
+  background-color: #1c1c1f;
+  outline-color: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 22px 48px -20px rgba(0, 0, 0, 0.75);
+}
+
 /* Glassmorphism utility */
 .glass-panel {
   background: rgba(255, 255, 255, 0.75);
