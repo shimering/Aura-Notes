@@ -67,7 +67,7 @@ export function sanitizeNoteHtml(html: string): string {
         css.cssText = attribute.attrValue;
         const styles = node.nodeName === 'IMG' ? { ...formattingStyles, ...pictureStyles }
           : node.getAttribute('data-note-positioned') === 'true' && ['P', 'DIV'].includes(node.nodeName)
-            ? { ...formattingStyles, ...pictureStyles }
+            ? { ...formattingStyles, ...pictureStyles, 'min-height': pictureStyles.width }
             : ['COL', 'TABLE'].includes(node.nodeName) ? { width: /^[1-9]\d{0,5}px$/ }
             : node.nodeName === 'TR' ? { height: pictureStyles.width } : formattingStyles;
         attribute.attrValue = Object.entries(styles).flatMap(([property, allowed]) => {

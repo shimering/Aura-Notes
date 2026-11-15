@@ -21,6 +21,18 @@
     padding-top: var(--app-safe-top);
   }
 
+  #root[data-keyboard-open="true"] {
+    position: fixed;
+    inset-inline: 0;
+    top: var(--app-top, 0px);
+    height: var(--app-height);
+  }
+
+  #root[data-keyboard-open="true"] main > header { height: 42px; }
+  #root[data-keyboard-open="true"] :is([data-ink-ui="stylus-status"], [data-ink-ui="zoom-controls"], [data-ink-ui="floating-tools"]) {
+    display: none;
+  }
+
   html, body {
     height: 100%;
     margin: 0;
@@ -222,11 +234,24 @@ canvas.ink-canvas {
   gap: 3px;
 }
 
+.ribbon-tabs {
+  position: relative;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
 .ribbon-tabs button {
+  flex-shrink: 0;
   padding: 7px 12px 6px;
   white-space: nowrap;
   border-bottom: 2px solid transparent;
   font-size: 13px;
+}
+
+.ribbon-tabs .ribbon-context-tab {
+  color: var(--ribbon-accent);
+  background: var(--ribbon-active);
 }
 
 .ribbon-tabs button[aria-selected="true"] {
@@ -350,6 +375,19 @@ canvas.ink-canvas {
   box-shadow: none;
 }
 
+.note-ribbon[data-keyboard-open="true"] :is(.ribbon-groups, .ribbon-context-tools, .ribbon-selection-tools) {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.note-ribbon[data-keyboard-open="true"] :is(.ribbon-group, .table-toolbar, .ribbon-selection-tools) {
+  flex: 0 0 auto;
+  max-width: none;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
 .ribbon-popover {
   position: absolute;
   inset-inline-start: 8px;
@@ -394,20 +432,19 @@ canvas.ink-canvas {
   font-size: 12px;
 }
 
-.table-toolbar {
+.table-toolbar, .ribbon-selection-tools {
   display: flex;
   align-items: center;
   gap: .5rem;
-  overflow-x: auto;
+  flex-wrap: wrap;
   padding: .4rem .75rem;
-  border-top: 1px solid var(--ribbon-border, #94a3b8);
   font-size: .75rem;
-  white-space: nowrap;
 }
 
-.table-toolbar form, .table-toolbar label { display: flex; align-items: center; gap: .35rem; }
-.table-toolbar form { padding-inline-start: .4rem; border-inline-start: 1px solid #94a3b8; }
-.table-toolbar :is(input, button) {
+.ribbon-context-tools { display: flex; flex-wrap: wrap; }
+.table-toolbar form, .table-toolbar label,
+.ribbon-selection-tools form, .ribbon-selection-tools label { display: flex; align-items: center; gap: .35rem; }
+.table-toolbar :is(input, button), .ribbon-selection-tools input {
   padding: .2rem .35rem;
   border: 1px solid rgb(100 116 139 / 45%);
   border-radius: 4px;
@@ -416,7 +453,61 @@ canvas.ink-canvas {
 }
 .table-toolbar button:disabled { opacity: .4; }
 .table-toolbar input { width: 6.5rem; }
-.table-toolbar input[type="number"] { width: 3.5rem; }
+.table-toolbar input[type="number"], .ribbon-selection-tools input[type="number"] { width: 3.75rem; }
+.ribbon-selection-tools input[type="color"] { width: 2rem; height: 1.75rem; padding: 2px; }
+
+.table-resize-handle {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  touch-action: none;
+  pointer-events: auto;
+}
+
+.table-resize-column { transform: translate(-50%, 2px); cursor: col-resize; }
+.table-resize-row { transform: translate(2px, -50%); cursor: row-resize; }
+.table-resize-handle span {
+  width: 8px;
+  height: 18px;
+  border-radius: 8px;
+  background: #7c3aed;
+  box-shadow: 0 0 0 2px white;
+}
+.table-resize-row span { width: 18px; height: 8px; }
+.table-resize-handle:is(:hover, :focus-visible, :active) span { background: #4c1d95; }
+
+.note-page-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 5px clamp(5px, 2vw, 18px) max(5px, env(safe-area-inset-bottom));
+  border-top: 1px solid #d4dee8;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 13px;
+}
+
+.dark .note-page-bar { border-color: #3a4758; background: #242d3b; color: #e6edf7; }
+.note-page-navigation, .note-page-actions, .note-page-bar button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.note-page-bar :is(button, select) {
+  min-height: 36px;
+  border-radius: 6px;
+  padding: 0 7px;
+  white-space: nowrap;
+  background: transparent;
+}
+.note-page-bar select { background: inherit; color: inherit; }
+.note-page-bar button:enabled:hover { background: rgb(124 58 237 / 12%); }
+.note-page-bar button:disabled { opacity: .4; }
+.note-page-bar .note-page-add { background: rgb(124 58 237 / 10%); font-weight: 600; }
 
 @media (max-width: 540px) {
   .ribbon-header { padding-inline: 5px; }

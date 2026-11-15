@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Note, Stroke, InkBackground, PenTool, PageLayout } from './types/note';
+import { Note, NotePageData, Stroke, InkBackground, PenTool, PageLayout } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
@@ -22,6 +22,7 @@ import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { TextEditor, TextEditorRef } from './components/TextEditor';
 import { InkCanvas, InkCanvasRef } from './components/InkCanvas';
+import { NotePageBar } from './components/NotePageBar';
 import { ScribbleRecognitionModal } from './components/ScribbleRecognitionModal';
 import { InstallModal } from './components/InstallModal';
 import { SyncModal } from './components/SyncModal';
@@ -29,9 +30,15 @@ import { SettingsModal } from './components/SettingsModal';
 import { getNoteTemplate } from './utils/templates';
 import { plainTextToNoteHtml, sanitizeNoteHtml } from './utils/noteHtml';
 
+import { notePages, removeNotePage, updateNotePage } from './utils/notePages';
+import { useKeyboardViewport } from './utils/useKeyboardViewport';
+
 export default function App() {
+  const keyboardOpen = useKeyboardViewport();
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNoteId, setActiveNoteIdState] = useState<string | null>(null);
+  const [pageSelection, setPageSelection] = useState<{ noteId: string; pageId: string }>();
+  const [textEditing, setTextEditing] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   
   // The note page is one surface. This mirrors its active tool so the typed
@@ -370,6 +377,10 @@ export default function App() {
   }, [account, settings.autoSyncEnabled, settings.syncVaultKey, executeSync, executeAccountSync]);
 
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
+  const pages = activeNote ? notePages(activeNote) : [];
+  const pageIndex = Math.max(0, pages.findIndex((page) => pageSelection?.noteId === activeNoteId && page.id === pageSelection.pageId));
+  const activePage = pages[pageIndex];
+  const surfaceId = activeNote && activePage ? JSON.stringify([activeNote.id, activePage.id]) : '';
   const allTags = Array.from(new Set(notes.flatMap((n) => n.tags || []))).sort((a, b) =>
     a.localeCompare(b)
   );
@@ -418,9 +429,11 @@ export default function App() {
     const current = notesRef.current.find((note) => note.id === id);
     if (!current) return;
 
+    const nextNote = updater(current);
+    if (nextNote === current) return;
     const now = Date.now();
     lastLocalEditTimeRef.current = now;
-    const updated = { ...updater(current), updatedAt: now };
+    const updated = { ...nextNote, updatedAt: Math.max(now, current.updatedAt + 1) };
     const next = notesRef.current.map((note) =>
       note.id === updated.id ? updated : note
     );
@@ -431,6 +444,32 @@ export default function App() {
     scheduleSave(updated);
   }, [scheduleSave]);
 
+  const updateActivePage = (update: Partial<NotePageData>) => {
+    if (!activePage) return;
+    updateActiveNote((current) => current.id === activeNoteId ? updateNotePage(current, activePage.id, update) : current);
+  };
+
+  const openPage = (pageId: string) => {
+    if (!activeNote) return;
+    textEditorRef.current?.finishEditing();
+    setPageSelection({ noteId: activeNote.id, pageId });
+  };
+
+  const addPage = () => {
+    if (!activePage || !activeNote) return;
+    const page = { id: crypto.randomUUID(), content: '', inkStrokes: [],
+      pageLayout: activePage.pageLayout, inkBackground: activePage.inkBackground };
+    updateActiveNote((current) => ({ ...current, extraPages: [...notePages(current).slice(1), page] }));
+    openPage(page.id);
+  };
+
+  const deletePage = () => {
+    if (!activePage || pages.length < 2) return;
+    if (!window.confirm(`Delete page ${pageIndex + 1} and its contents?`)) return;
+    updateActiveNote((current) => removeNotePage(current, activePage.id));
+    openPage((pages[pageIndex + 1] ?? pages[pageIndex - 1]).id);
+  };
+
   // Update Note Title with timestamp
   const handleUpdateTitle = (title: string) => {
     updateActiveNote((current) => ({ ...current, title }));
@@ -438,12 +477,12 @@ export default function App() {
 
   // Update Note Text Content with timestamp
   const handleUpdateContent = (content: string) => {
-    updateActiveNote((current) => ({ ...current, content }));
+    updateActivePage({ content });
   };
 
   // Update Stylus Ink Strokes with timestamp
   const handleUpdateStrokes = (strokes: Stroke[]) => {
-    updateActiveNote((current) => ({ ...current, inkStrokes: strokes }));
+    updateActivePage({ inkStrokes: strokes });
   };
 
   // Create New Note (optionally from a template)
@@ -480,6 +519,7 @@ export default function App() {
 
   // Select Note
   const handleSelectNote = async (id: string) => {
+    if (id !== activeNoteIdRef.current) setPageSelection(undefined);
     setActiveNoteIdState(id);
     await setActiveNoteId(id);
     if (window.innerWidth < 768) {
@@ -531,12 +571,12 @@ export default function App() {
 
   // Update Ink Page Background
   const handleUpdateBackground = (background: InkBackground) => {
-    updateActiveNote((current) => ({ ...current, inkBackground: background }));
+    updateActivePage({ inkBackground: background });
   };
 
   // Rotate the note's A4 sheet between vertical and horizontal
   const handleUpdatePageLayout = (pageLayout: PageLayout) => {
-    updateActiveNote((current) => ({ ...current, pageLayout }));
+    updateActivePage({ pageLayout });
   };
 
   // Update Settings
@@ -601,11 +641,10 @@ export default function App() {
   const handleInsertScribbleText = (recognizedText: string, clearStrokes: boolean) => {
     const paragraph = `<p>${plainTextToNoteHtml(recognizedText)}</p>`;
     textEditorRef.current?.appendTextBox(paragraph);
-    updateActiveNote((note) => ({
-      ...note,
-      inkStrokes: clearStrokes ? [] : note.inkStrokes,
-      recognizedText: [note.recognizedText?.trim(), recognizedText].filter(Boolean).join('\n'),
-    }));
+    if (activePage) updateActivePage({
+      ...(clearStrokes ? { inkStrokes: [] } : {}),
+      recognizedText: [activePage.recognizedText?.trim(), recognizedText].filter(Boolean).join('\n')
+    });
   };
 
   // Export Note as Markdown file
@@ -613,8 +652,11 @@ export default function App() {
     if (!activeNote) return;
 
     const div = document.createElement('div');
-    div.innerHTML = sanitizeNoteHtml(activeNote.content);
-    const plainText = div.innerText || '';
+    const plainText = pages.map((page, index) => {
+      div.innerHTML = sanitizeNoteHtml(page.content);
+      const content = div.innerText || '';
+      return pages.length > 1 ? `## Page ${index + 1}\n\n${content}` : content;
+    }).join('\n\n');
 
     const mdContent = `# ${activeNote.title || 'Untitled Note'}\n\n${plainText}\n\n---\n*Created with Aura Notes Studio on ${new Date(activeNote.createdAt).toLocaleString()}*`;
     const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8;' });
@@ -767,13 +809,15 @@ export default function App() {
           accountSyncActive={!!account}
         />
 
-        {activeNote ? (
+        {activeNote && activePage ? (
           <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden relative transition-all duration-300">
             {/* One page: typed text with ink above and behind it. */}
             <InkCanvas
               ref={inkCanvasRef}
-              noteId={activeNote.id}
-              strokes={activeNote.inkStrokes || []}
+              keyboardOpen={keyboardOpen}
+              textEditing={textEditing}
+              noteId={surfaceId}
+              strokes={activePage.inkStrokes || []}
               onChangeStrokes={handleUpdateStrokes}
               onScribbleToText={() => setIsScribbleModalOpen(true)}
               onRequestTextFocus={() => textEditorRef.current?.focusEditor()}
@@ -781,8 +825,13 @@ export default function App() {
               textLayer={
                 <TextEditor
                   ref={textEditorRef}
-                  note={activeNote}
+                  note={{ ...activePage, id: surfaceId }}
                   onChangeContent={handleUpdateContent}
+                  onEditingChange={setTextEditing}
+                  getNoteSize={(content) => {
+                    const current = notesRef.current.find((note) => note.id === activeNote.id) ?? activeNote;
+                    return new Blob([JSON.stringify(updateNotePage(current, activePage.id, { content }))]).size;
+                  }}
                   embedded
                   editable={surfaceTool === 'text'}
                 />
@@ -796,12 +845,13 @@ export default function App() {
               defaultStylusOnly={settings.stylusOnly}
               spenHoldEraseMs={settings.spenHoldEraseMs}
               spenDoublePressOpensMenu={settings.spenDoublePressOpensMenu}
-              background={activeNote.inkBackground}
+              background={activePage.inkBackground}
               onChangeBackground={handleUpdateBackground}
-              pageLayout={activeNote.pageLayout}
+              pageLayout={activePage.pageLayout}
               onChangePageLayout={handleUpdatePageLayout}
-              textLayout={activeNote.textLayout}
+              textLayout={activePage.textLayout}
             />
+            <NotePageBar pages={pages} pageIndex={pageIndex} onSelect={openPage} onAdd={addPage} onDelete={deletePage} />
           </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-ink-muted-light dark:text-ink-muted-dark">
@@ -820,11 +870,11 @@ export default function App() {
       </main>
 
       {/* Scribble to Text Recognition Modal */}
-      {activeNote && (
+      {activePage && (
         <ScribbleRecognitionModal
           isOpen={isScribbleModalOpen}
           onClose={() => setIsScribbleModalOpen(false)}
-          strokes={activeNote.inkStrokes || []}
+          strokes={activePage.inkStrokes || []}
           canvasElement={inkCanvasRef.current?.getCanvasElement() || null}
           onInsertText={handleInsertScribbleText}
         />

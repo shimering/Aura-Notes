@@ -13,13 +13,15 @@ export function TableToolbar({ cell, onChangeCell, onSave }: TableToolbarProps) 
   const sizeForm = useRef<HTMLFormElement>(null);
   const formulaForm = useRef<HTMLFormElement>(null);
   useLayoutEffect(() => {
-    sizeForm.current?.reset();
     formulaForm.current?.reset();
     setError('');
   }, [cell]);
   const table = cell.closest('table');
+  const { width, height } = table ? tableDimensions(table, cell) : { width: 0, height: 0 };
+  useLayoutEffect(() => {
+    sizeForm.current?.reset();
+  }, [cell, width, height]);
   if (!table) return null;
-  const { width, height } = tableDimensions(table, cell);
   const name = cellName(cell);
 
   const changeShape = (axis: 'row' | 'column', action: 'add' | 'remove') => {

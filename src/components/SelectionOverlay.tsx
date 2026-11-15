@@ -133,7 +133,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
       {/* Object actions, pinned under the frame. */}
       <div
         onPointerDown={(e) => e.stopPropagation()}
-        className="absolute left-1/2 -bottom-12 -translate-x-1/2 pointer-events-auto flex items-center gap-1 px-1.5 py-1 rounded-xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] text-ink-light dark:text-ink-dark whitespace-nowrap"
+        className={`absolute left-1/2 ${tableSelected ? '-bottom-20' : '-bottom-12'} -translate-x-1/2 pointer-events-auto flex items-center gap-1 px-1.5 py-1 rounded-xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] text-ink-light dark:text-ink-dark whitespace-nowrap`}
       >
         <span
           className="px-1 text-ink-muted-light dark:text-ink-muted-dark"

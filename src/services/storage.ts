@@ -1,5 +1,6 @@
 import { createStore, get, set, set as setDefault, del, entries, setMany, clear } from 'idb-keyval';
-import { Note } from '../types/note';
+import { Note, Stroke } from '../types/note';
+import { notePages } from '../utils/notePages';
 import { recordDeletedNoteId } from './syncService';
 
 // Anonymous device storage. Signed-in visitors get their own namespace so an
@@ -112,19 +113,21 @@ const INITIAL_WELCOME_NOTE: Note = {
  * meaningful amount without visible fidelity loss.
  */
 export function compactNote(note: Note): Note {
-  if (!note.inkStrokes || note.inkStrokes.length === 0) return note;
-
+  const compactStrokes = (strokes: Stroke[]) => strokes.map((stroke) => ({
+    ...stroke,
+    points: stroke.points.map((p) => ({
+      x: Math.round(p.x * 10) / 10,
+      y: Math.round(p.y * 10) / 10,
+      pressure: Math.round(p.pressure * 100) / 100,
+      time: p.time
+    }))
+  }));
+  const extraPages = notePages(note).slice(1);
+  if (!note.inkStrokes?.length && !extraPages.some((page) => page.inkStrokes.length)) return note;
   return {
     ...note,
-    inkStrokes: note.inkStrokes.map((stroke) => ({
-      ...stroke,
-      points: stroke.points.map((p) => ({
-        x: Math.round(p.x * 10) / 10,
-        y: Math.round(p.y * 10) / 10,
-        pressure: Math.round(p.pressure * 100) / 100,
-        time: p.time
-      }))
-    }))
+    inkStrokes: compactStrokes(note.inkStrokes ?? []),
+    ...(extraPages.length && { extraPages: extraPages.map((page) => ({ ...page, inkStrokes: compactStrokes(page.inkStrokes) })) }),
   };
 }
 

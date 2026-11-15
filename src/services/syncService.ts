@@ -1,5 +1,6 @@
 import { get, set } from 'idb-keyval';
 import { Note } from '../types/note';
+import { notePages } from '../utils/notePages';
 import { AppSettings, DEFAULT_SETTINGS, SyncVaultPayload } from '../types/settings';
 
 const SETTINGS_KEY = 'aura_app_settings';
@@ -225,12 +226,16 @@ export function mergeNotes(
         noteMap.set(rn.id, rn);
       } else if (rnTime === exTime) {
         // Equal timestamps: never allow an empty-stroke or shorter note to overwrite drawn strokes!
-        const rnStrokes = rn.inkStrokes?.length || 0;
-        const exStrokes = existing.inkStrokes?.length || 0;
+        const incomingPages = notePages(rn);
+        const existingPages = notePages(existing);
+        const rnStrokes = incomingPages.reduce((count, page) => count + (page.inkStrokes?.length ?? 0), 0);
+        const exStrokes = existingPages.reduce((count, page) => count + (page.inkStrokes?.length ?? 0), 0);
         if (rnStrokes > exStrokes) {
           noteMap.set(rn.id, rn);
         } else if (rnStrokes === exStrokes) {
-          if ((rn.content?.length || 0) >= (existing.content?.length || 0)) {
+          const incomingLength = incomingPages.reduce((count, page) => count + (page.content?.length ?? 0), 0);
+          const existingLength = existingPages.reduce((count, page) => count + (page.content?.length ?? 0), 0);
+          if (incomingLength >= existingLength) {
             noteMap.set(rn.id, rn);
           }
         }
@@ -449,12 +454,15 @@ function noteToMarkdown(note: Note): string {
     lines.push(`*Tags: ${note.tags.join(', ')}*`, '');
   }
 
-  const body = htmlToPlainText(note.content);
-  if (body) lines.push(body, '');
-
-  if (note.inkStrokes && note.inkStrokes.length > 0) {
-    lines.push(`*Includes ${note.inkStrokes.length} handwritten stroke(s) — open in Aura Notes to view.*`, '');
-  }
+  const pages = notePages(note);
+  pages.forEach((page, index) => {
+    if (pages.length > 1) lines.push(`## Page ${index + 1}`, '');
+    const body = htmlToPlainText(page.content);
+    if (body) lines.push(body, '');
+    if (page.inkStrokes?.length) {
+      lines.push(`*Includes ${page.inkStrokes.length} handwritten stroke(s) — open in Aura Notes to view.*`, '');
+    }
+  });
 
   lines.push(
     '---',

@@ -1,5 +1,5 @@
 import React, { forwardRef, useImperativeHandle, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
-import { Note } from '../types/note';
+import type { NotePage } from '../types/note';
 import { FormatToolbar } from './FormatToolbar';
 import { pdfData, sanitizeNoteHtml } from '../utils/noteHtml';
 import type { Point } from '../utils/inkSelection';
@@ -35,8 +35,10 @@ function readDataUrl(file: File): Promise<string> {
 }
 
 interface TextEditorProps {
-  note: Note;
+  note: NotePage;
   onChangeContent: (content: string) => void;
+  onEditingChange?: (active: boolean) => void;
+  getNoteSize?: (content: string) => number;
   /** Renders only the editable sheet: the unified note page supplies the toolbar. */
   embedded?: boolean;
   /** Whether the sheet accepts typing; false while a pen or select tool is active. */
@@ -196,7 +198,7 @@ function loadPageObjects(editor: HTMLElement, html: string) {
 }
 
 export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
-  { note, onChangeContent, embedded = false, editable = true },
+  { note, onChangeContent, onEditingChange, getNoteSize, embedded = false, editable = true },
   ref
 ) => {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -207,6 +209,10 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
   const lastBox = useRef<HTMLElement | null>(null);
   const latestNote = useRef(note);
   latestNote.current = note;
+  const latestNoteSize = useRef(getNoteSize);
+  latestNoteSize.current = getNoteSize;
+  const exceedsNoteLimit = (content: string) =>
+    (latestNoteSize.current?.(content) ?? new Blob([JSON.stringify({ ...latestNote.current, content })]).size) > MAX_NOTE_BYTES;
 
   useEffect(() => {
     const rememberSelection = () => {
@@ -229,6 +235,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     if (internalUpdate?.noteId === note.id && internalUpdate.content === note.content) return;
     if (sanitizeNoteHtml(editor.innerHTML) === note.content && !activeBox.current) return;
     activeBox.current = activeHost.current = null;
+    onEditingChange?.(false);
     savedRange.current = null;
     lastBox.current = null;
     loadPageObjects(editor, note.content);
@@ -275,6 +282,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     if (!box) return;
     const host = activeHost.current;
     activeBox.current = activeHost.current = null;
+    onEditingChange?.(false);
     host?.blur();
     host?.removeAttribute('contenteditable');
     if (!keepEmpty && !boxHasContent(box)) box.remove();
@@ -323,6 +331,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     host.setAttribute('contenteditable', 'true');
     activeBox.current = lastBox.current = box;
     activeHost.current = host;
+    onEditingChange?.(true);
     focusRange(host, getEditorRange(host));
   };
 
@@ -382,7 +391,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     }));
     if (editor !== editorRef.current || noteId !== latestNote.current.id) return [];
     const content = sanitizeNoteHtml(editor.innerHTML) + images.map((image) => image.outerHTML).join('');
-    if (new Blob([JSON.stringify({ ...latestNote.current, content })]).size > MAX_NOTE_BYTES) {
+    if (exceedsNoteLimit(content)) {
       throw new Error('These pictures would take the note above the 10 MB sync limit.');
     }
     editor.append(...images);
@@ -437,7 +446,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     replacement.src = data;
     replacement.alt = file.name;
     const content = Array.from(editor.children, (node) => node === image ? replacement.outerHTML : node.outerHTML).join('');
-    if (new Blob([JSON.stringify({ ...latestNote.current, content })]).size > MAX_NOTE_BYTES) {
+    if (exceedsNoteLimit(content)) {
       throw new Error('This picture would take the note above the 10 MB sync limit.');
     }
     image.src = data;
@@ -463,7 +472,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     link.textContent = file.name;
     const markup = `<p>${link.outerHTML}</p><p><br></p>`;
     const content = sanitizeNoteHtml(editorRef.current.innerHTML) + markup;
-    if (new Blob([JSON.stringify({ ...latestNote.current, content })]).size > MAX_NOTE_BYTES) {
+    if (exceedsNoteLimit(content)) {
       throw new Error('This file would take the note above the 10 MB sync limit.');
     }
     const box = getWritingBox();

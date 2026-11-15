@@ -28,13 +28,14 @@ import { SelectionOverlay, ResizeCorner } from './SelectionOverlay';
 import { isSpenHardwareKeyEvent } from '../utils/spenDetection';
 import { createSpenGesture } from '../utils/spenGesture';
 import { PenToolbar } from './PenToolbar';
-import { NoteRibbon } from './NoteRibbon';
+import { NoteRibbon, type RibbonSelection } from './NoteRibbon';
 import type { TextEditorRef } from './TextEditor';
 import {
   boxPlacement, boxSelector, measureBox, measurePicture, offsetWithin, pageBoxPlacement,
   pointInTextLayer, snapObjectMove, transformBox, transformPicture,
 } from '../utils/pageObjects';
-import { tableBoxSelector } from '../utils/noteTable';
+import { setTableDimension, tableBoxSelector, tableDimensions } from '../utils/noteTable';
+import { TableResizeHandles, type TableResizeAxis } from './TableResizeHandles';
 import { TableToolbar } from './TableToolbar';
 import { SPenQuickMenu } from './SPenQuickMenu';
 import {
@@ -55,7 +56,9 @@ import {
   ZoomOut,
   Maximize2,
   Hand,
-  MousePointer2
+  MousePointer2,
+  RotateCw, Pencil, Image, BringToFront, SendToBack,
+  type LucideIcon
 } from 'lucide-react';
 
 export interface InkCanvasRef {
@@ -69,6 +72,8 @@ export interface InkCanvasRef {
 
 interface InkCanvasProps {
   noteId: string;
+  keyboardOpen?: boolean;
+  textEditing?: boolean;
   strokes: Stroke[];
   onChangeStrokes: (strokes: Stroke[]) => void;
   onScribbleToText: () => void;
@@ -193,6 +198,14 @@ function tableCellAt(box: HTMLElement, client: Point) {
   }) ?? box.querySelector<HTMLTableCellElement>('td, th');
 }
 
+function ribbonButton(label: string, Icon: LucideIcon, action: () => void) {
+  return (
+    <button type="button" className="ribbon-command" onMouseDown={(event) => event.preventDefault()} onClick={action}>
+      <Icon size={16} /> {label}
+    </button>
+  );
+}
+
 const SPEN_LOG_LIMIT = 300;
 const SPEN_LOG_RENDER_LIMIT = 60;
 
@@ -218,6 +231,8 @@ function findInkUiControl(target: EventTarget | null): HTMLElement | null {
 
 export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   noteId,
+  keyboardOpen,
+  textEditing,
   strokes,
   onChangeStrokes,
   onScribbleToText,
@@ -317,6 +332,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [objectSizeVersion, setObjectSizeVersion] = useState(0);
   const selectPointerTypeRef = useRef<string>('mouse');
   const replacementInput = useRef<HTMLInputElement>(null);
+  const stopPanMomentum = useRef<(() => void) | null>(null);
   const lastPick = useRef<{ point: Point; keys: (string | HTMLElement)[] } | null>(null);
   const editingTap = useRef<{ box: HTMLElement; point: Point; time: number } | null>(null);
 
@@ -402,10 +418,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       selectedToolRef.current = lastWritingToolRef.current;
       setSelectedTool(lastWritingToolRef.current);
     }
+    if (selectionNoteId.current !== noteId && scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+      scrollRef.current.scrollLeft = 0;
+    }
     selectionNoteId.current = noteId;
     lastPick.current = null;
     editingTap.current = null;
     transformCleanupRef.current?.();
+    stopPanMomentum.current?.();
     setSelection([]);
     selectionPointerRef.current = null;
     marqueeRef.current = null;
@@ -441,7 +462,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       setObjectSizeVersion((version) => version + 1);
     };
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure);
-    [...selectedBoxes, ...selectedPictures].forEach((object) => observer?.observe(object));
+    const editingTable = tableCell?.closest(tableBoxSelector);
+    const objects = new Set([...selectedBoxes, ...selectedPictures]);
+    if (editingTable instanceof HTMLElement) objects.add(editingTable);
+    objects.forEach((object) => observer?.observe(object));
     const mutations = new MutationObserver(remeasure);
     mutations.observe(editor, { childList: true, subtree: true, characterData: true });
     editor.addEventListener('load', remeasure, true);
@@ -1025,7 +1049,41 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       zooming: boolean;
     };
     let gesture: Gesture | null = null;
-    let single: { id: number; start: Point; last: Point; scrolling: boolean } | null = null;
+    let single: {
+      id: number; start: Point; last: Point; scrolling: boolean;
+      time: number; velocity: Point;
+    } | null = null;
+    let coastFrame = 0;
+    const stopCoast = () => {
+      cancelAnimationFrame(coastFrame);
+      coastFrame = 0;
+    };
+    stopPanMomentum.current = stopCoast;
+
+    const coast = (velocity: Point) => {
+      let { x, y } = velocity;
+      let left = node.scrollLeft;
+      let top = node.scrollTop;
+      let previousTime = performance.now();
+      const step = (time: number) => {
+        if (!touchPanRef.current || isStylusActiveRef.current || spenTipDownRef.current) return;
+        const elapsed = Math.min(32, Math.max(0, time - previousTime));
+        previousTime = time;
+        const decay = Math.exp(-elapsed / 180);
+        const distanceFactor = 180 * (1 - decay);
+        left += x * distanceFactor;
+        top += y * distanceFactor;
+        const maxLeft = node.scrollWidth - node.clientWidth;
+        const maxTop = node.scrollHeight - node.clientHeight;
+        x = left <= 0 || left >= maxLeft ? 0 : x * decay;
+        y = top <= 0 || top >= maxTop ? 0 : y * decay;
+        left = Math.max(0, Math.min(maxLeft, left));
+        top = Math.max(0, Math.min(maxTop, top));
+        node.scrollTo(left, top);
+        if (Math.hypot(x, y) >= 0.025) coastFrame = requestAnimationFrame(step);
+      };
+      if (Math.hypot(x, y) >= 0.06) coastFrame = requestAnimationFrame(step);
+    };
 
     const touchesInViewport = (event: TouchEvent) =>
       Array.from(event.touches).filter((touch) =>
@@ -1058,6 +1116,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
 
     const onTouchStart = (event: TouchEvent) => {
+      stopCoast();
       const touches = touchesInViewport(event);
       updateGesture(touches);
       if (isPinchingRef.current) {
@@ -1069,7 +1128,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         if (touchPanRef.current) event.preventDefault();
         const [touch] = touches;
         const point = { x: touch.clientX, y: touch.clientY };
-        single = { id: touch.identifier, start: point, last: point, scrolling: false };
+        single = { id: touch.identifier, start: point, last: point, scrolling: false,
+          time: performance.now(), velocity: { x: 0, y: 0 } };
       }
     };
 
@@ -1087,8 +1147,20 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         const point = { x: touch.clientX, y: touch.clientY };
         if (!single.scrolling && Math.hypot(point.x - single.start.x, point.y - single.start.y) < 8) return;
         event.preventDefault();
-        single.scrolling = true;
+        const now = performance.now();
+        const elapsed = Math.max(8, now - single.time);
+        const left = node.scrollLeft;
+        const top = node.scrollTop;
         pan(single.last, point);
+        const weight = single.scrolling && elapsed < 85 ? 0.65 : 1;
+        const speed = (distance: number, previous: number) =>
+          distance === 0 ? 0 : Math.max(-3, Math.min(3, previous * (1 - weight) + weight * distance / elapsed));
+        single.velocity = {
+          x: speed(node.scrollLeft - left, single.velocity.x),
+          y: speed(node.scrollTop - top, single.velocity.y),
+        };
+        single.scrolling = true;
+        single.time = now;
         single.last = point;
         return;
       }
@@ -1117,7 +1189,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const onTouchEnd = (event: TouchEvent) => {
       const touches = touchesInViewport(event);
       updateGesture(touches);
-      if (!touches.some(({ identifier }) => identifier === single?.id)) single = null;
+      if (single && !touches.some(({ identifier }) => identifier === single?.id)) {
+        const idle = performance.now() - single.time;
+        if (event.type === 'touchend' && touches.length === 0 && single.scrolling && touchPanRef.current && idle < 90) {
+          const factor = Math.exp(-idle / 75);
+          coast({ x: single.velocity.x * factor, y: single.velocity.y * factor });
+        }
+        single = null;
+      }
       if (touches.length < 2) gesture = null;
       // Suppress ink until both fingers from the gesture are off the page.
       if (touches.length === 0) isPinchingRef.current = false;
@@ -1125,6 +1204,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     // Desktop pinch arrives as a ctrl/meta wheel gesture from the trackpad.
     const onWheel = (event: WheelEvent) => {
+      stopCoast();
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
       const factor = Math.exp(-event.deltaY * 0.0025);
@@ -1136,6 +1216,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     node.addEventListener('touchend', onTouchEnd, { passive: false });
     node.addEventListener('touchcancel', onTouchEnd, { passive: false });
     node.addEventListener('wheel', onWheel, { passive: false });
+    node.addEventListener('pointerdown', stopCoast, true);
 
     return () => {
       node.removeEventListener('touchstart', onTouchStart);
@@ -1143,6 +1224,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       node.removeEventListener('touchend', onTouchEnd);
       node.removeEventListener('touchcancel', onTouchEnd);
       node.removeEventListener('wheel', onWheel);
+      node.removeEventListener('pointerdown', stopCoast, true);
+      stopCoast();
+      stopPanMomentum.current = null;
     };
   }, [abortActiveCanvasDrag, applyZoom]);
 
@@ -1441,9 +1525,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const movingBoxes = editing ? [editing.box] : selectedBoxesRef.current;
     const boxes = layer ? movingBoxes.map((box) => ({
       box, placement: boxPlacement(box, layer), pagePlacement: pageBoxPlacement(box, layer, baseLayout),
-      width: box.offsetWidth, previousWidth: box.style.width,
+      width: box.offsetWidth, height: box.offsetHeight,
+      previousWidth: box.style.width, previousHeight: box.style.minHeight,
+      previousLeft: box.style.left, previousTop: box.style.top,
     })) : [];
-    const widthBox = kind === 'width' ? boxes[0] : null;
+    const resizeBox = kind === 'width' || (kind === 'resize' && boxes.length === 1 && !ids.size && !pictures.length &&
+      !boxes[0].box.matches(tableBoxSelector)) ? boxes[0] : null;
+    const resizeLeft = corner === 'nw' || corner === 'sw';
+    const resizeTop = corner === 'nw' || corner === 'ne';
     const getNeighbors = () => [
       ...Array.from(inkObjects(baseStrokes).values(), (group) =>
         group.some((stroke) => ids.has(stroke.id)) ? null : getStrokesBounds(group)),
@@ -1497,12 +1586,24 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       const point = { x: start.x + dx / startZoom, y: start.y + dy / startZoom };
       moved = true;
       window.clearTimeout(holdTimer);
-      if (widthBox) {
-        const local = pointInTextLayer(point, widthBox.pagePlacement);
-        const localStart = pointInTextLayer(start, widthBox.pagePlacement);
-        const limit = Math.max(widthBox.width, (editor?.clientWidth ?? 8192) - widthBox.box.offsetLeft);
-        const width = Math.max(64, Math.min(8192, limit, Math.round(widthBox.width + local.x - localStart.x)));
-        widthBox.box.style.width = `${width}px`;
+      if (resizeBox) {
+        const { box, placement, pagePlacement, width, height } = resizeBox;
+        const local = pointInTextLayer(point, pagePlacement);
+        const localStart = pointInTextLayer(start, pagePlacement);
+        const dx = local.x - localStart.x;
+        const limit = kind === 'width' ? (editor?.clientWidth ?? 8192) - box.offsetLeft : 8192;
+        const nextWidth = Math.max(48, Math.min(8192, Math.max(width, limit), Math.round(width + (resizeLeft ? -dx : dx))));
+        box.style.width = `${nextWidth}px`;
+        if (corner) {
+          const dy = local.y - localStart.y;
+          box.style.minHeight = `${Math.max(24, Math.min(8192, Math.round(height + (resizeTop ? -dy : dy))))}px`;
+          const fixedCorner = transformTextBlockPoint({
+            x: resizeLeft ? width - box.offsetWidth : 0,
+            y: resizeTop ? height - box.offsetHeight : 0,
+          }, placement);
+          box.style.left = `${Math.round(fixedCorner.x - editorOffset.x)}px`;
+          box.style.top = `${Math.round(fixedCorner.y - editorOffset.y)}px`;
+        }
         setObjectSizeVersion((version) => version + 1);
         return;
       }
@@ -1524,9 +1625,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       transformCleanupRef.current = null;
       transformDragRef.current = false;
 
-      if (widthBox) {
-        if (commit && moved && editor?.contains(widthBox.box)) textEditor?.current?.savePageObjects();
-        else widthBox.box.style.width = widthBox.previousWidth;
+      if (resizeBox) {
+        const { box, previousWidth, previousHeight, previousLeft, previousTop } = resizeBox;
+        if (commit && moved && editor?.contains(box)) textEditor?.current?.savePageObjects();
+        else {
+          box.style.width = previousWidth;
+          box.style.minHeight = previousHeight;
+          box.style.left = previousLeft;
+          box.style.top = previousTop;
+        }
         setObjectSizeVersion((version) => version + 1);
         return;
       }
@@ -2081,6 +2188,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const soleTextBox = selectedBoxes.length === 1 && !selectedIds.length && !selectedPictures.length
     && !selectedBoxes[0].matches(tableBoxSelector) ? selectedBoxes[0] : null;
   const canScale = !selectedBoxes.some((box) => box.matches(tableBoxSelector));
+  const selectedTable = tableCell?.closest('table');
+  const tableBox = selectedTable?.closest<HTMLElement>(tableBoxSelector);
+  const layer = textLayerRef.current;
+  const tablePlacement = tableBox && layer ? pageBoxPlacement(tableBox, layer, textBlockLayout) : null;
   const widthHandle = soleTextBox && textLayerRef.current && selectionBounds ? (() => {
     const placement = pageBoxPlacement(soleTextBox, textLayerRef.current, textBlockLayout);
     const edge = transformTextBlockPoint({ x: soleTextBox.offsetWidth, y: soleTextBox.offsetHeight / 2 }, placement);
@@ -2134,6 +2245,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const next = !touchPanRef.current;
     touchPanRef.current = next;
     setTouchPan(next);
+    stopPanMomentum.current?.();
     if (!next) return;
     if (!isStylusActiveRef.current && !spenTipDownRef.current) abortActiveCanvasDrag();
     if (getEditor()?.querySelector('[contenteditable="true"]')) {
@@ -2152,6 +2264,146 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       <span className="hidden sm:inline">{touchPan ? 'Touch pan' : 'Touch edit'}</span>
     </button>
   );
+
+  const saveObjects = () => {
+    textEditor?.current?.savePageObjects();
+    setObjectSizeVersion((version) => version + 1);
+  };
+
+  const beginTableResize = (
+    event: React.PointerEvent, cell: HTMLTableCellElement, axis: TableResizeAxis,
+  ) => {
+    if (!selectedTable || !tablePlacement || transformDragRef.current || isPinchingRef.current ||
+        event.button !== 0 || !event.isPrimary || (event.pointerType === 'touch' && touchPanRef.current)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const pointer = event.pointerId;
+    const row = cell.parentElement as HTMLTableRowElement;
+    const target = axis === 'row' ? row
+      : selectedTable.querySelectorAll<HTMLTableColElement>(':scope > colgroup > col')[cell.cellIndex];
+    if (!target) return;
+    const startSize = axis === 'row' ? row.offsetHeight : cell.offsetWidth;
+    const previousStyle = axis === 'row' ? target.style.height : target.style.width;
+    const previousTableWidth = selectedTable.style.width;
+    const start = { x: event.clientX, y: event.clientY };
+    const scale = zoomRef.current * tablePlacement.scale;
+    const { rotation } = tablePlacement;
+    let changed = false;
+    transformDragRef.current = true;
+
+    const move = (next: PointerEvent) => {
+      if (next.pointerId !== pointer) return;
+      const { x, y } = pointInTextLayer({ x: next.clientX, y: next.clientY }, { ...start, scale, rotation });
+      const delta = axis === 'column' ? x : y;
+      if (!changed && Math.abs(delta) < 1) return;
+      changed = true;
+      setTableDimension(selectedTable, cell, axis, startSize + delta);
+      setObjectSizeVersion((version) => version + 1);
+    };
+    const finish = (commit: boolean) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('blur', blur);
+      transformCleanupRef.current = null;
+      transformDragRef.current = false;
+      if (!changed) return;
+      if (commit && getEditor()?.contains(cell)) saveObjects();
+      else {
+        if (axis === 'row') target.style.height = previousStyle;
+        else {
+          target.style.width = previousStyle;
+          selectedTable.style.width = previousTableWidth;
+        }
+        setObjectSizeVersion((version) => version + 1);
+      }
+    };
+    const up = (next: PointerEvent) => {
+      if (next.pointerId !== pointer) return;
+      if (changed) move(next);
+      finish(true);
+    };
+    const cancel = (next: PointerEvent) => { if (next.pointerId === pointer) finish(false); };
+    const blur = () => finish(false);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('blur', blur);
+    transformCleanupRef.current = blur;
+  };
+
+  const picture = selectedPictures.length === 1 && !selectedBoxes.length && !selectedIds.length
+    ? selectedPictures[0] : null;
+  const widthObject = picture ?? soleTextBox;
+  const selectedStroke = strokes.find((stroke) => selectedIdSet.has(stroke.id));
+  const hasSelection = selectedIds.length > 0 || selectedBoxes.length > 0 || selectedPictures.length > 0;
+  const useRibbon = !!textEditor && !!onChangeBackground;
+  const tableTools = tableCell && selectedTable && (
+    <TableToolbar cell={tableCell} onChangeCell={(cell) => {
+      setTableCell(cell);
+      if (cell && tableBox && selectedBoxesRef.current.length === 0) textEditor?.current?.editBox(tableBox, cell);
+    }} onSave={saveObjects} />
+  );
+  const selectionTools: RibbonSelection | undefined = tableTools && tableBox && !selectedIds.length && !selectedPictures.length && selectedBoxes.length <= 1
+    ? {
+        tab: 'Table Tools', target: tableBox, tools: <div className="ribbon-context-tools">
+          {tableTools}
+          {selectedBoxes.length === 1 && <div className="ribbon-selection-tools">
+            {ribbonButton('Edit table', Pencil, () => editSelectedText())}
+            {ribbonButton('Delete table', Trash2, deleteSelection)}
+          </div>}
+        </div>,
+      }
+    : hasSelection ? {
+        tab: picture ? 'Picture Tools' : soleTextBox ? 'Text Box Tools'
+          : selectedStroke && !selectedBoxes.length && !selectedPictures.length ? 'Ink Tools' : 'Selection Tools',
+        target: selectedBoxes[0] ?? selectedPictures[0] ?? selectedIds.join(','),
+        tools: <div className="ribbon-selection-tools">
+          {tableTools}
+          {picture && ribbonButton('Replace picture', Image, () => replacementInput.current?.click())}
+          {soleTextBox && ribbonButton('Edit text', Pencil, () => editSelectedText())}
+          {soleTextBox && Array.from(soleTextBox.querySelectorAll<HTMLAnchorElement>('a[download]'), (link, index) =>
+            <a className="ribbon-command" key={index} href={link.href} download={link.download}>
+              <Download size={16} /> {link.download || 'Download PDF'}
+            </a>)}
+          {widthObject && <form key={widthObject.offsetWidth} onSubmit={(event) => {
+              event.preventDefault();
+              const width = Number(new FormData(event.currentTarget).get('width'));
+              widthObject.style.width = `${width}px`;
+              saveObjects();
+            }}>
+              <label>Width <input name="width" type="number" min={picture ? 1 : 48} max={8192}
+                defaultValue={widthObject.offsetWidth || (picture ? 1 : 48)} required /></label>
+              <button type="submit" className="ribbon-command">Apply width</button>
+            </form>}
+          {picture && ribbonButton('Rotate 90°', RotateCw, () => {
+            const measured = getPictures([picture])[0];
+            if (!measured) return;
+            const { x, y, width, height } = measured.bounds;
+            transformPicture(measured, textBlockLayout, { ...IDENTITY_INK_TRANSFORM,
+              originX: x + width / 2, originY: y + height / 2, rotation: Math.PI / 2 }, true);
+            saveObjects();
+          })}
+          {selectedStroke && <>
+            <label>Ink color <input type="color" aria-label="Ink color"
+              value={/^#[0-9a-f]{6}$/i.test(selectedStroke.color) ? selectedStroke.color : '#1e293b'}
+              onChange={(event) => updateSelectedInk({ color: event.target.value })} /></label>
+            <form onSubmit={(event) => {
+              event.preventDefault();
+              updateSelectedInk({ width: Number(new FormData(event.currentTarget).get('width')) });
+            }}>
+              <label>Ink width <input name="width" type="number" min={1} max={120}
+                key={selectedStroke.id} defaultValue={Math.round(selectedStroke.width)} required /></label>
+              <button type="submit" className="ribbon-command">Apply ink width</button>
+            </form>
+            {selectedDrawings.size > 1 && <button type="button" className="ribbon-command" onClick={() => changeInkGroup(false)}>Group ink</button>}
+            {hasGroupedInk && <button type="button" className="ribbon-command" onClick={() => changeInkGroup(true)}>Ungroup ink</button>}
+            {ribbonButton('Bring to front', BringToFront, bringSelectionToFront)}
+            {ribbonButton('Send to back', SendToBack, sendSelectionToBack)}
+          </>}
+          {ribbonButton('Delete selection', Trash2, deleteSelection)}
+        </div>,
+      } : undefined;
 
   const drawingTools = (
     <PenToolbar
@@ -2182,7 +2434,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   );
 
   return (
-    <div className="flex flex-col w-full h-full relative select-none">
+    <div className="flex flex-col w-full h-full min-h-0 flex-1 relative select-none">
       <input ref={replacementInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp"
         hidden onChange={async (event) => {
           const file = event.target.files?.[0];
@@ -2213,18 +2465,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             background={background}
             onOrientationChange={changePageLayout}
             onBackgroundChange={onChangeBackground}
+            selection={selectionTools}
+            keyboardOpen={keyboardOpen}
+            textEditing={textEditing}
           />
         ) : (
           <div className="flex justify-center items-center gap-2 px-4 py-2">{touchModeControl}{drawingTools}</div>
         )}
-        {tableCell && <TableToolbar cell={tableCell} onChangeCell={(cell) => {
-          setTableCell(cell);
-          const box = cell?.closest<HTMLElement>(tableBoxSelector);
-          if (cell && box && selectedBoxesRef.current.length === 0) textEditor?.current?.editBox(box, cell);
-        }} onSave={() => {
-          textEditor?.current?.savePageObjects();
-          setObjectSizeVersion((version) => version + 1);
-        }} />}
+        {!useRibbon && tableTools}
         {pictureError && <p role="alert" className="px-4 py-1 text-sm text-rose-600 dark:text-rose-400">{pictureError}</p>}
       </div>
 
@@ -2324,21 +2572,30 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                       tableSelected={selectedBoxes.length === 1 && selectedBoxes[0].matches(tableBoxSelector)}
                       pictureCount={selectedPictures.length}
                       onEditText={selectedBoxes.length === 1 ? () => editSelectedText() : undefined}
-                      onStartResize={canScale && !widthHandle ? (corner, e) => beginTransform('resize', corner, e) : undefined}
+                      onStartResize={canScale ? (corner, e) => beginTransform('resize', corner, e) : undefined}
                       widthHandle={widthHandle}
                       onStartWidth={(event) => beginTransform('width', null, event)}
                       onGroup={selectedDrawings.size > 1 ? () => changeInkGroup(false) : undefined}
                       onUngroup={hasGroupedInk ? () => changeInkGroup(true) : undefined}
-                      onReplacePicture={editActions && selectedPictures.length === 1 ? () => replacementInput.current?.click() : undefined}
-                      onInkColor={editActions && selectedIds.length ? (color) => updateSelectedInk({ color }) : undefined}
-                      onInkWidth={editActions && selectedIds.length ? (width) => updateSelectedInk({ width }) : undefined}
-                      inkColor={strokes.find((stroke) => selectedIdSet.has(stroke.id))?.color}
-                      inkWidth={strokes.find((stroke) => selectedIdSet.has(stroke.id))?.width}
+                      onReplacePicture={!useRibbon && editActions && selectedPictures.length === 1 ? () => replacementInput.current?.click() : undefined}
+                      onInkColor={!useRibbon && editActions && selectedIds.length ? (color) => updateSelectedInk({ color }) : undefined}
+                      onInkWidth={!useRibbon && editActions && selectedIds.length ? (width) => updateSelectedInk({ width }) : undefined}
+                      inkColor={selectedStroke?.color}
+                      inkWidth={selectedStroke?.width}
                       onStartRotate={(e) => beginTransform('rotate', null, e)}
                       onBringToFront={bringSelectionToFront}
                       onSendToBack={sendSelectionToBack}
                       onDelete={deleteSelection}
                     />
+                  )}
+                  {selectedTable && tableBox && tablePlacement && !liveTransform && (
+                    <TableResizeHandles table={selectedTable} box={tableBox} placement={tablePlacement}
+                      onStart={beginTableResize}
+                      onStep={(cell, axis, delta) => {
+                        const size = tableDimensions(selectedTable, cell);
+                        setTableDimension(selectedTable, cell, axis, (axis === 'column' ? size.width : size.height) + delta);
+                        saveObjects();
+                      }} />
                   )}
                 </div>
               </div>

@@ -61,7 +61,7 @@ export function tableDimensions(table: HTMLTableElement, cell: HTMLTableCellElem
   const column = table.querySelectorAll<HTMLTableColElement>(':scope > colgroup > col')[cell.cellIndex];
   return {
     width: parseInt(column?.style.width ?? '', 10) || columnWidth,
-    height: parseInt((cell.parentElement as HTMLElement).style.height, 10) || rowHeight,
+    height: parseInt((cell.parentElement as HTMLElement).style.height, 10) || (cell.parentElement as HTMLElement).offsetHeight || rowHeight,
   };
 }
 

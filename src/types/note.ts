@@ -58,18 +58,27 @@ export interface TextBlockLayout {
   rotation: number;
 }
 
-export interface Note {
-  id: string;
-  title: string;
+export interface NotePageData {
   content: string; // rich text HTML / block content
   inkStrokes: Stroke[]; // vector ink strokes for S Pen / Apple Pencil
   inkPreviewUrl?: string; // cached low-res thumbnail
   inkBackground?: InkBackground; // ruled / grid / dotted page style
-  /** A4 page orientation for this note. Defaults to portrait. */
+  /** A4 page orientation. Defaults to portrait. */
   pageLayout?: PageLayout;
   /** Legacy placement of the HTML layer, inherited by individual page objects. */
   textLayout?: TextBlockLayout;
   recognizedText?: string; // OCR'd handwriting, included in search
+}
+
+export interface NotePage extends NotePageData {
+  id: string;
+}
+
+export interface Note extends NotePageData {
+  id: string;
+  title: string;
+  firstPageId?: string;
+  extraPages?: NotePage[];
   tags: string[];
   color: string; // card accent color
   pinned?: boolean;

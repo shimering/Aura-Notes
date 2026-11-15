@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import {
   AlignJustify, ChevronDown, ChevronUp, Circle, FileText, Grid3x3, Image, RectangleHorizontal,
   RectangleVertical, Square, Table2, Type,
@@ -9,7 +9,13 @@ import { FormatToolbar } from './FormatToolbar';
 import type { TextEditorRef } from './TextEditor';
 
 const TABS = ['Home', 'Insert', 'Page Layout', 'Draw'] as const;
-type RibbonTab = typeof TABS[number];
+type StandardTab = typeof TABS[number];
+export interface RibbonSelection {
+  tab: 'Picture Tools' | 'Table Tools' | 'Text Box Tools' | 'Ink Tools' | 'Selection Tools';
+  target: HTMLElement | string;
+  tools: ReactNode;
+}
+type RibbonTab = StandardTab | RibbonSelection['tab'];
 
 const BACKGROUND_ICONS = { none: Square, ruled: AlignJustify, grid: Grid3x3, dotted: Circle };
 const ORIENTATIONS = [
@@ -29,14 +35,40 @@ interface NoteRibbonProps {
   background: InkBackground;
   onOrientationChange: (layout: PageLayout) => void;
   onBackgroundChange: (background: InkBackground) => void;
+  selection?: RibbonSelection;
+  keyboardOpen?: boolean;
+  textEditing?: boolean;
 }
 
 export function NoteRibbon({
-  editor, enableText, onInsertTextBox, onInsertTable, textActive, drawingTools, touchModeControl, orientation, background, onOrientationChange, onBackgroundChange,
+  editor, enableText, onInsertTextBox, onInsertTable, textActive, drawingTools, touchModeControl, orientation, background, onOrientationChange, onBackgroundChange, selection, keyboardOpen = false, textEditing = false,
 }: NoteRibbonProps) {
   const id = useId();
-  const [tab, setTab] = useState<RibbonTab>('Insert');
-  const [compact, setCompact] = useState(() => window.matchMedia?.('(max-width: 640px)').matches ?? false);
+  const [standardTab, setStandardTab] = useState<StandardTab>('Insert');
+  const target = selection?.target;
+  const [previousTarget, setPreviousTarget] = useState(target);
+  const [previousEditing, setPreviousEditing] = useState(textEditing);
+  const [tabOverride, setTabOverride] = useState<RibbonTab>();
+  if (target !== previousTarget || textEditing !== previousEditing) {
+    setPreviousTarget(target);
+    setPreviousEditing(textEditing);
+    setTabOverride(undefined);
+  }
+  const tabs: readonly RibbonTab[] = selection ? [...TABS, selection.tab] : TABS;
+  const tab = tabOverride ?? (textEditing ? 'Home' : selection?.tab ?? standardTab);
+  const activeTab = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (activeTab.current) {
+      const button = activeTab.current;
+      const list = button.parentElement!;
+      if (button.offsetLeft < list.scrollLeft) list.scrollLeft = button.offsetLeft;
+      else if (button.offsetLeft + button.offsetWidth > list.scrollLeft + list.clientWidth) {
+        list.scrollLeft = button.offsetLeft + button.offsetWidth - list.clientWidth;
+      }
+    }
+  }, [tab]);
+  const [preferCompact, setPreferCompact] = useState(() => window.matchMedia?.('(max-width: 640px)').matches ?? false);
+  const compact = keyboardOpen || preferCompact;
   const [showTable, setShowTable] = useState(false);
   const [message, setMessage] = useState('');
   const pictureInput = useRef<HTMLInputElement>(null);
@@ -61,27 +93,31 @@ export function NoteRibbon({
   };
 
   const selectTab = (next: RibbonTab) => {
-    setTab(next);
+    const standard = TABS.find((name) => name === next);
+    if (standard) setStandardTab(standard);
+    setTabOverride(next);
     setShowTable(false);
   };
 
   return (
-    <section className="note-ribbon" data-compact={compact} aria-label="Note ribbon">
+    <section className="note-ribbon" data-compact={compact} data-keyboard-open={keyboardOpen} aria-label="Note ribbon">
       <div className="ribbon-header">
         <div className="ribbon-tabs" role="tablist" aria-label="Ribbon tabs">
-          {TABS.map((name, index) => (
+          {tabs.map((name, index) => (
             <button key={name} type="button" role="tab" id={`${id}-tab-${index}`}
+              ref={name === tab ? activeTab : undefined}
+              className={name === selection?.tab ? 'ribbon-context-tab' : undefined}
               aria-selected={name === tab} aria-controls={`${id}-panel`} tabIndex={name === tab ? 0 : -1}
               onMouseDown={(event) => event.preventDefault()} onClick={() => selectTab(name)}
               onKeyDown={(event) => {
                 let next = index;
-                if (event.key === 'ArrowRight') next = (index + 1) % TABS.length;
-                else if (event.key === 'ArrowLeft') next = (index + TABS.length - 1) % TABS.length;
+                if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+                else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
                 else if (event.key === 'Home') next = 0;
-                else if (event.key === 'End') next = TABS.length - 1;
+                else if (event.key === 'End') next = tabs.length - 1;
                 else return;
                 event.preventDefault();
-                selectTab(TABS[next]);
+                selectTab(tabs[next]);
                 document.getElementById(`${id}-tab-${next}`)?.focus();
               }}>
               {name}
@@ -98,16 +134,16 @@ export function NoteRibbon({
             }}>
             <Type size={16} />
           </button>
-          <button type="button" className="ribbon-command ribbon-toggle"
-            onMouseDown={(event) => event.preventDefault()} onClick={() => setCompact(!compact)}
+          {!keyboardOpen && <button type="button" className="ribbon-command ribbon-toggle"
+            onMouseDown={(event) => event.preventDefault()} onClick={() => setPreferCompact(!preferCompact)}
             title={compact ? 'Expand ribbon' : 'Switch to compact ribbon'}
             aria-label={compact ? 'Expand ribbon' : 'Switch to compact ribbon'}>
             {compact ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-          </button>
+          </button>}
         </div>
       </div>
 
-      <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-tab-${TABS.indexOf(tab)}`}
+      <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-tab-${tabs.indexOf(tab)}`}
         className="ribbon-panel" onKeyDown={(event) => {
           if (event.key === 'Escape') setShowTable(false);
         }}>
@@ -186,6 +222,7 @@ export function NoteRibbon({
           </div>
         )}
         {tab === 'Draw' && drawingTools}
+        {tab === selection?.tab && selection.tools}
       </div>
 
       <input hidden ref={pictureInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp"

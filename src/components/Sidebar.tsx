@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { NOTE_TEMPLATES } from '../utils/templates';
 import { sanitizeNoteHtml } from '../utils/noteHtml';
+import { notePages } from '../utils/notePages';
 
 interface SidebarProps {
   notes: Note[];
@@ -75,8 +76,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const matchesSearch =
       !query ||
       note.title.toLowerCase().includes(query) ||
-      note.content.toLowerCase().includes(query) ||
-      (note.recognizedText || '').toLowerCase().includes(query);
+      notePages(note).some((page) => page.content.toLowerCase().includes(query) ||
+        (page.recognizedText || '').toLowerCase().includes(query));
     const matchesTag = selectedTag ? note.tags?.includes(selectedTag) : true;
     return matchesSearch && matchesTag;
   });
@@ -246,7 +247,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             filteredNotes.map((note) => {
               const isActive = note.id === activeNoteId;
               const preview = stripHtml(note.content).trim();
-              const hasInk = note.inkStrokes && note.inkStrokes.length > 0;
+              const hasInk = notePages(note).some((page) => page.inkStrokes?.length);
 
               return (
                 <div
