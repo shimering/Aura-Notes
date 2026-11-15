@@ -5,8 +5,9 @@ const tags = [
   'p', 'div', 'br', 'hr', 'span', 'font', 'b', 'strong', 'i', 'em', 'u', 's',
   'strike', 'del', 'mark', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'ul', 'ol', 'li', 'pre', 'code', 'sub', 'sup', 'a', 'img',
-  'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+  'table', 'colgroup', 'col', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
 ];
+export const cellFormula = /^=(?:[A-Z]{1,3}[1-9]\d{0,2}|#REF!)(?: *[+-] *(?:[A-Z]{1,3}[1-9]\d{0,2}|#REF!))+$/i;
 const imageData = /^data:image\/(?:png|jpeg|gif|webp|avif|bmp);base64,[a-z0-9+/]+={0,2}$/i;
 export const pdfData = /^data:application\/pdf;base64,[a-z0-9+/]+={0,2}$/i;
 const colorValue = /^(?:#[0-9a-f]{3,8}|[a-z]+|(?:rgba?|hsla?)\([0-9.,%\s+/-]+\))$/i;
@@ -57,12 +58,18 @@ export function sanitizeNoteHtml(html: string): string {
         attribute.keepAttr = node.nodeName === 'IMG' && Object.hasOwn(pictureWraps, attribute.attrValue);
       } else if (attribute.attrName === 'data-note-positioned') {
         attribute.keepAttr = ['P', 'DIV'].includes(node.nodeName) && attribute.attrValue === 'true';
+      } else if (attribute.attrName === 'data-note-table') {
+        attribute.keepAttr = node.nodeName === 'DIV' && attribute.attrValue === 'true';
+      } else if (attribute.attrName === 'data-cell-formula') {
+        attribute.keepAttr = ['TD', 'TH'].includes(node.nodeName) && cellFormula.test(attribute.attrValue);
       } else if (attribute.attrName === 'style') {
         const css = node.ownerDocument.createElement('span').style;
         css.cssText = attribute.attrValue;
         const styles = node.nodeName === 'IMG' ? { ...formattingStyles, ...pictureStyles }
           : node.getAttribute('data-note-positioned') === 'true' && ['P', 'DIV'].includes(node.nodeName)
-            ? { ...formattingStyles, ...positionStyles } : formattingStyles;
+            ? { ...formattingStyles, ...pictureStyles }
+            : ['COL', 'TABLE'].includes(node.nodeName) ? { width: /^[1-9]\d{0,5}px$/ }
+            : node.nodeName === 'TR' ? { height: pictureStyles.width } : formattingStyles;
         attribute.attrValue = Object.entries(styles).flatMap(([property, allowed]) => {
           const value = css.getPropertyValue(property);
           return allowed.test(value) ? [`${property}: ${value};`] : [];
@@ -79,7 +86,7 @@ export function sanitizeNoteHtml(html: string): string {
     ? purifier.sanitize(html, {
       ALLOWED_TAGS: tags,
       ALLOWED_ATTR: ['style', 'color', 'start', 'reversed', 'value', 'align', 'size', 'face',
-        'src', 'alt', 'href', 'download', 'data-picture-wrap', 'data-note-positioned'],
+        'src', 'alt', 'href', 'download', 'data-picture-wrap', 'data-note-positioned', 'data-note-table', 'data-cell-formula'],
       ADD_DATA_URI_TAGS: ['a'],
       ALLOW_DATA_ATTR: false,
       ALLOW_ARIA_ATTR: false,

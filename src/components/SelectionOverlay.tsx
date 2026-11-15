@@ -1,6 +1,6 @@
 import React from 'react';
 import { BringToFront, SendToBack, Trash2, RotateCw, Pencil } from 'lucide-react';
-import { Bounds, InkTransform } from '../utils/inkSelection';
+import { Bounds, InkTransform, Point } from '../utils/inkSelection';
 
 export type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
@@ -10,12 +10,20 @@ interface SelectionOverlayProps {
   transform: InkTransform | null;
   /** Number of ink objects in the selection. */
   count: number;
-  /** True when the note's typed text block is part of the selection. */
-  textSelected?: boolean;
+  boxCount?: number;
+  tableSelected?: boolean;
   pictureCount?: number;
   onEditText?: () => void;
-  onStartMove: (e: React.PointerEvent) => void;
-  onStartResize: (corner: ResizeCorner, e: React.PointerEvent) => void;
+  onStartResize?: (corner: ResizeCorner, e: React.PointerEvent) => void;
+  widthHandle?: Point | null;
+  onStartWidth?: (e: React.PointerEvent) => void;
+  onGroup?: () => void;
+  onUngroup?: () => void;
+  onReplacePicture?: () => void;
+  onInkColor?: (color: string) => void;
+  onInkWidth?: (width: number) => void;
+  inkColor?: string;
+  inkWidth?: number;
   onStartRotate: (e: React.PointerEvent) => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
@@ -42,17 +50,26 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
   bounds,
   transform,
   count,
-  textSelected = false,
+  boxCount = 0,
+  tableSelected = false,
   pictureCount = 0,
   onEditText,
-  onStartMove,
   onStartResize,
+  widthHandle,
+  onStartWidth,
+  onGroup,
+  onUngroup,
+  onReplacePicture,
+  onInkColor,
+  onInkWidth,
+  inkColor,
+  inkWidth,
   onStartRotate,
   onBringToFront,
   onSendToBack,
   onDelete
 }) => {
-  const objectCount = count + pictureCount + (textSelected ? 1 : 0);
+  const objectCount = count + pictureCount + boxCount;
   const style: React.CSSProperties = {
     left: bounds.x,
     top: bounds.y,
@@ -73,12 +90,19 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
       data-ink-ui="selection"
       aria-hidden={false}
     >
-      {/* The frame itself: drag anywhere inside to move the selection. */}
-      <div
-        role="presentation"
-        onPointerDown={onStartMove}
-        className="absolute inset-0 pointer-events-auto cursor-move rounded-[3px] border-2 border-dashed border-violet-500 bg-violet-500/5 touch-none"
-      />
+      <div className="absolute inset-0 rounded-[3px] border-2 border-dashed border-violet-500 bg-violet-500/5" />
+      {widthHandle && (
+        <button
+          type="button"
+          onPointerDown={onStartWidth}
+          title="Resize text box width"
+          aria-label="Resize text box width"
+          style={{ left: widthHandle.x, top: widthHandle.y }}
+          className="absolute w-7 h-9 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-auto cursor-ew-resize touch-none"
+        >
+          <span className="w-2 h-5 rounded-full bg-violet-600 ring-2 ring-white" />
+        </button>
+      )}
 
       {/* Rotation grip above the frame. */}
       <button
@@ -93,7 +117,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
       <div className="absolute left-1/2 -top-5 h-3 w-px -translate-x-1/2 bg-violet-500/70 pointer-events-none" />
 
       {/* Corner resize handles. Kept large enough to grab with a finger. */}
-      {CORNERS.map((item) => (
+      {onStartResize && CORNERS.map((item) => (
         <button
           key={item.corner}
           type="button"
@@ -115,7 +139,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
           className="px-1 text-ink-muted-light dark:text-ink-muted-dark"
           title={`${objectCount} selected`}
         >
-          {objectCount === 1 && textSelected ? 'Text' : objectCount === 1 && pictureCount ? 'Image' : objectCount}
+          {objectCount === 1 ? (tableSelected ? 'Table' : boxCount ? 'Text' : pictureCount ? 'Image' : 'Ink') : objectCount}
         </span>
         {onEditText && (
           <button
@@ -124,9 +148,21 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
             className="flex items-center gap-1 rounded-lg px-3 py-2 font-semibold hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark"
           >
             <Pencil className="w-3.5 h-3.5" />
-            Edit text
+            {tableSelected ? 'Edit table' : 'Edit text'}
           </button>
         )}
+        {onGroup && <button type="button" className="px-2 py-1" onClick={onGroup}>Group ink</button>}
+        {onUngroup && <button type="button" className="px-2 py-1" onClick={onUngroup}>Ungroup ink</button>}
+        {onReplacePicture && <button type="button" className="px-2 py-1" onClick={onReplacePicture}>Replace image</button>}
+        {onInkColor && <input type="color" aria-label="Ink color" className="w-7 h-7"
+          value={/^#[0-9a-f]{6}$/i.test(inkColor ?? '') ? inkColor : '#1e293b'}
+          onChange={(event) => onInkColor(event.target.value)} />}
+        {onInkWidth && <label className="flex gap-1 items-center">Ink width
+          <input type="number" aria-label="Ink width" className="w-12 bg-transparent"
+            min={1} max={120} defaultValue={Math.round(inkWidth ?? 4)}
+            onBlur={(event) => { if (event.target.validity.valid && event.target.value) onInkWidth(event.target.valueAsNumber); }}
+            onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
+        </label>}
         <button
           type="button"
           onClick={onBringToFront}

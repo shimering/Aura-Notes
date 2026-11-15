@@ -380,6 +380,30 @@ canvas.ink-canvas {
   font-size: 12px;
 }
 
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  overflow-x: auto;
+  padding: .4rem .75rem;
+  border-top: 1px solid var(--ribbon-border, #94a3b8);
+  font-size: .75rem;
+  white-space: nowrap;
+}
+
+.table-toolbar form, .table-toolbar label { display: flex; align-items: center; gap: .35rem; }
+.table-toolbar form { padding-inline-start: .4rem; border-inline-start: 1px solid #94a3b8; }
+.table-toolbar :is(input, button) {
+  padding: .2rem .35rem;
+  border: 1px solid rgb(100 116 139 / 45%);
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+}
+.table-toolbar button:disabled { opacity: .4; }
+.table-toolbar input { width: 6.5rem; }
+.table-toolbar input[type="number"] { width: 3.5rem; }
+
 @media (max-width: 540px) {
   .ribbon-header { padding-inline: 5px; }
   .ribbon-tabs button { padding-inline: 7px; }
@@ -397,8 +421,30 @@ canvas.ink-canvas {
 .editable-note-content img[data-picture-wrap="right"] { float: right; margin: 0 0 .4em .75em; }
 .editable-note-content img[data-picture-wrap="free"] { position: absolute; max-width: none; }
 .editable-note-content img { transform-origin: top left; -webkit-user-drag: none; }
-.editable-note-content > [data-note-positioned="true"] { position: absolute; right: 0; }
+.editable-note-content > [data-note-positioned="true"] {
+  position: absolute;
+  right: 0;
+  display: flow-root;
+  min-height: 1.5em;
+  padding: 4px 8px;
+  border: 1px solid rgb(100 116 139 / 30%);
+  border-radius: 3px;
+  transform-origin: top left;
+}
+.editable-note-content [contenteditable="true"] {
+  border-color: #8b5cf6;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
 .editable-note-content table { margin-block: .6em; width: 100%; table-layout: fixed; }
+.editable-note-content > [data-note-table="true"] {
+  width: max-content;
+  right: auto;
+  padding: 0;
+}
+.editable-note-content > [data-note-table="true"] table { margin: 0; }
+.editable-note-content [data-current-cell] { outline: 2px solid #8b5cf6; outline-offset: -2px; }
 .editable-note-content :is(td, th) { border: 1px solid #94a3b8; padding: 4px 6px; }
 .editable-note-content a[download] {
   display: inline-block;

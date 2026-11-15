@@ -20,6 +20,8 @@ const ORIENTATIONS = [
 interface NoteRibbonProps {
   editor: RefObject<TextEditorRef | null>;
   enableText: () => void;
+  onInsertTextBox: () => void;
+  onInsertTable: (box: HTMLElement) => void;
   textActive: boolean;
   drawingTools: ReactNode;
   orientation: PageLayout;
@@ -29,10 +31,10 @@ interface NoteRibbonProps {
 }
 
 export function NoteRibbon({
-  editor, enableText, textActive, drawingTools, orientation, background, onOrientationChange, onBackgroundChange,
+  editor, enableText, onInsertTextBox, onInsertTable, textActive, drawingTools, orientation, background, onOrientationChange, onBackgroundChange,
 }: NoteRibbonProps) {
   const id = useId();
-  const [tab, setTab] = useState<RibbonTab>('Home');
+  const [tab, setTab] = useState<RibbonTab>('Insert');
   const [compact, setCompact] = useState(() => window.matchMedia?.('(max-width: 640px)').matches ?? false);
   const [showTable, setShowTable] = useState(false);
   const [message, setMessage] = useState('');
@@ -53,7 +55,8 @@ export function NoteRibbon({
     event.preventDefault();
     const values = new FormData(event.currentTarget);
     setShowTable(false);
-    void edit((current) => current.insertTable(Number(values.get('rows')), Number(values.get('columns'))));
+    const box = editor.current?.insertTable(Number(values.get('rows')), Number(values.get('columns')));
+    if (box) onInsertTable(box);
   };
 
   const selectTab = (next: RibbonTab) => {
@@ -114,12 +117,20 @@ export function NoteRibbon({
           <div className="ribbon-groups">
             <div className="ribbon-group">
               <div className="ribbon-row">
+                <button type="button" className="ribbon-command ribbon-large-command"
+                  onMouseDown={(event) => event.preventDefault()} onClick={() => {
+                    setShowTable(false);
+                    setMessage('');
+                    onInsertTextBox();
+                  }}>
+                  <Type size={21} /> Text Box
+                </button>
                 <button type="button" className="ribbon-command ribbon-large-command" aria-expanded={showTable}
                   onMouseDown={(event) => event.preventDefault()} onClick={() => setShowTable(!showTable)}>
                   <Table2 size={21} /> Table
                 </button>
               </div>
-              {!compact && <span className="ribbon-group-label">Tables</span>}
+              {!compact && <span className="ribbon-group-label">Objects</span>}
             </div>
             <div className="ribbon-group">
               <div className="ribbon-row">

@@ -40,6 +40,8 @@ export interface Stroke {
   width: number;
   tool: PenTool;
   opacity?: number;
+  /** Strokes with the same group ID move together as a drawing. */
+  groupId?: string;
   /** Which side of the note text this stroke is drawn on. Defaults to 'front'. */
   layer?: StrokeLayer;
 }
@@ -65,7 +67,7 @@ export interface Note {
   inkBackground?: InkBackground; // ruled / grid / dotted page style
   /** A4 page orientation for this note. Defaults to portrait. */
   pageLayout?: PageLayout;
-  /** Move / resize / rotate applied to the typed text block. */
+  /** Legacy placement of the HTML layer, inherited by individual page objects. */
   textLayout?: TextBlockLayout;
   recognizedText?: string; // OCR'd handwriting, included in search
   tags: string[];

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Note, Stroke, InkBackground, PenTool, TextBlockLayout, PageLayout } from './types/note';
+import { Note, Stroke, InkBackground, PenTool, PageLayout } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
@@ -40,9 +40,6 @@ export default function App() {
   const [surfaceTool, setSurfaceTool] = useState<PenTool>(
     navigator.maxTouchPoints > 0 ? 'fountain' : 'text'
   );
-  // Bumped when the Draw surface hands the caret back to the note sheet.
-  const [textFocusRequest, setTextFocusRequest] = useState(0);
-  const [pictureToolbar, setPictureToolbar] = useState<HTMLDivElement | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 1024);
   const [isScribbleModalOpen, setIsScribbleModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
@@ -449,16 +446,6 @@ export default function App() {
     updateActiveNote((current) => ({ ...current, inkStrokes: strokes }));
   };
 
-  // Move / resize / rotate of the typed text block
-  const handleUpdateTextLayout = (layout: TextBlockLayout) => {
-    updateActiveNote((current) => ({ ...current, textLayout: layout }));
-  };
-
-  // Deleting the text object clears its text and its placement
-  const handleDeleteText = () => {
-    updateActiveNote((current) => ({ ...current, content: '', textLayout: undefined }));
-  };
-
   // Create New Note (optionally from a template)
   const handleCreateNote = async (templateId?: string) => {
     const now = Date.now();
@@ -552,18 +539,6 @@ export default function App() {
     updateActiveNote((current) => ({ ...current, pageLayout }));
   };
 
-  /**
-   * A single finger tap on the page shows the writing cursor: the text sheet
-   * takes over with a blinking caret waiting for the keyboard.
-   */
-  const handleFingerTap = useCallback(() => {
-    setTextFocusRequest((request) => request + 1);
-  }, []);
-
-  const handleRequestTextFocus = useCallback(() => {
-    setTextFocusRequest((request) => request + 1);
-  }, []);
-
   // Update Settings
   const handleUpdateSettings = async (updates: Partial<AppSettings>) => {
     const updated = await saveSettings(updates);
@@ -624,38 +599,13 @@ export default function App() {
 
   // Insert Recognized Handwriting into Note
   const handleInsertScribbleText = (recognizedText: string, clearStrokes: boolean) => {
-    if (!activeNote) return;
-
-    const formattedInsert = `<p>${plainTextToNoteHtml(recognizedText)}</p>`;
-    const updatedContent = activeNote.content 
-      ? `${activeNote.content}<br/>${formattedInsert}` 
-      : formattedInsert;
-
-    const updatedStrokes = clearStrokes ? [] : activeNote.inkStrokes;
-    const now = Date.now();
-    lastLocalEditTimeRef.current = now;
-
-    // Archive the transcription on the note so handwriting stays searchable
-    // after the ink strokes have been cleared from the canvas.
-    const previousRecognized = activeNote.recognizedText?.trim();
-    const recognizedArchive = previousRecognized
-      ? `${previousRecognized}\n${recognizedText}`
-      : recognizedText;
-
-    const updatedNote = {
-      ...activeNote,
-      content: updatedContent,
-      inkStrokes: updatedStrokes,
-      recognizedText: recognizedArchive,
-      updatedAt: now
-    };
-
-    setNotes((prev) => {
-      const next = prev.map((n) => (n.id === updatedNote.id ? updatedNote : n));
-      notesRef.current = next;
-      return next;
-    });
-    scheduleSave(updatedNote);
+    const paragraph = `<p>${plainTextToNoteHtml(recognizedText)}</p>`;
+    textEditorRef.current?.appendTextBox(paragraph);
+    updateActiveNote((note) => ({
+      ...note,
+      inkStrokes: clearStrokes ? [] : note.inkStrokes,
+      recognizedText: [note.recognizedText?.trim(), recognizedText].filter(Boolean).join('\n'),
+    }));
   };
 
   // Export Note as Markdown file
@@ -798,7 +748,6 @@ export default function App() {
       <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative transition-all duration-300">
         <Header
           note={activeNote}
-          pictureToolbarRef={setPictureToolbar}
           onUpdateTitle={handleUpdateTitle}
           onUpdateTags={handleUpdateTags}
           allTags={allTags}
@@ -827,21 +776,18 @@ export default function App() {
               strokes={activeNote.inkStrokes || []}
               onChangeStrokes={handleUpdateStrokes}
               onScribbleToText={() => setIsScribbleModalOpen(true)}
-              onFingerTap={handleFingerTap}
-              onRequestTextFocus={handleRequestTextFocus}
+              onRequestTextFocus={() => textEditorRef.current?.focusEditor()}
               onToolChange={setSurfaceTool}
               textLayer={
                 <TextEditor
                   ref={textEditorRef}
                   note={activeNote}
                   onChangeContent={handleUpdateContent}
-                  focusRequest={textFocusRequest}
                   embedded
                   editable={surfaceTool === 'text'}
                 />
               }
               textEditor={textEditorRef}
-              pictureToolbarTarget={pictureToolbar}
               defaultTool={settings.defaultPenTool}
               defaultColor={settings.defaultPenColor}
               defaultWidth={settings.defaultPenWidth}
@@ -855,8 +801,6 @@ export default function App() {
               pageLayout={activeNote.pageLayout}
               onChangePageLayout={handleUpdatePageLayout}
               textLayout={activeNote.textLayout}
-              onChangeTextLayout={handleUpdateTextLayout}
-              onDeleteText={handleDeleteText}
             />
           </div>
         ) : (

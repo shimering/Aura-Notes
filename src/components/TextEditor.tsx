@@ -1,17 +1,23 @@
-import React, { forwardRef, useImperativeHandle, useRef, useEffect, useMemo } from 'react';
+import React, { forwardRef, useImperativeHandle, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import { Note } from '../types/note';
 import { FormatToolbar } from './FormatToolbar';
 import { pdfData, sanitizeNoteHtml } from '../utils/noteHtml';
 import type { Point } from '../utils/inkSelection';
-import { placePicture } from '../utils/pageObjects';
+import { boxSelector, offsetWithin, placePicture } from '../utils/pageObjects';
+import { createNoteTable, ensureTableColumns, recalculateTable, tableBoxSelector } from '../utils/noteTable';
 
 export interface TextEditorRef {
   focusEditor: () => void;
   focusAt: (point: Point) => void;
+  insertTextBox: () => void;
+  editBox: (box: HTMLElement, cell?: HTMLTableCellElement) => void;
+  finishEditing: () => void;
+  appendTextBox: (markup: string) => void;
+  replacePicture: (image: HTMLImageElement, file: File) => Promise<void>;
   savePageObjects: () => void;
   dropPictures: (files: File[], point: Point) => Promise<HTMLImageElement[]>;
   applyFormat: (command: string, value?: string) => Promise<void>;
-  insertTable: (rows: number, columns: number) => void;
+  insertTable: (rows: number, columns: number) => HTMLElement | undefined;
   insertFile: (file: File, kind: 'picture' | 'pdf') => Promise<void>;
 }
 
@@ -31,8 +37,6 @@ function readDataUrl(file: File): Promise<string> {
 interface TextEditorProps {
   note: Note;
   onChangeContent: (content: string) => void;
-  /** Bumped when the Text tool (or a finger tap) hands the caret to the sheet. */
-  focusRequest?: number;
   /** Renders only the editable sheet: the unified note page supplies the toolbar. */
   embedded?: boolean;
   /** Whether the sheet accepts typing; false while a pen or select tool is active. */
@@ -98,16 +102,110 @@ function cleanListMarkup(root: HTMLElement) {
   });
 }
 
+function createTextBox(point: Point, width: number | null, markup: string) {
+  const box = document.createElement('div');
+  box.dataset.notePositioned = 'true';
+  box.style.left = `${Math.round(point.x)}px`;
+  box.style.top = `${Math.round(point.y)}px`;
+  if (width !== null) box.style.width = `${Math.round(width)}px`;
+  box.innerHTML = markup;
+  return box;
+}
+
+function boxHasContent(box: HTMLElement) {
+  return !!box.textContent?.trim() || !!box.querySelector('a, table, hr');
+}
+
+/** Bring legacy flow content onto the object canvas while keeping its rich markup. */
+function loadPageObjects(editor: HTMLElement, html: string) {
+  const template = document.createElement('template');
+  template.innerHTML = sanitizeNoteHtml(html);
+  const children = Array.from(template.content.childNodes);
+  const flowBoxes: HTMLElement[] = [];
+  let legacyBox: HTMLElement | null = null;
+  for (const node of children) {
+    if (node instanceof HTMLElement && node.matches(boxSelector)) {
+      legacyBox = null;
+      if (node.tagName === 'P') {
+        const box = createTextBox({ x: 0, y: 0 }, null, '');
+        box.style.cssText = node.style.cssText;
+        box.append(node.cloneNode(true));
+        const paragraph = box.firstElementChild as HTMLElement;
+        paragraph.removeAttribute('data-note-positioned');
+        paragraph.style.left = paragraph.style.top = paragraph.style.width = paragraph.style.rotate = '';
+        node.replaceWith(box);
+      }
+      continue;
+    }
+    if (node instanceof HTMLImageElement && node.dataset.pictureWrap === 'free') {
+      legacyBox = null;
+      continue;
+    }
+    if (node.nodeType === Node.TEXT_NODE && !node.textContent?.trim() && !legacyBox) {
+      node.remove();
+      continue;
+    }
+    if (!legacyBox) {
+      legacyBox = createTextBox({ x: 0, y: 0 }, null, '');
+      // Let legacy in-flow markup take up its natural space during measurement.
+      legacyBox.style.position = 'relative';
+      legacyBox.style.top = '';
+      node.before(legacyBox);
+      flowBoxes.push(legacyBox);
+    }
+    legacyBox.append(node);
+    if (node instanceof HTMLElement && (node.matches('table, img') ||
+      (!node.textContent?.trim() && node.querySelector('table, img')))) legacyBox = null;
+  }
+
+  editor.replaceChildren(template.content);
+  const images = Array.from(editor.querySelectorAll('img')).filter((image) => image.parentElement !== editor);
+  const placements = images.map((image) => {
+    const point = offsetWithin(image, editor);
+    return { image, point, width: image.offsetWidth || parseInt(image.style.width, 10) || 280 };
+  });
+  const legacyTables = Array.from(editor.querySelectorAll('table')).filter((table) => !table.closest(tableBoxSelector));
+  const tables = legacyTables.map((table) => {
+    const point = offsetWithin(table, editor);
+    const box = createTextBox(point, null, '');
+    box.dataset.noteTable = 'true';
+    const widths = Array.from(table.rows[0]?.cells ?? [], (cell) => cell.offsetWidth);
+    return { table, box, widths };
+  });
+  const tops = flowBoxes.map((box) => box.offsetTop);
+  flowBoxes.forEach((box, index) => {
+    box.style.position = '';
+    box.style.top = `${tops[index]}px`;
+  });
+  placements.forEach(({ image, point, width }) => {
+    editor.append(image);
+    placePicture(image, point, width, (parseFloat(image.style.rotate) || 0) * Math.PI / 180);
+  });
+  tables.forEach(({ table, box, widths }) => {
+    box.append(table);
+    editor.append(box);
+    const columns = ensureTableColumns(table);
+    widths.forEach((width, index) => {
+      if (width) (columns.children[index] as HTMLElement).style.width = `${width}px`;
+    });
+    ensureTableColumns(table);
+  });
+  editor.querySelectorAll<HTMLElement>(`:scope > ${boxSelector}`).forEach((box) => {
+    if (!boxHasContent(box)) box.remove();
+  });
+}
+
 export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
-  { note, onChangeContent, focusRequest = 0, embedded = false, editable = true },
+  { note, onChangeContent, embedded = false, editable = true },
   ref
 ) => {
   const editorRef = useRef<HTMLDivElement>(null);
   const internalUpdateRef = useRef<{ noteId: string; content: string } | null>(null);
   const savedRange = useRef<Range | null>(null);
-  const emptyWritingBlock = useRef<HTMLDivElement | null>(null);
+  const activeBox = useRef<HTMLElement | null>(null);
+  const activeHost = useRef<HTMLElement | null>(null);
+  const lastBox = useRef<HTMLElement | null>(null);
   const latestNote = useRef(note);
-  if (latestNote.current.id !== note.id) savedRange.current = null;
   latestNote.current = note;
 
   useEffect(() => {
@@ -115,7 +213,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       const selection = window.getSelection();
       if (!selection?.rangeCount) return;
       const range = selection.getRangeAt(0);
-      if (editorRef.current?.contains(range.commonAncestorContainer)) {
+      if (activeHost.current?.contains(range.commonAncestorContainer)) {
         savedRange.current = range.cloneRange();
       }
     };
@@ -123,109 +221,142 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     return () => document.removeEventListener('selectionchange', rememberSelection);
   }, []);
 
-  // Synchronize content whenever external note or content changes
-  useEffect(() => {
-    if (editorRef.current) {
-      const internalUpdate = internalUpdateRef.current;
-      internalUpdateRef.current = null;
-      if (internalUpdate?.noteId === note.id && internalUpdate.content === note.content) {
-        // Change originated from user typing in this editor instance;
-        // consume the flag and don't re-render innerHTML to preserve cursor.
-        return;
-      }
-      // External change (e.g. note switched, or OCR Scribble text inserted)
-      const content = sanitizeNoteHtml(note.content);
-      if (editorRef.current.innerHTML !== content) {
-        savedRange.current = null;
-        editorRef.current.innerHTML = content;
-      }
-    }
-  }, [note.id, note.content]);
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    const objects = Array.from(editor.querySelectorAll<HTMLElement>(
-      ':scope > [data-note-positioned], :scope > img[data-picture-wrap="free"]',
-    ));
+    const internalUpdate = internalUpdateRef.current;
+    internalUpdateRef.current = null;
+    if (internalUpdate?.noteId === note.id && internalUpdate.content === note.content) return;
+    if (sanitizeNoteHtml(editor.innerHTML) === note.content && !activeBox.current) return;
+    activeBox.current = activeHost.current = null;
+    savedRange.current = null;
+    lastBox.current = null;
+    loadPageObjects(editor, note.content);
+  }, [note.id, note.content]);
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
     const fitContent = () => {
-      const bottom = objects.reduce((max, object) => Math.max(max, object.offsetTop + object.offsetHeight), 0);
+      const bottom = Array.from(editor.children).reduce((max, child) => {
+        const object = child as HTMLElement;
+        return Math.max(max, object.offsetTop + object.offsetHeight);
+      }, 0);
       editor.style.minHeight = bottom > 400 ? `${bottom}px` : '';
     };
-    fitContent();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(fitContent);
-    objects.forEach((object) => observer.observe(object));
-    return () => observer.disconnect();
-  }, [note.id, note.content]);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(fitContent);
+    const observed = new Set<Element>();
+    const update = () => {
+      for (const child of observed) {
+        if (child.parentElement === editor) continue;
+        observer?.unobserve(child);
+        observed.delete(child);
+      }
+      for (const child of editor.children) {
+        if (observed.has(child)) continue;
+        observer?.observe(child);
+        observed.add(child);
+      }
+      fitContent();
+    };
+    const mutations = new MutationObserver(update);
+    mutations.observe(editor, { childList: true });
+    editor.addEventListener('load', fitContent, true);
+    update();
+    return () => {
+      observer?.disconnect();
+      mutations.disconnect();
+      editor.removeEventListener('load', fitContent, true);
+    };
+  }, []);
 
-  // A single finger tap on the Draw surface hands the sheet the caret, so the
-  // on-screen keyboard has somewhere to type straight away.
-  useEffect(() => {
-    if (!focusRequest) return;
-    const editor = editorRef.current;
-    if (!editor) return;
-    editor.focus();
-    const selection = window.getSelection();
-    if (!selection) return;
-    const range = document.createRange();
-    range.selectNodeContents(editor);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }, [focusRequest]);
+  const finishEditing = () => {
+    const box = activeBox.current;
+    if (!box) return;
+    const host = activeHost.current;
+    activeBox.current = activeHost.current = null;
+    host?.blur();
+    host?.removeAttribute('contenteditable');
+    if (!boxHasContent(box)) box.remove();
+    savedRange.current = null;
+  };
 
-  const getEditorRange = (editor: HTMLElement) => {
+  useLayoutEffect(() => {
+    if (!editable) finishEditing();
+  }, [editable]);
+
+  const getEditorRange = (box: HTMLElement) => {
     const selection = window.getSelection();
     const current = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (current && editor.contains(current.commonAncestorContainer)) return current.cloneRange();
-    if (savedRange.current && editor.contains(savedRange.current.commonAncestorContainer)) {
-      return savedRange.current.cloneRange();
-    }
+    if (current && box.contains(current.commonAncestorContainer)) return current.cloneRange();
+    if (savedRange.current && box.contains(savedRange.current.commonAncestorContainer)) return savedRange.current.cloneRange();
     const end = document.createRange();
-    end.selectNodeContents(editor);
+    end.selectNodeContents(box);
     end.collapse(false);
     return end;
   };
 
-  const focusRange = (editor: HTMLElement, range: Range) => {
-    editor.focus({ preventScroll: true });
+  const focusRange = (box: HTMLElement, range: Range) => {
+    box.focus({ preventScroll: true });
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
   };
 
   const handleInput = () => {
-    if (editorRef.current) {
-      const content = sanitizeNoteHtml(editorRef.current.innerHTML);
-      internalUpdateRef.current = { noteId: note.id, content };
-      onChangeContent(content);
-    }
-  };
-
-  const discardEmptyWritingBlock = () => {
-    const block = emptyWritingBlock.current;
-    if (block && !block.textContent && !block.querySelector('img, a, table')) block.remove();
-    emptyWritingBlock.current = null;
-  };
-
-  const focusAt = (point: Point) => {
     const editor = editorRef.current;
     if (!editor) return;
-    discardEmptyWritingBlock();
-    const block = document.createElement('div');
-    block.dataset.notePositioned = 'true';
-    block.style.left = `${Math.round(Math.max(0, Math.min(editor.clientWidth - 48, point.x)))}px`;
-    block.style.top = `${Math.round(Math.max(0, point.y))}px`;
-    const paragraph = document.createElement('p');
-    paragraph.append(document.createElement('br'));
-    block.append(paragraph);
-    editor.append(block);
-    emptyWritingBlock.current = block;
-    const range = document.createRange();
-    range.setStart(paragraph, 0);
-    range.collapse(true);
-    focusRange(editor, range);
+    const content = sanitizeNoteHtml(Array.from(editor.children)
+      .filter((node) => !node.matches(boxSelector) || boxHasContent(node as HTMLElement))
+      .map((node) => node.outerHTML).join(''));
+    const previous = internalUpdateRef.current?.content ?? latestNote.current.content;
+    if (content === previous) return;
+    internalUpdateRef.current = { noteId: note.id, content };
+    onChangeContent(content);
+    return content;
+  };
+
+  const editBox = (box: HTMLElement, cell?: HTMLTableCellElement) => {
+    if (box.parentElement !== editorRef.current || !box.matches(boxSelector)) return;
+    const host = cell && box.contains(cell) ? cell : box.querySelector<HTMLTableCellElement>('td, th') ?? box;
+    if (activeHost.current !== host) finishEditing();
+    host.setAttribute('contenteditable', 'true');
+    activeBox.current = lastBox.current = box;
+    activeHost.current = host;
+    focusRange(host, getEditorRange(host));
+  };
+
+  const addBox = (point: Point, markup = '<p><br></p>') => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const box = createTextBox(point, Math.max(96, Math.min(320, editor.clientWidth - point.x)), markup);
+    editor.append(box);
+    return box;
+  };
+
+  const nextBoxPoint = () => ({
+    x: 0,
+    y: Math.max(-16, ...Array.from(editorRef.current?.children ?? [], (child) => {
+      const object = child as HTMLElement;
+      return object.offsetTop + object.offsetHeight;
+    })) + 16,
+  });
+
+  const focusAt = (point?: Point) => {
+    finishEditing();
+    const box = addBox(point ?? nextBoxPoint());
+    if (box) editBox(box);
+    return box;
+  };
+
+  const getWritingBox = () => {
+    if (activeHost.current) return activeHost.current;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const box = lastBox.current?.parentElement === editor && !lastBox.current.matches(tableBoxSelector) ? lastBox.current
+      : editor.querySelector<HTMLElement>(`:scope > ${boxSelector}:not(${tableBoxSelector})`) ?? addBox(nextBoxPoint());
+    if (box) editBox(box);
+    return activeHost.current ?? undefined;
   };
 
   const dropPictures = async (files: File[], point: Point) => {
@@ -260,8 +391,8 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
   };
 
   const handleFormat = async (command: string, value: string = '') => {
-    const editor = editorRef.current;
-    if (!editor?.isContentEditable) return;
+    const editor = getWritingBox();
+    if (!editor) return;
     const range = getEditorRange(editor);
     const noteId = note.id;
     if (command === 'paste') {
@@ -271,7 +402,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       } catch {
         throw new Error('Clipboard access was blocked. Use Ctrl+V or your device’s Paste command.');
       }
-      if (editorRef.current !== editor || latestNote.current.id !== noteId ||
+      if (activeHost.current !== editor || latestNote.current.id !== noteId ||
         !editor.isContentEditable || !editor.contains(range.commonAncestorContainer)) return;
       command = 'insertText';
     }
@@ -286,7 +417,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     handleInput();
   };
 
-  const insertMarkup = (editor: HTMLDivElement, range: Range, markup: string) => {
+  const insertMarkup = (editor: HTMLElement, range: Range, markup: string) => {
     focusRange(editor, range);
     if (!document.execCommand('insertHTML', false, markup)) {
       throw new Error('Could not insert content. Place the cursor on the page and try again.');
@@ -294,68 +425,91 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     handleInput();
   };
 
-  const insertFile = async (file: File, kind: 'picture' | 'pdf') => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const range = getEditorRange(editor);
-    const content = latestNote.current.content;
-    const noteId = note.id;
-    if (!file.size || file.size > MAX_FILE_BYTES) throw new Error('Choose a file between 1 byte and 5 MB.');
-    if (kind === 'picture' && !pictureType.test(file.type)) {
-      throw new Error('Choose a PNG, JPEG, GIF, WebP, AVIF or BMP picture.');
+  const replacePicture = async (image: HTMLImageElement, file: File) => {
+    const noteId = latestNote.current.id;
+    if (!file.size || file.size > MAX_FILE_BYTES || !pictureType.test(file.type)) {
+      throw new Error('Choose a PNG, JPEG, GIF, WebP, AVIF or BMP picture up to 5 MB.');
     }
-    if (kind === 'pdf' && !(await file.slice(0, 5).text()).startsWith('%PDF-')) {
-      throw new Error('The selected file is not a PDF.');
-    }
-
     const data = await readDataUrl(file);
-    if (editorRef.current !== editor || latestNote.current.id !== noteId) return;
-    if (!editor.isContentEditable) throw new Error('Switch to the Text tool before inserting a file.');
-    const element = document.createElement(kind === 'picture' ? 'img' : 'a');
-    if (element instanceof HTMLImageElement) {
-      element.src = data;
-      element.alt = file.name;
-    } else {
-      element.href = data.replace(/^data:[^,]*,/, 'data:application/pdf;base64,');
-      element.download = file.name;
-      element.textContent = file.name;
+    const editor = editorRef.current;
+    if (latestNote.current.id !== noteId || !editor?.contains(image)) return;
+    const replacement = image.cloneNode() as HTMLImageElement;
+    replacement.src = data;
+    replacement.alt = file.name;
+    const content = Array.from(editor.children, (node) => node === image ? replacement.outerHTML : node.outerHTML).join('');
+    if (new Blob([JSON.stringify({ ...latestNote.current, content })]).size > MAX_NOTE_BYTES) {
+      throw new Error('This picture would take the note above the 10 MB sync limit.');
     }
-    const markup = `<p>${element.outerHTML}</p><p><br></p>`;
-    const noteBytes = new Blob([JSON.stringify({
-      ...latestNote.current,
-      content: sanitizeNoteHtml(editor.innerHTML) + markup,
-    })]).size;
-    if (noteBytes > MAX_NOTE_BYTES) throw new Error('This file would take the note above the 10 MB sync limit.');
-    const target = latestNote.current.content === content && editor.contains(range.commonAncestorContainer)
-      ? range
-      : getEditorRange(editor);
-    insertMarkup(editor, target, markup);
+    image.src = data;
+    image.alt = file.name;
+    handleInput();
   };
 
-  // The unified page's toolbar drives formatting through this handle.
+  const insertFile = async (file: File, kind: 'picture' | 'pdf') => {
+    if (kind === 'picture') {
+      const box = activeBox.current;
+      const point = box ? { x: box.offsetLeft, y: box.offsetTop + box.offsetHeight + 16 } : nextBoxPoint();
+      await dropPictures([file], point);
+      return;
+    }
+    const noteId = note.id;
+    if (!file.size || file.size > MAX_FILE_BYTES) throw new Error('Choose a file between 1 byte and 5 MB.');
+    if (!(await file.slice(0, 5).text()).startsWith('%PDF-')) throw new Error('The selected file is not a PDF.');
+    const data = await readDataUrl(file);
+    if (!editorRef.current || latestNote.current.id !== noteId) return;
+    const link = document.createElement('a');
+    link.href = data.replace(/^data:[^,]*,/, 'data:application/pdf;base64,');
+    link.download = file.name;
+    link.textContent = file.name;
+    const markup = `<p>${link.outerHTML}</p><p><br></p>`;
+    const content = sanitizeNoteHtml(editorRef.current.innerHTML) + markup;
+    if (new Blob([JSON.stringify({ ...latestNote.current, content })]).size > MAX_NOTE_BYTES) {
+      throw new Error('This file would take the note above the 10 MB sync limit.');
+    }
+    const box = getWritingBox();
+    if (box) insertMarkup(box, getEditorRange(box), markup);
+  };
+
   useImperativeHandle(ref, () => ({
     focusEditor: () => {
-      const editor = editorRef.current;
-      if (editor) focusRange(editor, getEditorRange(editor));
+      const box = getWritingBox();
+      if (box) focusRange(box, getEditorRange(box));
     },
     focusAt,
+    insertTextBox: () => {
+      focusAt()?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    },
+    editBox,
+    finishEditing,
+    appendTextBox: (markup) => {
+      const box = addBox(nextBoxPoint(), sanitizeNoteHtml(markup));
+      if (box) handleInput();
+    },
     savePageObjects: handleInput,
     dropPictures,
+    replacePicture,
     applyFormat: handleFormat,
     insertTable: (rows, columns) => {
       const editor = editorRef.current;
       if (!editor) return;
-      const row = `<tr>${'<td><br></td>'.repeat(columns)}</tr>`;
-      insertMarkup(editor, getEditorRange(editor), `<table><tbody>${row.repeat(rows)}</tbody></table><p><br></p>`);
+      const box = createTextBox(nextBoxPoint(), null, '');
+      box.dataset.noteTable = 'true';
+      const table = createNoteTable(rows, columns);
+      box.append(table);
+      editor.append(box);
+      finishEditing();
+      handleInput();
+      return box;
     },
     insertFile,
   }));
 
   const handlePaste = (e: React.ClipboardEvent) => {
+    const box = activeBox.current;
+    if (!box) return;
     e.preventDefault();
     const text = e.clipboardData.getData('text/plain');
     document.execCommand('insertText', false, text);
-    handleInput();
   };
 
   // Tab indents a list item instead of moving focus out of the note.
@@ -363,19 +517,18 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
 
     const anchor = window.getSelection()?.anchorNode;
-    const editor = editorRef.current;
+    const editor = activeHost.current;
     if (!anchor || !editor || !editor.contains(anchor)) return;
 
     const element = anchor.nodeType === Node.ELEMENT_NODE ? (anchor as Element) : anchor.parentElement;
     const cell = element?.closest<HTMLTableCellElement>('td, th');
     if (cell) {
-      const cells = Array.from(cell.closest('table')?.querySelectorAll('td, th') ?? []);
+      const cells = Array.from(cell.closest('table')?.querySelectorAll<HTMLTableCellElement>('td, th') ?? []);
       const next = cells[cells.indexOf(cell) + (e.shiftKey ? -1 : 1)];
       if (next) {
         e.preventDefault();
-        const range = document.createRange();
-        range.selectNodeContents(next);
-        focusRange(editor, range);
+        const box = activeBox.current;
+        if (box) editBox(box, next);
       }
       return;
     }
@@ -404,10 +557,24 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
   const sheet = (
     <div
       ref={editorRef}
-      contentEditable={embedded ? editable : true}
-      suppressContentEditableWarning
-      onInput={handleInput}
-      onBlur={discardEmptyWritingBlock}
+      onInput={() => {
+        const cell = activeHost.current;
+        if (cell instanceof HTMLTableCellElement) {
+          delete cell.dataset.cellFormula;
+          const table = cell.closest('table');
+          if (table) recalculateTable(table);
+        }
+        handleInput();
+      }}
+      onDoubleClick={(event) => {
+        if (embedded || !(event.target instanceof Element)) return;
+        const box = event.target.closest<HTMLElement>(boxSelector);
+        if (box) editBox(box);
+        else {
+          const rect = event.currentTarget.getBoundingClientRect();
+          focusAt({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+        }
+      }}
       onDragStart={(event) => {
         if (event.target instanceof HTMLImageElement) event.preventDefault();
       }}
@@ -425,8 +592,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       onDrop={(event) => event.preventDefault()}
       onKeyDown={handleKeyDown}
       data-note-editor="true"
-      data-placeholder="Start typing on the page, or draw anywhere with the pen..."
-      className="editable-note-content min-h-[400px] text-base md:text-lg text-ink-light dark:text-ink-dark leading-relaxed outline-none focus:outline-none font-sans"
+      className="editable-note-content relative min-h-[400px] text-base md:text-lg text-ink-light dark:text-ink-dark leading-relaxed outline-none focus:outline-none font-sans"
       style={{
         wordBreak: 'break-word',
         overflowWrap: 'break-word'

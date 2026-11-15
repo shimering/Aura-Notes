@@ -81,7 +81,7 @@ const TOOL_OPTIONS: {
   {
     id: 'text',
     label: 'Text',
-    hint: 'Type directly on the page',
+    hint: 'Create or edit a text box',
     icon: <Type className="w-4 h-4" />,
     accent: 'bg-violet-600 text-white shadow-md'
   },

@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
-import { createPortal, flushSync } from 'react-dom';
+import { flushSync } from 'react-dom';
 import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode, TextBlockLayout, PageLayout } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint, eraseStrokesPartial } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
@@ -21,7 +21,7 @@ import {
   pointInBounds,
   reorderSelection,
   selectStrokeIds,
-  transformTextBlockBounds,
+  transformTextBlockPoint,
   unionBounds
 } from '../utils/inkSelection';
 import { SelectionOverlay, ResizeCorner } from './SelectionOverlay';
@@ -31,9 +31,11 @@ import { PenToolbar } from './PenToolbar';
 import { NoteRibbon } from './NoteRibbon';
 import type { TextEditorRef } from './TextEditor';
 import {
-  getPictureWrap, measurePicture, offsetWithin, pictureWraps, placePicture, pointInTextLayer, transformPicture,
-  type PictureWrap,
+  boxPlacement, boxSelector, measureBox, measurePicture, offsetWithin, pageBoxPlacement,
+  pointInTextLayer, snapObjectMove, transformBox, transformPicture,
 } from '../utils/pageObjects';
+import { tableBoxSelector } from '../utils/noteTable';
+import { TableToolbar } from './TableToolbar';
 import { SPenQuickMenu } from './SPenQuickMenu';
 import {
   clampPageZoom,
@@ -77,18 +79,13 @@ interface InkCanvasProps {
   /** The note's typed text, drawn between the back and front ink layers. */
   textLayer?: React.ReactNode;
   textEditor?: React.RefObject<TextEditorRef | null>;
-  pictureToolbarTarget?: HTMLElement | null;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
   /** A4 orientation of the note sheet. */
   pageLayout?: PageLayout;
   onChangePageLayout?: (layout: PageLayout) => void;
-  /** Saved page placement of the typed text block. */
+  /** Placement inherited from notes created before independent objects. */
   textLayout?: TextBlockLayout;
-  /** Reports a move / resize / rotate of the typed text block. */
-  onChangeTextLayout?: (layout: TextBlockLayout) => void;
-  /** Clears the typed text and its placement when the block is deleted. */
-  onDeleteText?: () => void;
   defaultTool?: PenTool;
   defaultColor?: string;
   defaultWidth?: number;
@@ -142,14 +139,7 @@ const SPEN_HOLD_ERASE_MS = 250;
 
 const SELECTION_TAP_SLOP = 7;
 
-/** One in-flight move / resize / rotate of the current selection. */
-type TransformDrag = {
-  kind: 'move' | 'resize' | 'rotate';
-  corner: ResizeCorner | null;
-  start: Point;
-  bounds: Bounds;
-  baseStrokes: Stroke[];
-};
+type TransformKind = 'move' | 'resize' | 'rotate' | 'width';
 
 /** One captured S Pen sample for on-device diagnostics. */
 type SpenLogEntry = {
@@ -166,6 +156,40 @@ type SpenLogEntry = {
 
 /** Value payload for a new log sample (timestamp, tool and kind are added). */
 type SpenLogSample = Omit<SpenLogEntry, 't' | 'kind' | 'tool'>;
+
+const OBJECT_HOLD_MS = 480;
+const SNAP_DISTANCE = 10;
+
+type ObjectHit = {
+  key: string | HTMLElement;
+  ids: string[];
+  bounds: Bounds;
+  box?: HTMLElement;
+  picture?: HTMLImageElement;
+  cell?: HTMLTableCellElement | null;
+};
+
+function inkObjectKey(stroke: Stroke) {
+  return stroke.groupId ? `drawing:${stroke.groupId}` : `stroke:${stroke.id}`;
+}
+
+function inkObjects(strokes: Stroke[]) {
+  const objects = new Map<string, Stroke[]>();
+  for (const stroke of strokes) {
+    const key = inkObjectKey(stroke);
+    const group = objects.get(key);
+    if (group) group.push(stroke);
+    else objects.set(key, [stroke]);
+  }
+  return objects;
+}
+
+function tableCellAt(box: HTMLElement, client: Point) {
+  return Array.from(box.querySelectorAll<HTMLTableCellElement>('td, th')).find((cell) => {
+    const rect = cell.getBoundingClientRect();
+    return pointInBounds(client, rect);
+  }) ?? box.querySelector<HTMLTableCellElement>('td, th');
+}
 
 const SPEN_LOG_LIMIT = 300;
 const SPEN_LOG_RENDER_LIMIT = 60;
@@ -200,14 +224,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   onToolChange,
   textLayer,
   textEditor,
-  pictureToolbarTarget,
   background = 'none',
   onChangeBackground,
   pageLayout = 'portrait',
   onChangePageLayout,
   textLayout,
-  onChangeTextLayout,
-  onDeleteText,
   defaultTool = 'fountain',
   defaultColor,
   defaultWidth = 4,
@@ -272,74 +293,33 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [pictureError, setPictureError] = useState('');
   const selectionPointerRef = useRef<number | null>(null);
   const selectionStartClient = useRef<Point | null>(null);
-  /** True when the note's typed text block is part of the selection. */
-  const [isTextSelected, setIsTextSelected] = useState<boolean>(false);
-  const isTextSelectedRef = useRef<boolean>(false);
+  const selectionDragged = useRef(false);
+  const [selectedBoxes, setSelectedBoxes] = useState<HTMLElement[]>([]);
+  const selectedBoxesRef = useRef<HTMLElement[]>([]);
+  const [tableCell, setTableCell] = useState<HTMLTableCellElement | null>(null);
+  const [editActions, setEditActions] = useState(false);
   const [marquee, setMarquee] = useState<MarqueeGeometry | null>(null);
   const marqueeRef = useRef<MarqueeGeometry | null>(null);
   const [liveTransform, setLiveTransform] = useState<InkTransform | null>(null);
   const liveTransformRef = useRef<InkTransform | null>(null);
-  const transformDragRef = useRef<TransformDrag | null>(null);
+  const transformDragRef = useRef(false);
   const transformCleanupRef = useRef<(() => void) | null>(null);
   const selectionBoundsRef = useRef<Bounds | null>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
-  const [textBlockLayout, setTextBlockLayout] = useState<TextBlockLayout>(
-    textLayout ?? IDENTITY_TEXT_BLOCK_LAYOUT
-  );
-  const textBlockLayoutRef = useRef<TextBlockLayout>(textBlockLayout);
+  const textBlockLayout = textLayout ?? IDENTITY_TEXT_BLOCK_LAYOUT;
+  const textBlockLayoutRef = useRef(textBlockLayout);
   textBlockLayoutRef.current = textBlockLayout;
-  /** Local (untransformed) box of the rendered text, measured from the DOM. */
-  const textBlockBoxRef = useRef<Bounds | null>(null);
-  const [textBlockBoxVersion, setTextBlockBoxVersion] = useState<number>(0);
-  /** Pointer type of the current Select drag, for touch-sized hit tests. */
+  const [objectSizeVersion, setObjectSizeVersion] = useState(0);
   const selectPointerTypeRef = useRef<string>('mouse');
+  const replacementInput = useRef<HTMLInputElement>(null);
+  const lastPick = useRef<{ point: Point; keys: (string | HTMLElement)[] } | null>(null);
 
-  /**
-   * Measures the typed text where it sits in the page before the block's
-   * move / resize / rotate is applied. The transform is switched off for the
-   * synchronous measurement and restored immediately, so no frame is painted
-   * in between. Text is only selectable when the block actually holds text.
-   */
   const getEditor = useCallback(() =>
     textLayerRef.current?.querySelector<HTMLElement>('[data-note-editor]') ?? null, []);
 
-  const measureTextBoxes = useCallback((): Bounds[] => {
-    const wrapper = textLayerRef.current;
-    const editor = getEditor();
-    if (!wrapper || !editor) return [];
-
-    const previousTransform = wrapper.style.transform;
-    wrapper.style.transform = 'none';
-    try {
-      const wrapperRect = wrapper.getBoundingClientRect();
-      const scale = zoomRef.current || 1;
-      const boxes: Bounds[] = [];
-      const add = (rect: DOMRect) => {
-        if (!rect.width || !rect.height) return;
-        boxes.push({
-          x: (rect.left - wrapperRect.left) / scale,
-          y: (rect.top - wrapperRect.top) / scale,
-          width: rect.width / scale,
-          height: rect.height / scale,
-        });
-      };
-      const range = document.createRange();
-      if (typeof range.getClientRects !== 'function') return boxes;
-      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if (!node.textContent?.trim()) continue;
-        range.selectNode(node);
-        Array.from(range.getClientRects()).forEach(add);
-      }
-      editor.querySelectorAll('table, hr').forEach((element) => add(element.getBoundingClientRect()));
-      return boxes;
-    } finally {
-      wrapper.style.transform = previousTransform;
-    }
-  }, [getEditor]);
-
-  const measureTextBlock = useCallback(() =>
-    measureTextBoxes().reduce<Bounds | null>(unionBounds, null), [measureTextBoxes]);
+  const getTextBoxes = useCallback(() => Array.from(
+    getEditor()?.querySelectorAll<HTMLElement>(`:scope > ${boxSelector}`) ?? [],
+  ), [getEditor]);
 
   const getPictures = useCallback((images?: HTMLImageElement[]) => {
     const editor = getEditor();
@@ -350,30 +330,33 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       .map((image) => measurePicture(image, editor, layer, textBlockLayoutRef.current));
   }, [getEditor]);
 
-  const setSelection = useCallback((ids: string[], includeText = false, pictures: HTMLImageElement[] = []) => {
-    let text = includeText;
-    if (text) {
-      const measured = measureTextBlock();
-      textBlockBoxRef.current = measured;
-      text = !!measured;
-    } else {
-      textBlockBoxRef.current = null;
-    }
-
+  const setSelection = useCallback((ids: string[], boxes: HTMLElement[] = [], pictures: HTMLImageElement[] = []) => {
     selectedPicturesRef.current = pictures;
     setSelectedPictures(pictures);
     selectedIdsRef.current = ids;
-    isTextSelectedRef.current = text;
+    selectedBoxesRef.current = boxes;
     setSelectedIds(ids);
-    setIsTextSelected(text);
-    setTextBlockBoxVersion((version) => version + 1);
-  }, [measureTextBlock]);
+    setSelectedBoxes(boxes);
+    setEditActions(false);
+    setTableCell(null);
+  }, []);
 
-  // The note's saved placement is authoritative (note switch, sync, undo of a
-  // text transform all arrive through this prop).
   useEffect(() => {
-    setTextBlockLayout(textLayout ?? IDENTITY_TEXT_BLOCK_LAYOUT);
-  }, [textLayout, noteId]);
+    const trackCell = () => {
+      const anchor = window.getSelection()?.anchorNode;
+      const element = anchor instanceof Element ? anchor : anchor?.parentElement;
+      const cell = element?.closest<HTMLTableCellElement>('td[contenteditable="true"], th[contenteditable="true"]');
+      if (cell && getEditor()?.contains(cell)) setTableCell(cell);
+    };
+    document.addEventListener('selectionchange', trackCell);
+    return () => document.removeEventListener('selectionchange', trackCell);
+  }, [getEditor]);
+
+  useEffect(() => {
+    if (!tableCell) return;
+    tableCell.dataset.currentCell = 'true';
+    return () => { delete tableCell.dataset.currentCell; };
+  }, [tableCell]);
 
   // Momentary S Pen Eraser State: active while pressing button, DEACTIVATES ON RELEASE
   const [isSpenEraserArmed, setIsSpenEraserArmed] = useState<boolean>(false);
@@ -414,6 +397,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       setSelectedTool(lastWritingToolRef.current);
     }
     selectionNoteId.current = noteId;
+    lastPick.current = null;
     transformCleanupRef.current?.();
     setSelection([]);
     selectionPointerRef.current = null;
@@ -434,34 +418,32 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (ids.length === 0) return;
     const alive = new Set(strokes.map((stroke) => stroke.id));
     const next = ids.filter((id) => alive.has(id));
-    if (next.length !== ids.length) setSelection(next, isTextSelectedRef.current, selectedPicturesRef.current);
+    if (next.length !== ids.length) setSelection(next, selectedBoxesRef.current, selectedPicturesRef.current);
   }, [strokes, setSelection]);
 
   useEffect(() => {
-    if (!isTextSelected && !selectedPictures.length) return;
-    const wrapper = textLayerRef.current;
     const editor = getEditor();
-    if (!wrapper || !editor) return;
+    if (!editor || (!selectedBoxes.length && !selectedPictures.length && !tableCell)) return;
     const remeasure = () => {
+      const boxes = selectedBoxesRef.current.filter((box) => editor.contains(box));
       const pictures = selectedPicturesRef.current.filter((image) => editor.contains(image));
-      if (pictures.length !== selectedPicturesRef.current.length) {
-        selectedPicturesRef.current = pictures;
-        setSelectedPictures(pictures);
+      if (boxes.length !== selectedBoxesRef.current.length || pictures.length !== selectedPicturesRef.current.length) {
+        setSelection(selectedIdsRef.current, boxes, pictures);
       }
-      if (isTextSelectedRef.current) textBlockBoxRef.current = measureTextBlock();
-      setTextBlockBoxVersion((version) => version + 1);
+      setTableCell((cell) => cell && !editor.contains(cell) ? null : cell);
+      setObjectSizeVersion((version) => version + 1);
     };
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure);
-    observer?.observe(wrapper);
+    [...selectedBoxes, ...selectedPictures].forEach((object) => observer?.observe(object));
     const mutations = new MutationObserver(remeasure);
     mutations.observe(editor, { childList: true, subtree: true, characterData: true });
-    wrapper.addEventListener('load', remeasure, true);
+    editor.addEventListener('load', remeasure, true);
     return () => {
       observer?.disconnect();
       mutations.disconnect();
-      wrapper.removeEventListener('load', remeasure, true);
+      editor.removeEventListener('load', remeasure, true);
     };
-  }, [getEditor, isTextSelected, measureTextBlock, selectedPictures]);
+  }, [getEditor, selectedBoxes, selectedPictures, setSelection, tableCell]);
 
   // Keep the canvas in sync when stylus defaults change in Settings. These only
   // fire on actual prop changes, so in-canvas tool picks are never clobbered.
@@ -1378,36 +1360,27 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const deleteSelection = useCallback(() => {
     const ids = new Set(selectedIdsRef.current);
-    const hadText = isTextSelectedRef.current;
-    const pictures = new Set(selectedPicturesRef.current);
-    if (ids.size === 0 && !hadText && !pictures.size) return;
-
-    // The typed text is not part of the ink undo history, so make clearing it
-    // an explicit choice rather than a single accidental tap.
-    if (hadText && !window.confirm('Delete the selected text block?')) return;
-
-    setSelection([]);
-    pictures.forEach((picture) => picture.remove());
-    if (hadText) {
-      const remaining = getPictures();
-      const editor = getEditor();
-      if (editor && remaining.length) {
-        editor.replaceChildren(...remaining.map(({ image, placement, editorOffset, width }) => {
-          placePicture(image, { x: placement.x - editorOffset.x, y: placement.y - editorOffset.y }, width, placement.rotation);
-          return image;
-        }));
-        textEditor?.current?.savePageObjects();
-      } else {
-        setTextBlockLayout(IDENTITY_TEXT_BLOCK_LAYOUT);
-        onDeleteText?.();
-      }
-    } else if (pictures.size) {
+    const boxes = selectedBoxesRef.current;
+    const pictures = selectedPicturesRef.current;
+    if (boxes.length && !window.confirm('Delete the selected text boxes or tables?')) return;
+    if (boxes.length || pictures.length) {
+      [...boxes, ...pictures].forEach((object) => object.remove());
       textEditor?.current?.savePageObjects();
     }
-    if (ids.size > 0) {
-      commitStrokes(strokesRef.current.filter((stroke) => !ids.has(stroke.id)));
-    }
-  }, [commitStrokes, getEditor, getPictures, onDeleteText, setSelection, textEditor]);
+    setSelection([]);
+    if (ids.size > 0) commitStrokes(strokesRef.current.filter((stroke) => !ids.has(stroke.id)));
+  }, [commitStrokes, setSelection, textEditor]);
+
+  const changeInkGroup = (ungroup: boolean) => {
+    const ids = new Set(selectedIdsRef.current);
+    const groupId = ungroup ? undefined : crypto.randomUUID();
+    commitStrokes(strokesRef.current.map((stroke) => ids.has(stroke.id) ? { ...stroke, groupId } : stroke));
+  };
+
+  const updateSelectedInk = (change: Partial<Pick<Stroke, 'color' | 'width'>>) => {
+    const ids = new Set(selectedIdsRef.current);
+    commitStrokes(strokesRef.current.map((stroke) => ids.has(stroke.id) ? { ...stroke, ...change } : stroke));
+  };
 
   const bringSelectionToFront = useCallback(() => {
     const ids = new Set(selectedIdsRef.current);
@@ -1426,129 +1399,147 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    * previewed locally while the drag runs and committed as one undo step on
    * release, exactly like an eraser drag.
    */
-  const beginTransform = useCallback(
-    (kind: TransformDrag['kind'], corner: ResizeCorner | null, e: React.PointerEvent) => {
-      const bounds = selectionBoundsRef.current;
-      if (!bounds || transformDragRef.current || e.button !== 0) return;
-      e.preventDefault();
-      e.stopPropagation();
+  const beginTransform = useCallback((
+    kind: TransformKind, corner: ResizeCorner | null, e: React.PointerEvent,
+    click?: { tap: () => void; hold?: () => void },
+  ) => {
+    const bounds = selectionBoundsRef.current;
+    const editor = getEditor();
+    const layer = textLayerRef.current;
+    if (!bounds || transformDragRef.current || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
 
-      const start = getPagePoint(e.clientX, e.clientY);
-      const drag: TransformDrag = {
-        kind,
-        corner,
-        start,
-        bounds,
-        baseStrokes: strokesRef.current
-      };
-      transformDragRef.current = drag;
-      const baseTextLayout = textBlockLayoutRef.current;
-      const pictures = isTextSelectedRef.current ? [] : getPictures(selectedPicturesRef.current);
-      const pointerId = e.pointerId;
+    const startClient = { x: e.clientX, y: e.clientY };
+    const start = getPagePoint(startClient.x, startClient.y);
+    const startZoom = zoomRef.current;
+    const baseStrokes = strokesRef.current;
+    const ids = new Set(selectedIdsRef.current);
+    transformDragRef.current = true;
+    const baseLayout = textBlockLayoutRef.current;
+    const pictures = getPictures(selectedPicturesRef.current);
+    const editorOffset = editor && layer ? offsetWithin(editor, layer) : { x: 0, y: 0 };
+    const boxes = layer ? selectedBoxesRef.current.map((box) => ({
+      box, placement: boxPlacement(box, layer), pagePlacement: pageBoxPlacement(box, layer, baseLayout),
+      width: box.offsetWidth, previousWidth: box.style.width,
+    })) : [];
+    const widthBox = kind === 'width' ? boxes[0] : null;
+    const neighbors = kind === 'move' ? [
+      ...Array.from(inkObjects(baseStrokes).values(), (group) =>
+        group.some((stroke) => ids.has(stroke.id)) ? null : getStrokesBounds(group)),
+      ...getPictures().filter(({ image }) => !selectedPicturesRef.current.includes(image)).map(({ bounds }) => bounds),
+      ...(layer ? getTextBoxes().filter((box) => !selectedBoxesRef.current.includes(box))
+        .map((box) => measureBox(box, layer, baseLayout)) : []),
+    ].filter((box): box is Bounds => !!box) : [];
+    const pointerId = e.pointerId;
+    const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+    const anchor = {
+      x: corner === 'nw' || corner === 'sw' ? bounds.x + bounds.width : bounds.x,
+      y: corner === 'nw' || corner === 'ne' ? bounds.y + bounds.height : bounds.y,
+    };
+    const startDistance = Math.hypot(start.x - anchor.x, start.y - anchor.y);
+    let moved = false;
+    let holdTimer: number | undefined;
 
-      const center: Point = {
-        x: bounds.x + bounds.width / 2,
-        y: bounds.y + bounds.height / 2
-      };
-      // Resizing scales about the corner opposite the one being dragged.
-      const anchor: Point = {
-        x: corner === 'nw' || corner === 'sw' ? bounds.x + bounds.width : bounds.x,
-        y: corner === 'nw' || corner === 'ne' ? bounds.y + bounds.height : bounds.y
-      };
-      const startDistance = Math.hypot(start.x - anchor.x, start.y - anchor.y);
+    const computeTransform = (point: Point): InkTransform => {
+      if (kind === 'move') {
+        const delta = snapObjectMove(bounds, { x: point.x - start.x, y: point.y - start.y },
+          neighbors, SNAP_DISTANCE / zoomRef.current);
+        return { ...IDENTITY_INK_TRANSFORM, translateX: delta.x, translateY: delta.y };
+      }
+      if (kind === 'rotate') {
+        const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+        const angle = Math.atan2(point.y - center.y, point.x - center.x);
+        return { ...IDENTITY_INK_TRANSFORM, originX: center.x, originY: center.y, rotation: angle - startAngle };
+      }
+      const distance = Math.hypot(point.x - anchor.x, point.y - anchor.y);
+      const scale = startDistance < 1 ? 1 : Math.min(20, Math.max(0.05, distance / startDistance));
+      return { ...IDENTITY_INK_TRANSFORM, originX: anchor.x, originY: anchor.y, scale };
+    };
 
-      const computeTransform = (point: Point): InkTransform => {
-        if (kind === 'move') {
-          return {
-            ...IDENTITY_INK_TRANSFORM,
-            originX: center.x,
-            originY: center.y,
-            translateX: point.x - start.x,
-            translateY: point.y - start.y
-          };
+    const onMove = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId || isPinchingRef.current) return;
+      const dx = event.clientX - startClient.x;
+      const dy = event.clientY - startClient.y;
+      if (!moved && Math.hypot(dx, dy) < 5) return;
+      const point = { x: start.x + dx / startZoom, y: start.y + dy / startZoom };
+      moved = true;
+      window.clearTimeout(holdTimer);
+      if (widthBox) {
+        const local = pointInTextLayer(point, widthBox.pagePlacement);
+        const localStart = pointInTextLayer(start, widthBox.pagePlacement);
+        const limit = Math.max(widthBox.width, (editor?.clientWidth ?? 8192) - widthBox.box.offsetLeft);
+        const width = Math.max(64, Math.min(8192, limit, Math.round(widthBox.width + local.x - localStart.x)));
+        widthBox.box.style.width = `${width}px`;
+        setObjectSizeVersion((version) => version + 1);
+        return;
+      }
+      const transform = computeTransform(point);
+      if (ids.size) previewStrokesRef.current = applyInkTransform(baseStrokes, ids, transform);
+      pictures.forEach((picture) => transformPicture(picture, baseLayout, transform, false));
+      boxes.forEach(({ box, placement, width }) =>
+        transformBox(box, placement, editorOffset, width, baseLayout, transform, false));
+      liveTransformRef.current = transform;
+      setLiveTransform(transform);
+      redraw();
+    };
+
+    const finish = (commit: boolean) => {
+      window.clearTimeout(holdTimer);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      transformCleanupRef.current = null;
+      transformDragRef.current = false;
+
+      if (widthBox) {
+        if (commit && moved && editor?.contains(widthBox.box)) textEditor?.current?.savePageObjects();
+        else widthBox.box.style.width = widthBox.previousWidth;
+        setObjectSizeVersion((version) => version + 1);
+        return;
+      }
+
+      const transform = liveTransformRef.current;
+      const preview = previewStrokesRef.current;
+      liveTransformRef.current = null;
+      previewStrokesRef.current = null;
+      setLiveTransform(null);
+      for (const object of [...boxes.map(({ box }) => box), ...pictures.map(({ image }) => image)]) {
+        object.style.translate = '';
+        object.style.transform = '';
+      }
+
+      if (commit && transform && !isIdentityTransform(transform)) {
+        const livePictures = pictures.filter(({ image }) => editor?.contains(image));
+        const liveBoxes = boxes.filter(({ box }) => editor?.contains(box));
+        livePictures.forEach((picture) => transformPicture(picture, baseLayout, transform, true));
+        liveBoxes.forEach(({ box, placement, width }) =>
+          transformBox(box, placement, editorOffset, width, baseLayout, transform, true));
+        if (livePictures.length || liveBoxes.length) {
+          textEditor?.current?.savePageObjects();
+          setObjectSizeVersion((version) => version + 1);
         }
-        if (kind === 'rotate') {
-          const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
-          const angle = Math.atan2(point.y - center.y, point.x - center.x);
-          return {
-            ...IDENTITY_INK_TRANSFORM,
-            originX: center.x,
-            originY: center.y,
-            rotation: angle - startAngle
-          };
-        }
-        const distance = Math.hypot(point.x - anchor.x, point.y - anchor.y);
-        const scale = startDistance < 1 ? 1 : Math.min(20, Math.max(0.05, distance / startDistance));
-        return { ...IDENTITY_INK_TRANSFORM, originX: anchor.x, originY: anchor.y, scale };
-      };
-
-      const onMove = (event: PointerEvent) => {
-        if (event.pointerId !== pointerId || isPinchingRef.current) return;
-        const point = getPagePoint(event.clientX, event.clientY);
-        if (kind === 'move' && !liveTransformRef.current &&
-          Math.hypot(point.x - start.x, point.y - start.y) * zoomRef.current < 3) return;
-        const transform = computeTransform(point);
-        previewStrokesRef.current = applyInkTransform(
-          drag.baseStrokes,
-          new Set(selectedIdsRef.current),
-          transform
-        );
-        pictures.forEach((picture) => transformPicture(picture, baseTextLayout, transform, false));
-        liveTransformRef.current = transform;
-        setLiveTransform(transform);
+        if (preview && ids.size && strokesRef.current === baseStrokes) commitStrokes(preview);
+        else redraw();
+      } else {
         redraw();
-      };
+      }
+      if (commit && !moved) click?.tap();
+      if (moved) lastPick.current = null;
+    };
 
-      const finish = (commit: boolean) => {
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
-        window.removeEventListener('pointercancel', onCancel);
-        transformCleanupRef.current = null;
-        transformDragRef.current = null;
-
-        const transform = liveTransformRef.current;
-        const preview = previewStrokesRef.current;
-        liveTransformRef.current = null;
-        setLiveTransform(null);
-
-        pictures.forEach(({ image }) => {
-          image.style.translate = '';
-          image.style.transform = '';
-        });
-        if (commit && transform && !isIdentityTransform(transform)) {
-          if (pictures.length) {
-            pictures.forEach((picture) => transformPicture(picture, baseTextLayout, transform, true));
-            textEditor?.current?.savePageObjects();
-            setTextBlockBoxVersion((version) => version + 1);
-          }
-          if (preview && selectedIdsRef.current.length > 0) {
-            commitStrokes(preview);
-          } else {
-            previewStrokesRef.current = null;
-            redraw();
-          }
-
-          if (isTextSelectedRef.current && onChangeTextLayout) {
-            const nextLayout = composeTextBlockLayout(baseTextLayout, transform);
-            setTextBlockLayout(nextLayout);
-            onChangeTextLayout(nextLayout);
-          }
-        } else {
-          previewStrokesRef.current = null;
-          redraw();
-        }
-      };
-
-      const onUp = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(true); };
-      const onCancel = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(false); };
-
-      window.addEventListener('pointermove', onMove);
-      window.addEventListener('pointerup', onUp);
-      window.addEventListener('pointercancel', onCancel);
-      transformCleanupRef.current = () => finish(false);
-    },
-    [commitStrokes, getPagePoint, getPictures, onChangeTextLayout, redraw, textEditor]
-  );
+    const onUp = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(true); };
+    const onCancel = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(false); };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    transformCleanupRef.current = () => finish(false);
+    if (click?.hold) holdTimer = window.setTimeout(() => {
+      finish(false);
+      lastPick.current = null;
+      click.hold?.();
+    }, OBJECT_HOLD_MS);
+  }, [commitStrokes, getEditor, getPagePoint, getPictures, getTextBoxes, redraw, textEditor]);
 
   const enableText = () => {
     if (selectedToolRef.current === 'text') return;
@@ -1559,43 +1550,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     });
   };
 
-  const editSelectedText = () => {
+  const editSelectedText = (box = selectedBoxesRef.current[0], cell = tableCell) => {
+    if (!box) return;
     enableText();
-    textEditor?.current?.focusEditor();
-  };
-
-  const setPictureWrap = (wrap: PictureWrap) => {
-    const pictures = getPictures(selectedPicturesRef.current);
-    const editor = getEditor();
-    const layer = textLayerRef.current;
-    if (!editor || !layer || !pictures.length) return;
-    for (const { image, placement, editorOffset, width } of pictures) {
-      if (wrap === getPictureWrap(image)) continue;
-      if (wrap === 'free') {
-        editor.append(image);
-        placePicture(image, { x: placement.x - editorOffset.x, y: placement.y - editorOffset.y }, width, placement.rotation);
-      } else {
-        if (getPictureWrap(image) === 'free') {
-          const blocks = Array.from(editor.children).filter((child): child is HTMLElement =>
-            child instanceof HTMLElement && child !== image && !child.matches('[data-picture-wrap="free"]'),
-          );
-          const anchor = blocks.find((block) => offsetWithin(block, layer).y + block.offsetHeight >= placement.y)
-            ?? blocks[blocks.length - 1];
-          if (anchor?.matches('[data-note-positioned]')) {
-            const line = anchor.querySelector('p') ?? anchor;
-            line.prepend(image);
-          } else if (anchor) {
-            editor.insertBefore(image, anchor);
-          }
-        }
-        image.dataset.pictureWrap = wrap;
-        image.style.left = '';
-        image.style.top = '';
-        image.style.rotate = '';
-      }
-    }
-    textEditor?.current?.savePageObjects();
-    setTextBlockBoxVersion((version) => version + 1);
+    setSelection([]);
+    setTableCell(cell);
+    textEditor?.current?.editBox(box, cell ?? undefined);
   };
 
   const handlePictureDrop = async (e: React.DragEvent) => {
@@ -1607,12 +1567,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     try {
       const images = await textEditor?.current?.dropPictures(files, point);
       if (!images?.length || !images.every((image) => getEditor()?.contains(image))) return;
-      getEditor()?.blur();
+      textEditor?.current?.finishEditing();
       if (selectedToolRef.current === 'text') {
         selectedToolRef.current = lastWritingToolRef.current;
         setSelectedTool(lastWritingToolRef.current);
       }
-      setSelection([], false, images);
+      setSelection([], [], images);
     } catch (error) {
       setPictureError(error instanceof Error ? error.message : 'Could not add the pictures.');
     }
@@ -1627,46 +1587,107 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     return { x: local.x - offset.x, y: local.y - offset.y };
   };
 
-  const pickObject = (point: Point, tolerance: number, textBoxes = measureTextBoxes()) => {
-    const front = hitTestStroke(strokesRef.current.filter((stroke) => stroke.layer !== 'back'), point, tolerance);
-    if (front) return { stroke: front };
-    const picture = getPictures().reverse().find(({ bounds }) => pointInBounds(point, bounds));
-    if (picture) return { picture };
-    const local = pointInTextLayer(point, textBlockLayoutRef.current);
-    if (textBoxes.some(({ x, y, width, height }) =>
-      pointInBounds(local, { x: x - 4, y: y - 4, width: width + 8, height: height + 8 })
-    )) return { text: true };
-    const back = hitTestStroke(strokesRef.current, point, tolerance);
-    return back ? { stroke: back } : null;
+  const startTextBox = (point?: Point) => {
+    lastPick.current = null;
+    setSelection([]);
+    enableText();
+    if (!point) textEditor?.current?.insertTextBox();
+    else if (textEditor?.current) textEditor.current.focusAt(pointInEditor(point));
+    else onFingerTap?.();
+  };
+
+  const pickObjects = (point: Point, client: Point, tolerance: number): ObjectHit[] => {
+    const strokes = strokesRef.current;
+    const drawings = inkObjects(strokes);
+    const hits: ObjectHit[] = [];
+    const seen = new Set<string>();
+    const pickInk = (back: boolean) => {
+      for (let i = strokes.length - 1; i >= 0; i--) {
+        const stroke = strokes[i];
+        if ((stroke.layer === 'back') !== back) continue;
+        const key = inkObjectKey(stroke);
+        if (seen.has(key) || !hitTestStroke([stroke], point, tolerance)) continue;
+        const group = drawings.get(key)!;
+        const bounds = getStrokesBounds(group);
+        if (!bounds) continue;
+        seen.add(key);
+        hits.push({ key, ids: group.map(({ id }) => id), bounds });
+      }
+    };
+    pickInk(false);
+    const layer = textLayerRef.current;
+    const editor = getEditor();
+    if (layer && editor) {
+      const layout = textBlockLayoutRef.current;
+      for (const child of Array.from(editor.children).reverse()) {
+        if (!(child instanceof HTMLElement)) continue;
+        const picture = child instanceof HTMLImageElement ? child : undefined;
+        const box = child.matches(boxSelector) ? child : undefined;
+        if (!box && !picture) continue;
+        const placement = pageBoxPlacement(child, layer, layout);
+        const local = pointInTextLayer(point, placement);
+        if (!pointInBounds(local, { x: 0, y: 0, width: child.offsetWidth, height: child.offsetHeight })) continue;
+        hits.push({
+          key: child, ids: [], box, picture, bounds: measureBox(child, layer, layout),
+          cell: box?.matches(tableBoxSelector) ? tableCellAt(box, client) : null,
+        });
+      }
+    }
+    pickInk(true);
+    return hits;
   };
 
   const handleSelectPointerDown = (e: React.PointerEvent) => {
-    selectPointerTypeRef.current = e.pointerType;
-    const point = getPagePoint(e.clientX, e.clientY);
-    const hit = pickObject(point, e.pointerType === 'touch' ? 14 : 8);
+    const pointerType = e.pointerType;
+    selectPointerTypeRef.current = pointerType;
+    const client = { x: e.clientX, y: e.clientY };
+    const point = getPagePoint(client.x, client.y);
+    const hits = pickObjects(point, client, (e.pointerType === 'touch' ? 10 : 6) / zoomRef.current);
+    const selectedHit = hits.find(({ box, picture, ids }) =>
+      (box && selectedBoxesRef.current.includes(box)) ||
+      (picture && selectedPicturesRef.current.includes(picture)) ||
+      (ids.length > 0 && ids.every((id) => selectedIdsRef.current.includes(id))));
+    const hit = selectedHit ?? hits[0];
+    const previousBounds = selectionBoundsRef.current;
+    const insideFrame = previousBounds && pointInBounds(point, previousBounds);
+    const selectHit = (object: ObjectHit) => {
+      setSelection(object.ids, object.box ? [object.box] : [], object.picture ? [object.picture] : []);
+      selectionBoundsRef.current = object.bounds;
+      if (object.cell) setTableCell(object.cell);
+    };
 
-    if (hit) {
-      const ids = hit.stroke ? [hit.stroke.id] : [];
-      const pictures = hit.picture ? [hit.picture.image] : [];
-      const bounds = hit.picture?.bounds ?? (hit.stroke ? getStrokesBounds([hit.stroke]) :
-        textBlockBoxRef.current);
-      setSelection(ids, !!hit.text, pictures);
-      const textBounds = textBlockBoxRef.current;
-      selectionBoundsRef.current = hit.text && textBounds
-        ? transformTextBlockBounds(textBounds, textBlockLayoutRef.current) : bounds;
-      beginTransform('move', null, e);
+    if (hit || insideFrame) {
+      if (hit && !selectedHit) selectHit(hit);
+      beginTransform('move', null, e, {
+        tap: () => {
+          if (!hits.length) {
+            if (pointerType === 'touch') startTextBox(point);
+            return;
+          }
+          const keys = hits.map(({ key }) => key);
+          const previous = lastPick.current;
+          const close = previous && Math.hypot(point.x - previous.point.x, point.y - previous.point.y)
+            * zoomRef.current <= SELECTION_TAP_SLOP;
+          const same = close && keys.length === previous.keys.length && keys.every((key, index) => key === previous.keys[index]);
+          const index = same && selectedHit ? (hits.indexOf(selectedHit) + 1) % hits.length : 0;
+          selectHit(hits[index]);
+          lastPick.current = { point, keys };
+        },
+        hold: hit && (() => {
+          selectHit(hit);
+          if (hit.box) editSelectedText(hit.box, hit.cell ?? null);
+          else setEditActions(true);
+        }),
+      });
       return;
     }
 
+    lastPick.current = null;
     setSelection([]);
-    const geometry: MarqueeGeometry = {
-      mode: selectModeRef.current,
-      start: point,
-      end: point,
-      points: [point]
-    };
+    const geometry: MarqueeGeometry = { mode: selectModeRef.current, start: point, end: point, points: [point] };
     selectionPointerRef.current = e.pointerId;
-    selectionStartClient.current = { x: e.clientX, y: e.clientY };
+    selectionStartClient.current = client;
+    selectionDragged.current = false;
     marqueeRef.current = geometry;
   };
 
@@ -1685,30 +1706,38 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setMarquee(next);
   };
 
-  const finalizeSelection = () => {
+  const selectionTravel = (clientX: number, clientY: number) => {
+    const start = selectionStartClient.current;
+    return start ? Math.hypot(clientX - start.x, clientY - start.y) : 0;
+  };
+
+  const finalizeSelection = (clientX: number, clientY: number) => {
     const geometry = marqueeRef.current;
     selectionPointerRef.current = null;
     marqueeRef.current = null;
     setMarquee(null);
     if (!geometry) return;
 
-    const isTap = Math.hypot(geometry.end.x - geometry.start.x, geometry.end.y - geometry.start.y)
-      * zoomRef.current < SELECTION_TAP_SLOP && (geometry.points?.length ?? 0) < 3;
+    const isTap = !selectionDragged.current && selectionTravel(clientX, clientY) < SELECTION_TAP_SLOP;
     if (isTap) {
-      if (selectPointerTypeRef.current === 'touch') {
-        enableText();
-        if (textEditor?.current) textEditor.current.focusAt(pointInEditor(geometry.start));
-        else onFingerTap?.();
+      if (selectPointerTypeRef.current === 'touch' || selectedToolRef.current === 'text') {
+        startTextBox(geometry.start);
       }
       return;
     }
 
-    const ids = selectStrokeIds(strokesRef.current, geometry);
-    const textHit = measureTextBoxes().some((box) =>
-      marqueeSelectsTextBlock(geometry, transformTextBlockBounds(box, textBlockLayoutRef.current))
-    );
+    const strokes = strokesRef.current;
+    const ids = new Set(selectStrokeIds(strokes, geometry));
+    const groups = new Set(strokes.filter((stroke) => ids.has(stroke.id)).map(inkObjectKey));
+    const layer = textLayerRef.current;
+    const boxes = layer ? getTextBoxes().filter((box) =>
+      marqueeSelectsTextBlock(geometry, measureBox(box, layer, textBlockLayoutRef.current))) : [];
     const pictures = getPictures().filter(({ bounds }) => marqueeSelectsTextBlock(geometry, bounds));
-    setSelection(ids, textHit, pictures.map(({ image }) => image));
+    setSelection(strokes.filter((stroke) => groups.has(inkObjectKey(stroke))).map(({ id }) => id),
+      boxes, pictures.map(({ image }) => image));
+    if (boxes.length === 1 && boxes[0].matches(tableBoxSelector)) {
+      setTableCell(boxes[0].querySelector<HTMLTableCellElement>('td, th'));
+    }
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -1718,32 +1747,25 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     zeroPressureSamplesRef.current = 0;
 
     const touch = e.pointerType === 'touch';
-    const mousePicture = e.pointerType === 'mouse' &&
+    const mousePicture = e.pointerType === 'mouse' && activeTool !== 'text' && activeTool !== 'select' &&
       getPictures().some(({ bounds }) => pointInBounds(getPagePoint(e.clientX, e.clientY), bounds));
-    const selecting = touch || mousePicture || activeTool === 'select';
+    const selecting = touch || mousePicture || activeTool === 'select' || activeTool === 'text';
     if (!selecting && isStylusOnly && e.pointerType !== 'pen') return;
     if (touch && (!e.isPrimary || touchCountRef.current > 1 || isStylusActiveRef.current ||
       e.width > 40 || e.height > 40)) return;
 
     if (activeTool === 'text') {
-      if (!touch && !mousePicture) return;
-      if (e.target instanceof Element && e.target.closest('a[download]')) return;
-      const point = getPagePoint(e.clientX, e.clientY);
-      const local = pointInTextLayer(point, textBlockLayoutRef.current);
-      const insideText = measureTextBoxes().some(({ x, y, width, height }) =>
-        pointInBounds(local, { x: x - 8, y: y - 10, width: width + 16, height: height + 20 })
-      );
-      const targetBlock = e.target instanceof Element ? e.target.closest('[data-note-positioned]') : null;
-      const caret = window.getSelection()?.anchorNode;
-      const insideWritingBlock = !!caret && targetBlock?.contains(caret);
-      if (!(e.target instanceof HTMLImageElement) &&
-        (insideText || insideWritingBlock)) return;
-      e.preventDefault();
-      const editor = getEditor();
-      editor?.blur();
-      if (editor?.contains(window.getSelection()?.anchorNode ?? null)) window.getSelection()?.removeAllRanges();
-      selectedToolRef.current = lastWritingToolRef.current;
-      setSelectedTool(lastWritingToolRef.current);
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest('a[download]')) return;
+      const cell = target?.closest<HTMLTableCellElement>('td, th');
+      const editingTable = cell?.closest<HTMLElement>(tableBoxSelector);
+      if (cell && editingTable?.querySelector('[contenteditable="true"]')) {
+        if (!cell.isContentEditable) textEditor?.current?.editBox(editingTable, cell);
+        setTableCell(cell);
+        return;
+      }
+      if (target?.closest('[contenteditable="true"]')) return;
+      textEditor?.current?.finishEditing();
     }
 
     try {
@@ -1752,14 +1774,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       // A synthetic pointer may have no active capture.
     }
 
-    if (selecting || activeTool === 'text') {
+    if (selecting) {
       e.preventDefault();
       handleSelectPointerDown(e);
       return;
     }
 
     if (e.pointerType === 'pen') isStylusActiveRef.current = true;
-    if (selectedIdsRef.current.length || selectedPicturesRef.current.length || isTextSelectedRef.current) setSelection([]);
+    if (selectedIdsRef.current.length || selectedPicturesRef.current.length || selectedBoxesRef.current.length) setSelection([]);
 
     const isEraserNow = isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser';
     const startPoint = getCanvasPoint(e);
@@ -1784,9 +1806,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handlePointerMove = (e: React.PointerEvent) => {
     if (isPinchingRef.current || (e.pointerType === 'touch' && !e.isPrimary)) return;
     if (selectionPointerRef.current === e.pointerId) {
-      if (marqueeRef.current && (marquee ||
-        Math.hypot(e.clientX - (selectionStartClient.current?.x ?? e.clientX),
-          e.clientY - (selectionStartClient.current?.y ?? e.clientY)) >= SELECTION_TAP_SLOP)) {
+      if (selectionTravel(e.clientX, e.clientY) >= SELECTION_TAP_SLOP) selectionDragged.current = true;
+      if (selectionDragged.current) {
         updateMarquee(getPagePoint(e.clientX, e.clientY));
       }
       return;
@@ -1890,7 +1911,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (isPinchingRef.current) return;
     if (selectionPointerRef.current === e.pointerId) {
       updateMarquee(getPagePoint(e.clientX, e.clientY));
-      finalizeSelection();
+      finalizeSelection(e.clientX, e.clientY);
       return;
     }
     if (e.pointerType === 'touch' || (e.pointerType === 'pen' && spenTipDownRef.current)) return;
@@ -1930,8 +1951,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     selectedToolRef.current = tool;
 
     if (tool === 'text') {
+      setSelection([]);
       onRequestTextFocus?.();
+    } else {
+      textEditor?.current?.finishEditing();
     }
+    lastPick.current = null;
     if (tool !== 'select') {
       setSelection([]);
       marqueeRef.current = null;
@@ -1946,20 +1971,26 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const spenLogEntries = spenLogRef.current.slice(-SPEN_LOG_RENDER_LIMIT).reverse();
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const currentPictureWrap = selectedPictures.length &&
-    selectedPictures.every((picture) => getPictureWrap(picture) === getPictureWrap(selectedPictures[0]))
-      ? getPictureWrap(selectedPictures[0]) : '';
+  const selectedDrawings = new Set(strokes.filter((stroke) => selectedIdSet.has(stroke.id)).map(inkObjectKey));
+  const hasGroupedInk = strokes.some((stroke) => selectedIdSet.has(stroke.id) && stroke.groupId);
   const selectionBounds = useMemo(() => {
-    const strokeBounds = getStrokesBounds(
-      strokes.filter((stroke) => selectedIdSet.has(stroke.id))
-    );
-    const local = isTextSelected ? textBlockBoxRef.current : null;
-    const textBounds = local ? transformTextBlockBounds(local, textBlockLayout) : null;
-    return getPictures(selectedPictures).reduce<Bounds | null>(
-      (bounds, picture) => unionBounds(bounds, picture.bounds),
-      unionBounds(strokeBounds, textBounds)
-    );
-  }, [strokes, selectedIdSet, isTextSelected, textBlockBoxVersion, textBlockLayout, selectedPictures, getPictures]);
+    const layout = textBlockLayout;
+    const layer = textLayerRef.current;
+    let bounds = getStrokesBounds(strokes.filter((stroke) => selectedIdSet.has(stroke.id)));
+    for (const picture of getPictures(selectedPictures)) bounds = unionBounds(bounds, picture.bounds);
+    if (layer) for (const box of selectedBoxes) {
+      if (layer.contains(box)) bounds = unionBounds(bounds, measureBox(box, layer, layout));
+    }
+    return bounds;
+  }, [strokes, selectedIdSet, selectedBoxes, objectSizeVersion, textBlockLayout, selectedPictures, getPictures]);
+  const soleTextBox = selectedBoxes.length === 1 && !selectedIds.length && !selectedPictures.length
+    && !selectedBoxes[0].matches(tableBoxSelector) ? selectedBoxes[0] : null;
+  const canScale = !selectedBoxes.some((box) => box.matches(tableBoxSelector));
+  const widthHandle = soleTextBox && textLayerRef.current && selectionBounds ? (() => {
+    const placement = pageBoxPlacement(soleTextBox, textLayerRef.current, textBlockLayout);
+    const edge = transformTextBlockPoint({ x: soleTextBox.offsetWidth, y: soleTextBox.offsetHeight / 2 }, placement);
+    return { x: edge.x - selectionBounds.x, y: edge.y - selectionBounds.y };
+  })() : null;
   selectionBoundsRef.current = selectionBounds;
 
   /** Outline for the rubber band currently being dragged. */
@@ -1997,17 +2028,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     return <rect x={x} y={y} width={width} height={height} {...common} />;
   };
 
-  const displayTextLayout =
-    isTextSelected && liveTransform
-      ? composeTextBlockLayout(textBlockLayout, liveTransform)
-      : textBlockLayout;
-  const textLayerStyle: React.CSSProperties | undefined = isIdentityTextBlockLayout(
-    displayTextLayout
-  )
+  const textLayerStyle: React.CSSProperties | undefined = isIdentityTextBlockLayout(textBlockLayout)
     ? undefined
     : {
         transformOrigin: '0 0',
-        transform: `translate(${displayTextLayout.x}px, ${displayTextLayout.y}px) rotate(${displayTextLayout.rotation}rad) scale(${displayTextLayout.scale})`
+        transform: `translate(${textBlockLayout.x}px, ${textBlockLayout.y}px) rotate(${textBlockLayout.rotation}rad) scale(${textBlockLayout.scale})`
       };
 
   const drawingTools = (
@@ -2040,25 +2065,30 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   return (
     <div className="flex flex-col w-full h-full relative select-none">
-      {pictureToolbarTarget && selectedPictures.length > 0 && createPortal(
-        <select
-          aria-label="Image wrapping"
-          title="Image wrapping"
-          value={currentPictureWrap}
-          onChange={(event) => setPictureWrap(event.target.value as PictureWrap)}
-          className="max-w-24 rounded-lg border border-surface-subtle-light bg-surface-light px-1.5 py-1.5 text-xs dark:border-surface-subtle-dark dark:bg-surface-dark sm:max-w-36"
-        >
-          {!currentPictureWrap && <option value="" disabled>Mixed wrapping</option>}
-          {Object.entries(pictureWraps).map(([wrap, label]) => <option key={wrap} value={wrap}>{label}</option>)}
-        </select>,
-        pictureToolbarTarget
-      )}
+      <input ref={replacementInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp"
+        hidden onChange={async (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = '';
+          const picture = selectedPicturesRef.current[0];
+          if (!file || !picture) return;
+          setPictureError('');
+          try {
+            await textEditor?.current?.replacePicture(picture, file);
+          } catch (error) {
+            setPictureError(error instanceof Error ? error.message : 'Could not replace the image.');
+          }
+        }} />
       <div className="relative z-10 shrink-0 pointer-events-auto" data-ink-ui="toolbar-shell">
         {textEditor && onChangeBackground ? (
           <NoteRibbon
             editor={textEditor}
             textActive={activeTool === 'text'}
             enableText={enableText}
+            onInsertTextBox={startTextBox}
+            onInsertTable={(box) => {
+              setSelection([], [box]);
+              setTableCell(box.querySelector<HTMLTableCellElement>('td, th'));
+            }}
             drawingTools={drawingTools}
             orientation={pageLayout}
             background={background}
@@ -2068,6 +2098,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         ) : (
           <div className="flex justify-center px-4 py-2">{drawingTools}</div>
         )}
+        {tableCell && <TableToolbar cell={tableCell} onChangeCell={(cell) => {
+          setTableCell(cell);
+          const box = cell?.closest<HTMLElement>(tableBoxSelector);
+          if (cell && box && selectedBoxesRef.current.length === 0) textEditor?.current?.editBox(box, cell);
+        }} onSave={() => {
+          textEditor?.current?.savePageObjects();
+          setObjectSizeVersion((version) => version + 1);
+        }} />}
         {pictureError && <p role="alert" className="px-4 py-1 text-sm text-rose-600 dark:text-rose-400">{pictureError}</p>}
       </div>
 
@@ -2103,6 +2141,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                   onPointerMove={handlePointerMove}
                   onPointerUp={handlePointerUp}
                   onPointerCancel={handlePointerCancel}
+                  onContextMenu={(event) => {
+                    if (!(event.target instanceof Element) || !event.target.closest('[contenteditable="true"]')) {
+                      suppressCanvasMenu(event);
+                    }
+                  }}
                   onPointerLeave={(event) => {
                     if (activeTool !== 'select' && event.pointerType !== 'touch') handlePointerCancel(event);
                   }}
@@ -2157,12 +2200,21 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                     <SelectionOverlay
                       bounds={selectionBounds}
                       transform={liveTransform}
-                      count={selectedIdSet.size}
-                      textSelected={isTextSelected}
+                      count={selectedDrawings.size}
+                      boxCount={selectedBoxes.length}
+                      tableSelected={selectedBoxes.length === 1 && selectedBoxes[0].matches(tableBoxSelector)}
                       pictureCount={selectedPictures.length}
-                      onEditText={isTextSelected ? editSelectedText : undefined}
-                      onStartMove={(event) => beginTransform('move', null, event)}
-                      onStartResize={(corner, e) => beginTransform('resize', corner, e)}
+                      onEditText={selectedBoxes.length === 1 ? () => editSelectedText() : undefined}
+                      onStartResize={canScale && !widthHandle ? (corner, e) => beginTransform('resize', corner, e) : undefined}
+                      widthHandle={widthHandle}
+                      onStartWidth={(event) => beginTransform('width', null, event)}
+                      onGroup={selectedDrawings.size > 1 ? () => changeInkGroup(false) : undefined}
+                      onUngroup={hasGroupedInk ? () => changeInkGroup(true) : undefined}
+                      onReplacePicture={editActions && selectedPictures.length === 1 ? () => replacementInput.current?.click() : undefined}
+                      onInkColor={editActions && selectedIds.length ? (color) => updateSelectedInk({ color }) : undefined}
+                      onInkWidth={editActions && selectedIds.length ? (width) => updateSelectedInk({ width }) : undefined}
+                      inkColor={strokes.find((stroke) => selectedIdSet.has(stroke.id))?.color}
+                      inkWidth={strokes.find((stroke) => selectedIdSet.has(stroke.id))?.width}
                       onStartRotate={(e) => beginTransform('rotate', null, e)}
                       onBringToFront={bringSelectionToFront}
                       onSendToBack={sendSelectionToBack}
