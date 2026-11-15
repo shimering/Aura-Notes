@@ -5,6 +5,7 @@ import { InkHistory } from '../utils/inkHistory';
 import { drawInkBackground } from '../utils/inkBackground';
 import { 
   isSpenBarrelOrEraser, 
+  isSpenHoverButton,
   isSpenHardwareKeyEvent,
   evaluateSpenButtonAction
 } from '../utils/spenDetection';
@@ -91,6 +92,13 @@ const SPEN_MID_STROKE_RELEASE_MS = 120;
  * Anything shorter is treated as a button click and opens the quick pen menu.
  */
 const SPEN_HOLD_ERASE_MS = 250;
+
+/**
+ * Grace period after the tip lifts. The pen reports its own buttons = 1 for a
+ * moment after leaving the glass, which looks exactly like the side button on
+ * Samsung hardware, so hover samples in this window never arm the eraser.
+ */
+const SPEN_POST_LIFT_GUARD_MS = 150;
 
 /** One captured S Pen sample for on-device diagnostics. */
 type SpenLogEntry = {
@@ -182,6 +190,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // before a mid-stroke press arms the eraser, so one glitchy sample cannot
   // split an ink stroke.
   const spenContactButtonSamplesRef = useRef<number>(0);
+  // Consecutive hover samples carrying the Samsung "primary button in the air"
+  // signal; two are required so the stale sample after a lift cannot arm it.
+  const spenHoverButtonSamplesRef = useRef<number>(0);
+  const lastPenLiftAtRef = useRef<number>(0);
   const lastPenClientPosRef = useRef<{ x: number; y: number } | null>(null);
   const isPenDownRef = useRef<boolean>(false);
   const spenDeactivateTimerRef = useRef<number | null>(null);
@@ -780,6 +792,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         // While the tip is in contact, low/zero pressure samples are not hover.
         const isHovering = !isPenDownRef.current && e.pressure <= 0.05;
         const hasBarrelButton = isSpenBarrelOrEraser(e.buttons, e.button);
+        // Samsung/Chromium send the side button as buttons = 1 while the pen is
+        // in the air; the spec's barrel bits are accepted as well.
+        const hoverButtonBit = isSpenHoverButton(e.buttons, e.pressure);
 
         setStylusTelemetry((prev) => ({
           ...prev,
@@ -802,21 +817,33 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             button: e.button,
             pressure: e.pressure,
             contact,
-            note: hasBarrelButton ? 'barrel-bit' : undefined
+            note: hasBarrelButton ? 'barrel-bit' : hoverButtonBit ? 'hover-primary' : undefined
           });
         }
 
-        // Only a real auxiliary/barrel bit arms the eraser while hovering. This
-        // ignores stale buttons = 1 samples right after the tip leaves the glass.
+        // Arm the eraser from the hover signal. On Samsung hardware the barrel
+        // bit never appears; the side button is buttons = 1 with zero pressure.
         if (isHovering) {
-          if (hasBarrelButton) {
-            // Starts the hold timer; no-op while a press is already tracked.
-            beginSpenButtonPress(`hover-press (buttons=${e.buttons})`);
-          } else if (
-            (spenButtonPressStartRef.current !== null || isSpenEraserArmedRef.current) &&
-            !isEraserDrawingRef.current
-          ) {
-            noteSpenReleaseEvidence('hover-release');
+          const staleAfterLift = Date.now() - lastPenLiftAtRef.current < SPEN_POST_LIFT_GUARD_MS;
+
+          if (hoverButtonBit && staleAfterLift) {
+            // Neither arm nor release: this sample is the pen's own buttons = 1
+            // lingering after the tip left the glass.
+          } else if (hoverButtonBit) {
+            spenHoverButtonSamplesRef.current += 1;
+            // Spec barrel bits are trustworthy on their own; the primary-button
+            // form needs two consecutive samples.
+            if (hasBarrelButton || spenHoverButtonSamplesRef.current >= 2) {
+              beginSpenButtonPress(`hover-press (buttons=${e.buttons})`);
+            }
+          } else {
+            spenHoverButtonSamplesRef.current = 0;
+            if (
+              (spenButtonPressStartRef.current !== null || isSpenEraserArmedRef.current) &&
+              !isEraserDrawingRef.current
+            ) {
+              noteSpenReleaseEvidence('hover-release');
+            }
           }
         } else if (hasBarrelButton) {
           // Button pressed with the tip already on the glass: the canvas hands
@@ -838,6 +865,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (e.pointerType === 'pen') {
         isPenDownRef.current = false;
         spenContactButtonSamplesRef.current = 0;
+        spenHoverButtonSamplesRef.current = 0;
+        lastPenLiftAtRef.current = Date.now();
         logSpenSample('up', {
           pointerType: e.pointerType,
           buttons: e.buttons,
@@ -851,6 +880,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const handleGlobalPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'pen') {
         isPenDownRef.current = true;
+        spenHoverButtonSamplesRef.current = 0;
         spenContactButtonSamplesRef.current = isSpenBarrelOrEraser(e.buttons, e.button) ? 1 : 0;
         logSpenSample('down', {
           pointerType: e.pointerType,

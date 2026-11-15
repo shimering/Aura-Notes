@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { 
   isSpenBarrelOrEraser, 
+  isSpenHoverButton,
   isSpenButtonPressed,
   isSpenHardwareKeyEvent,
   evaluateSpenButtonAction,
@@ -23,6 +24,24 @@ describe('S Pen Detection Utilities', () => {
 
     // Eraser tip (buttons = 32 / button = 5)
     expect(isSpenBarrelOrEraser(32, 5)).toBe(true);
+  });
+
+  it('detects the side button from the Samsung primary-button-in-air signal', () => {
+    // Chromium on Galaxy tablets reports the side button as buttons = 1 with no
+    // contact, not as the spec's barrel bit.
+    expect(isSpenHoverButton(1, 0)).toBe(true);
+
+    // Tip contact also sets buttons = 1, so contact pressure must not count.
+    expect(isSpenHoverButton(1, 0.5)).toBe(false);
+    expect(isSpenHoverButton(1, 0.9)).toBe(false);
+
+    // Hovering with no button pressed.
+    expect(isSpenHoverButton(0, 0)).toBe(false);
+
+    // Spec-compliant devices send the barrel / eraser bits.
+    expect(isSpenHoverButton(2, 0)).toBe(true);
+    expect(isSpenHoverButton(4, 0)).toBe(true);
+    expect(isSpenHoverButton(32, 0.5)).toBe(true);
   });
 
   it('detects S Pen button press while hovering in mid-air and releases instantly when buttons === 0', () => {

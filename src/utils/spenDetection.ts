@@ -28,6 +28,25 @@ export function isSpenBarrelOrEraser(buttons: number, button?: number): boolean 
 }
 
 /**
+ * Detects a pressed S Pen side button while the pen is OFF the glass.
+ *
+ * Chromium on Samsung hardware reports the barrel button as the PRIMARY button
+ * (buttons: 1) with no contact, instead of the spec's barrel bit (2/4/32). Tip
+ * contact also sets buttons === 1, so the pressure check is what tells the two
+ * apart: hovering with no button reports buttons: 0, and a touching pen
+ * reports a non-zero pressure.
+ *
+ * Devices that follow the spec (Windows / Wacom / Surface) send the barrel or
+ * eraser bits instead, which are accepted here too.
+ */
+export function isSpenHoverButton(buttons: number, pressure: number = 0): boolean {
+  if ((buttons & 4) !== 0 || (buttons & 2) !== 0 || (buttons & 32) !== 0) {
+    return true;
+  }
+  return buttons === 1 && pressure <= 0.05;
+}
+
+/**
  * Determines whether the physical S Pen side button is currently PRESSED / HELD DOWN.
  * 
  * 1. Absolute rule: If buttons === 0, no button is currently held down.
