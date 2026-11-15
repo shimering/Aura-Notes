@@ -13,8 +13,8 @@ export interface AppSettings {
   defaultEraserMode: EraserMode;
   /** Shortest S Pen button press treated as a hold; shorter presses open the quick palette. */
   spenHoldEraseMs: number;
-  /** Whether a short S Pen button click opens the quick pen palette. */
-  spenClickOpensMenu: boolean;
+  /** Whether a hover double-press of the S Pen button opens the quick pen palette. */
+  spenDoublePressOpensMenu: boolean;
   syncVaultKey: string;
   autoSyncEnabled: boolean;
   syncThemeAndLayout: boolean;
@@ -34,7 +34,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultEraserWidth: 24,
   defaultEraserMode: 'object',
   spenHoldEraseMs: 250,
-  spenClickOpensMenu: true,
+  spenDoublePressOpensMenu: true,
   syncVaultKey: '',
   autoSyncEnabled: true,
   syncThemeAndLayout: true,

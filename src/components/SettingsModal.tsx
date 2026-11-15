@@ -268,25 +268,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full accent-rose-500"
                 />
                 <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-1">
-                  The eraser arms the moment you press the button. Presses shorter than this are
-                  treated as a click and open the quick palette instead.
+                  The eraser arms the moment you press the button. A press shorter than this counts
+                  as one of the two clicks that open the quick palette.
                 </p>
               </div>
 
               <label className="flex items-center justify-between cursor-pointer">
                 <div className="pr-3">
                   <p className="text-xs font-semibold text-ink-light dark:text-ink-dark">
-                    Short Click Opens Quick Palette
+                    Double Press Opens Quick Palette
                   </p>
                   <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-0.5">
-                    A quick press of the side button shows the pen and colour menu instead of erasing.
-                    Turn off to ignore short clicks.
+                    Press the side button twice while the pen hovers in the air to open the pen and
+                    colour menu. A single press never opens it, so lifting the pen cannot trigger it.
                   </p>
                 </div>
                 <input
                   type="checkbox"
-                  checked={settings.spenClickOpensMenu}
-                  onChange={(e) => onUpdateSettings({ spenClickOpensMenu: e.target.checked })}
+                  checked={settings.spenDoublePressOpensMenu}
+                  onChange={(e) => onUpdateSettings({ spenDoublePressOpensMenu: e.target.checked })}
                   className="w-4 h-4 accent-violet-600 cursor-pointer"
                 />
               </label>

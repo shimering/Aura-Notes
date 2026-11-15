@@ -302,7 +302,7 @@ export async function syncVaultWithCloud(
       defaultEraserWidth: localSettings.defaultEraserWidth,
       defaultEraserMode: localSettings.defaultEraserMode,
       spenHoldEraseMs: localSettings.spenHoldEraseMs,
-      spenClickOpensMenu: localSettings.spenClickOpensMenu,
+      spenDoublePressOpensMenu: localSettings.spenDoublePressOpensMenu,
       updatedAt: localSettings.updatedAt
     },
     deletedNoteIds: deletedIds,

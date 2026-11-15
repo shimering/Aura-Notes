@@ -37,8 +37,8 @@ interface InkCanvasProps {
   defaultStylusOnly?: boolean;
   /** Hold time (Settings) before the S Pen button arms the eraser. */
   spenHoldEraseMs?: number;
-  /** Whether a short S Pen button click opens the quick palette (Settings). */
-  spenClickOpensMenu?: boolean;
+  /** Whether a hover double-press of the S Pen button opens the quick palette (Settings). */
+  spenDoublePressOpensMenu?: boolean;
 }
 
 // Global AudioContext Singleton (prevents hardware exhaustion & browser crash)
@@ -92,6 +92,13 @@ const SPEN_MID_STROKE_RELEASE_MS = 120;
  * Anything shorter is treated as a button click and opens the quick pen menu.
  */
 const SPEN_HOLD_ERASE_MS = 250;
+
+/**
+ * Longest gap between a released click and the next press that still counts as
+ * a double press. The palette only opens on a double press while hovering, so a
+ * stray sample after a lift can never open it.
+ */
+const SPEN_DOUBLE_PRESS_MS = 450;
 
 /**
  * Grace period after the tip lifts. The pen reports its own buttons = 1 for a
@@ -153,7 +160,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   defaultEraserMode = 'object',
   defaultStylusOnly = false,
   spenHoldEraseMs = SPEN_HOLD_ERASE_MS,
-  spenClickOpensMenu = true
+  spenDoublePressOpensMenu = true
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const backgroundCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -250,15 +257,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // S Pen gesture tuning comes from Settings. Mirrored into refs so the
   // window-level pointer handlers always read the current value.
   const spenHoldEraseMsRef = useRef<number>(spenHoldEraseMs);
-  const spenClickOpensMenuRef = useRef<boolean>(spenClickOpensMenu);
+  const spenDoublePressOpensMenuRef = useRef<boolean>(spenDoublePressOpensMenu);
+  /** Release time of the last clean hover click, for double-press detection. */
+  const spenLastHoverClickRef = useRef<number | null>(null);
 
   useEffect(() => {
     spenHoldEraseMsRef.current = Math.max(0, Math.min(2000, spenHoldEraseMs));
   }, [spenHoldEraseMs]);
 
   useEffect(() => {
-    spenClickOpensMenuRef.current = spenClickOpensMenu;
-  }, [spenClickOpensMenu]);
+    spenDoublePressOpensMenuRef.current = spenDoublePressOpensMenu;
+  }, [spenDoublePressOpensMenu]);
 
   const [isQuickMenuOpen, setIsQuickMenuOpen] = useState<boolean>(false);
   const [quickMenuPos, setQuickMenuPos] = useState<{ x: number; y: number } | null>(null);
@@ -713,34 +722,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   }, []);
 
   /**
-   * Starts tracking an S Pen button press and arms the momentary eraser right
-   * away. Delaying the arm behind a hold threshold broke the ordinary
-   * press-then-draw gesture: the first ~250ms of the drag was painted with the
-   * pen, so the button looked dead. The threshold now only classifies the
-   * release (short click opens the palette, hold erases).
-   */
-  const beginSpenButtonPress = useCallback((source: string) => {
-    cancelScheduledSpenDeactivation();
-    spenButtonReleaseEvidenceAtRef.current = null;
-
-    if (spenButtonPressStartRef.current !== null) {
-      // The press is already tracked (it started in mid-air). Landing the tip
-      // must still erase immediately rather than wait for the hold threshold.
-      if (isPenDownRef.current && !isSpenEraserArmedRef.current) {
-        spenButtonSawContactRef.current = true;
-        activateSpenEraser(`${source} (contact)`);
-      }
-      return;
-    }
-
-    spenButtonPressStartRef.current = Date.now();
-    spenButtonSawContactRef.current = isPenDownRef.current;
-    activateSpenEraser(source);
-  }, [activateSpenEraser, cancelScheduledSpenDeactivation]);
-
-  /**
-   * Concludes a press: a hold releases the momentary eraser, a short click
-   * opens the quick pen menu at the stylus position.
+   * Concludes a press: a hold releases the momentary eraser, and two quick
+   * clicks in a row while hovering open the quick pen menu at the stylus.
    */
   const finishSpenButtonPress = useCallback((source: string) => {
     const startedAt = spenButtonPressStartRef.current;
@@ -762,26 +745,83 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const action = evaluateSpenButtonAction(durationMs, usedEraser, false, holdMs);
 
     if (action === 'hold-eraser') {
+      // A hold — or a press that ever touched the paper — ends the click pair.
+      spenLastHoverClickRef.current = null;
       if (isSpenEraserArmedRef.current) deactivateSpenEraser(source);
       return;
     }
 
     if (isSpenEraserArmedRef.current) deactivateSpenEraser(`${source}: click`);
 
-    if (!spenClickOpensMenuRef.current) {
+    // Only a clean click while the pen is off the glass can count towards the
+    // double press: a lift, or a press used for erasing, resets the pair.
+    if (usedEraser || isPenDownRef.current || isEraserDrawingRef.current) {
+      spenLastHoverClickRef.current = null;
+      return;
+    }
+
+    const previousClickAt = spenLastHoverClickRef.current;
+    spenLastHoverClickRef.current = null;
+    const gapMs = previousClickAt === null || startedAt === null
+      ? Number.POSITIVE_INFINITY
+      : startedAt - previousClickAt;
+
+    if (gapMs > SPEN_DOUBLE_PRESS_MS) {
+      spenLastHoverClickRef.current = releasedAt;
       setStylusTelemetry((prev) => ({
         ...prev,
-        lastTrigger: `${source}: CLICK IGNORED (palette gesture off, ${Math.round(durationMs)}ms)`
+        lastTrigger: `${source}: click ${Math.round(durationMs)}ms (double-press for palette)`
+      }));
+      return;
+    }
+
+    if (!spenDoublePressOpensMenuRef.current) {
+      setStylusTelemetry((prev) => ({
+        ...prev,
+        lastTrigger: `${source}: DOUBLE PRESS IGNORED (palette gesture off)`
       }));
       return;
     }
 
     setStylusTelemetry((prev) => ({
       ...prev,
-      lastTrigger: `${source}: QUICK MENU (${Math.round(durationMs)}ms click)`
+      lastTrigger: `${source}: QUICK MENU (double press)`
     }));
     openQuickMenu(lastPenClientPosRef.current);
   }, [deactivateSpenEraser, openQuickMenu]);
+
+  /**
+   * Starts tracking an S Pen button press and arms the momentary eraser right
+   * away. Delaying the arm behind a hold threshold broke the ordinary
+   * press-then-draw gesture: the first ~250ms of the drag was painted with the
+   * pen, so the button looked dead. The threshold now only classifies the
+   * release, and only a double press opens the palette.
+   */
+  const beginSpenButtonPress = useCallback((source: string) => {
+    cancelScheduledSpenDeactivation();
+
+    if (spenButtonPressStartRef.current !== null) {
+      if (spenButtonReleaseEvidenceAtRef.current !== null) {
+        // A new press arrived while the previous release was still inside its
+        // confirmation window. That press is over, so conclude it now —
+        // otherwise two quick clicks would merge into one long press.
+        finishSpenButtonPress(`${source}: press-reopened`);
+      } else {
+        // The press is already tracked (it started in mid-air). Landing the tip
+        // must still erase immediately rather than wait for the hold threshold.
+        if (isPenDownRef.current && !isSpenEraserArmedRef.current) {
+          spenButtonSawContactRef.current = true;
+          activateSpenEraser(`${source} (contact)`);
+        }
+        return;
+      }
+    }
+
+    spenButtonReleaseEvidenceAtRef.current = null;
+    spenButtonPressStartRef.current = Date.now();
+    spenButtonSawContactRef.current = isPenDownRef.current;
+    activateSpenEraser(source);
+  }, [activateSpenEraser, cancelScheduledSpenDeactivation, finishSpenButtonPress]);
 
   /**
    * Debounces a *confirmed* eraser release. Only evidence that the physical
@@ -1071,6 +1111,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     eraserReleasePendingSinceRef.current = null;
     eraserDragButtonSamplesRef.current = 0;
+    // Touching the paper breaks any pending double-press pair.
+    spenLastHoverClickRef.current = null;
     dragSawPressureRef.current = false;
     zeroPressureSamplesRef.current = 0;
 
@@ -1352,7 +1394,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-ink-muted-light/60 dark:text-ink-muted-dark/60 text-sm">
             <p className="font-medium">Write with S Pen or Apple Pencil</p>
             <p className="text-xs mt-1">
-              Hold S Pen button to Erase{spenClickOpensMenu ? ' • Click it for the quick palette' : ''} • Choose size & mode in toolbar
+              Hold S Pen button to Erase{spenDoublePressOpensMenu ? ' • Double-press it in the air for the quick palette' : ''} • Choose size & mode in toolbar
             </p>
           </div>
         )}

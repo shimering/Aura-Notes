@@ -813,7 +813,7 @@ export default function App() {
                   defaultEraserMode={settings.defaultEraserMode}
                   defaultStylusOnly={settings.stylusOnly}
                   spenHoldEraseMs={settings.spenHoldEraseMs}
-                  spenClickOpensMenu={settings.spenClickOpensMenu}
+                  spenDoublePressOpensMenu={settings.spenDoublePressOpensMenu}
                   background={activeNote.inkBackground}
                   onChangeBackground={handleUpdateBackground}
                 />

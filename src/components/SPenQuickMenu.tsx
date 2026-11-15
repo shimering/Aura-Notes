@@ -136,7 +136,7 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
                 S Pen Quick Palette
               </h4>
               <p className="text-[10px] text-ink-muted-light dark:text-ink-muted-dark">
-                Hold button to erase • Tap to toggle
+                Hold button to erase • Double-press to reopen
               </p>
             </div>
           </div>
@@ -159,7 +159,10 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
               return (
                 <button
                   key={t.id}
-                  onClick={() => onSelectTool(t.id)}
+                  onClick={() => {
+                    onSelectTool(t.id);
+                    onClose();
+                  }}
                   className={`flex items-center gap-2 p-2 rounded-2xl text-left transition active:scale-95 ${
                     isActive
                       ? 'bg-violet-600 text-white shadow-sm font-semibold'
@@ -198,7 +201,10 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
                 return (
                   <button
                     key={c.hex}
-                    onClick={() => onChangeColor(c.hex)}
+                    onClick={() => {
+                      onChangeColor(c.hex);
+                      onClose();
+                    }}
                     title={c.name}
                     className={`w-7 h-7 rounded-full border transition active:scale-90 relative flex items-center justify-center ${
                       isSelected
@@ -257,7 +263,10 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
                   return (
                     <button
                       key={mode.id}
-                      onClick={() => onChangeEraserMode?.(mode.id)}
+                      onClick={() => {
+                        onChangeEraserMode?.(mode.id);
+                        onClose();
+                      }}
                       className={`py-1.5 px-2 rounded-xl flex flex-col items-center justify-center transition active:scale-95 ${
                         isSelected
                           ? 'bg-rose-500 text-white shadow-sm font-semibold'
@@ -283,7 +292,10 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
                   return (
                     <button
                       key={size}
-                      onClick={() => onChangeWidth(size)}
+                      onClick={() => {
+                        onChangeWidth(size);
+                        onClose();
+                      }}
                       className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-95 ${
                         isSelected
                           ? 'bg-rose-500 text-white shadow-sm font-bold'
@@ -313,7 +325,10 @@ export const SPenQuickMenu: React.FC<SPenQuickMenuProps> = ({
                   return (
                     <button
                       key={size}
-                      onClick={() => onChangeWidth(size)}
+                      onClick={() => {
+                        onChangeWidth(size);
+                        onClose();
+                      }}
                       className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-95 ${
                         isSelected
                           ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold'
