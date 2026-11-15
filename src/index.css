@@ -481,33 +481,35 @@ canvas.ink-canvas {
 .note-page-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   flex-shrink: 0;
-  gap: 4px;
-  padding: 5px clamp(5px, 2vw, 18px) max(5px, env(safe-area-inset-bottom));
+  gap: 6px;
+  padding: 2px 5px max(2px, env(safe-area-inset-bottom));
   border-top: 1px solid #d4dee8;
   background: #f8fafc;
   color: #334155;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .dark .note-page-bar { border-color: #3a4758; background: #242d3b; color: #e6edf7; }
 .note-page-navigation, .note-page-actions, .note-page-bar button {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 .note-page-bar :is(button, select) {
-  min-height: 36px;
-  border-radius: 6px;
-  padding: 0 7px;
+  min-width: 30px;
+  min-height: 30px;
+  border-radius: 5px;
+  padding: 0 5px;
   white-space: nowrap;
   background: transparent;
 }
+.note-page-bar button { justify-content: center; }
 .note-page-bar select { background: inherit; color: inherit; }
 .note-page-bar button:enabled:hover { background: rgb(124 58 237 / 12%); }
 .note-page-bar button:disabled { opacity: .4; }
-.note-page-bar .note-page-add { background: rgb(124 58 237 / 10%); font-weight: 600; }
+.note-page-bar .note-page-add { gap: 3px; padding-inline: 7px; background: rgb(124 58 237 / 10%); font-weight: 600; }
 
 @media (max-width: 540px) {
   .ribbon-header { padding-inline: 5px; }
