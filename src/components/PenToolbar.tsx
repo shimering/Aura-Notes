@@ -321,8 +321,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
         onClick={onToggleStylusOnly}
         title={
           isStylusOnly
-            ? 'Stylus-Only Active (Palms & fingers completely ignored)'
-            : 'All Inputs Active (Click to lock to S Pen / Apple Pencil only)'
+            ? 'Ink input is limited to the stylus'
+            : 'Limit ink input to the stylus'
         }
         aria-pressed={isStylusOnly}
         className={`${TRIGGER} w-10 ${

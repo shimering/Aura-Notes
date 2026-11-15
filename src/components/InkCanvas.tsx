@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode, TextBlockLayout, PageLayout } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint, eraseStrokesPartial } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
@@ -30,6 +30,10 @@ import { createSpenGesture } from '../utils/spenGesture';
 import { PenToolbar } from './PenToolbar';
 import { NoteRibbon } from './NoteRibbon';
 import type { TextEditorRef } from './TextEditor';
+import {
+  getPictureWrap, measurePicture, offsetWithin, pictureWraps, placePicture, pointInTextLayer, transformPicture,
+  type PictureWrap,
+} from '../utils/pageObjects';
 import { SPenQuickMenu } from './SPenQuickMenu';
 import {
   clampPageZoom,
@@ -73,6 +77,7 @@ interface InkCanvasProps {
   /** The note's typed text, drawn between the back and front ink layers. */
   textLayer?: React.ReactNode;
   textEditor?: React.RefObject<TextEditorRef | null>;
+  pictureToolbarTarget?: HTMLElement | null;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
   /** A4 orientation of the note sheet. */
@@ -135,13 +140,7 @@ const INK_UI_CONTROL_SELECTOR = 'button, [role="button"], input, label, select';
 
 const SPEN_HOLD_ERASE_MS = 250;
 
-/**
- * A finger touchdown starts an ink stroke right away, but a tap that never
- * travels is a text gesture, not a drawing one: on lift it hands the caret to
- * the note sheet instead. A swipe past this slop keeps the stroke.
- */
-const FINGER_TAP_SLOP_PX = 8;
-const FINGER_TAP_MAX_MS = 600;
+const SELECTION_TAP_SLOP = 7;
 
 /** One in-flight move / resize / rotate of the current selection. */
 type TransformDrag = {
@@ -201,6 +200,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   onToolChange,
   textLayer,
   textEditor,
+  pictureToolbarTarget,
   background = 'none',
   onChangeBackground,
   pageLayout = 'portrait',
@@ -267,6 +267,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const selectModeRef = useRef<SelectMode>('rect');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const selectedIdsRef = useRef<string[]>([]);
+  const [selectedPictures, setSelectedPictures] = useState<HTMLImageElement[]>([]);
+  const selectedPicturesRef = useRef<HTMLImageElement[]>([]);
+  const [pictureError, setPictureError] = useState('');
+  const selectionPointerRef = useRef<number | null>(null);
+  const selectionStartClient = useRef<Point | null>(null);
   /** True when the note's typed text block is part of the selection. */
   const [isTextSelected, setIsTextSelected] = useState<boolean>(false);
   const isTextSelectedRef = useRef<boolean>(false);
@@ -295,82 +300,68 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    * synchronous measurement and restored immediately, so no frame is painted
    * in between. Text is only selectable when the block actually holds text.
    */
-  const measureTextBlock = useCallback((): { box: Bounds; hasText: boolean } | null => {
-    const wrapper = textLayerRef.current;
-    if (!wrapper) return null;
+  const getEditor = useCallback(() =>
+    textLayerRef.current?.querySelector<HTMLElement>('[data-note-editor]') ?? null, []);
 
-    const editor =
-      wrapper.querySelector<HTMLElement>('[data-note-editor="true"]') ?? wrapper;
-    const hasText = (editor.textContent ?? '').replace(/\u200b/g, '').trim().length > 0;
-    if (!hasText) return null;
+  const measureTextBoxes = useCallback((): Bounds[] => {
+    const wrapper = textLayerRef.current;
+    const editor = getEditor();
+    if (!wrapper || !editor) return [];
 
     const previousTransform = wrapper.style.transform;
     wrapper.style.transform = 'none';
-    const wrapperRect = wrapper.getBoundingClientRect();
-
-    let rect: { left: number; top: number; right: number; bottom: number } | null = null;
     try {
-      const range = document.createRange();
-      range.selectNodeContents(editor);
-      const rects = range.getClientRects();
-      for (let i = 0; i < rects.length; i += 1) {
-        const line = rects[i];
-        if (line.width <= 0 && line.height <= 0) continue;
-        rect = rect
-          ? {
-              left: Math.min(rect.left, line.left),
-              top: Math.min(rect.top, line.top),
-              right: Math.max(rect.right, line.right),
-              bottom: Math.max(rect.bottom, line.bottom)
-            }
-          : {
-              left: line.left,
-              top: line.top,
-              right: line.right,
-              bottom: line.bottom
-            };
-      }
-    } catch {
-      rect = null;
-    }
-
-    if (!rect) {
-      const fallback = editor.getBoundingClientRect();
-      rect = {
-        left: fallback.left,
-        top: fallback.top,
-        right: fallback.right,
-        bottom: fallback.bottom
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const scale = zoomRef.current || 1;
+      const boxes: Bounds[] = [];
+      const add = (rect: DOMRect) => {
+        if (!rect.width || !rect.height) return;
+        boxes.push({
+          x: (rect.left - wrapperRect.left) / scale,
+          y: (rect.top - wrapperRect.top) / scale,
+          width: rect.width / scale,
+          height: rect.height / scale,
+        });
       };
-    }
-
-    wrapper.style.transform = previousTransform;
-
-    // Client rects include the page's CSS zoom (a transformed ancestor). The
-    // block layout is stored in page pixels, so undo the zoom here.
-    const scale = zoomRef.current || 1;
-
-    return {
-      hasText: true,
-      box: {
-        x: (rect.left - wrapperRect.left) / scale,
-        y: (rect.top - wrapperRect.top) / scale,
-        width: Math.max(1, rect.right - rect.left) / scale,
-        height: Math.max(1, rect.bottom - rect.top) / scale
+      const range = document.createRange();
+      if (typeof range.getClientRects !== 'function') return boxes;
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent?.trim()) continue;
+        range.selectNode(node);
+        Array.from(range.getClientRects()).forEach(add);
       }
-    };
-  }, []);
+      editor.querySelectorAll('table, hr').forEach((element) => add(element.getBoundingClientRect()));
+      return boxes;
+    } finally {
+      wrapper.style.transform = previousTransform;
+    }
+  }, [getEditor]);
 
-  const setSelection = useCallback((ids: string[], includeText = false) => {
+  const measureTextBlock = useCallback(() =>
+    measureTextBoxes().reduce<Bounds | null>(unionBounds, null), [measureTextBoxes]);
+
+  const getPictures = useCallback((images?: HTMLImageElement[]) => {
+    const editor = getEditor();
+    const layer = textLayerRef.current;
+    if (!editor || !layer) return [];
+    return (images ?? Array.from(editor.querySelectorAll('img')))
+      .filter((image) => editor.contains(image) && image.offsetWidth > 0 && image.offsetHeight > 0)
+      .map((image) => measurePicture(image, editor, layer, textBlockLayoutRef.current));
+  }, [getEditor]);
+
+  const setSelection = useCallback((ids: string[], includeText = false, pictures: HTMLImageElement[] = []) => {
     let text = includeText;
     if (text) {
       const measured = measureTextBlock();
-      textBlockBoxRef.current = measured?.box ?? null;
+      textBlockBoxRef.current = measured;
       text = !!measured;
     } else {
       textBlockBoxRef.current = null;
     }
 
+    selectedPicturesRef.current = pictures;
+    setSelectedPictures(pictures);
     selectedIdsRef.current = ids;
     isTextSelectedRef.current = text;
     setSelectedIds(ids);
@@ -388,7 +379,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [isSpenEraserArmed, setIsSpenEraserArmed] = useState<boolean>(false);
   const isSpenEraserArmedRef = useRef<boolean>(false);
   const selectedToolRef = useRef<PenTool>(selectedTool);
-  const lastWritingToolRef = useRef<PenTool>(defaultTool === 'eraser' ? 'fountain' : defaultTool);
+  const lastWritingToolRef = useRef<PenTool>(
+    defaultTool === 'text' || defaultTool === 'select' || defaultTool === 'eraser' ? 'fountain' : defaultTool,
+  );
+  const selectionNoteId = useRef(noteId);
   const isEraserDrawingRef = useRef<boolean>(false);
   // A drag that has produced real pressure proves this device reports pressure,
   // so a run of zero-pressure samples afterwards means the tip is in the air
@@ -414,14 +408,19 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     selectModeRef.current = selectMode;
   }, [selectMode]);
 
-  // Leaving the Select tool drops the frame; the objects stay where they are.
   useEffect(() => {
-    if (activeTool !== 'select') {
-      if (selectedIdsRef.current.length > 0 || isTextSelectedRef.current) setSelection([]);
-      marqueeRef.current = null;
-      setMarquee(null);
+    if (selectionNoteId.current !== noteId && selectedToolRef.current === 'text' && navigator.maxTouchPoints > 0) {
+      selectedToolRef.current = lastWritingToolRef.current;
+      setSelectedTool(lastWritingToolRef.current);
     }
-  }, [activeTool, setSelection]);
+    selectionNoteId.current = noteId;
+    transformCleanupRef.current?.();
+    setSelection([]);
+    selectionPointerRef.current = null;
+    marqueeRef.current = null;
+    setMarquee(null);
+    setPictureError('');
+  }, [noteId, setSelection]);
 
   useLayoutEffect(() => {
     onToolChange?.(activeTool);
@@ -435,25 +434,34 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (ids.length === 0) return;
     const alive = new Set(strokes.map((stroke) => stroke.id));
     const next = ids.filter((id) => alive.has(id));
-    if (next.length !== ids.length) setSelection(next, isTextSelectedRef.current);
+    if (next.length !== ids.length) setSelection(next, isTextSelectedRef.current, selectedPicturesRef.current);
   }, [strokes, setSelection]);
 
-  // Keep the text block's frame matched while the sheet reflows (typing, note
-  // load, a sync merge) so the handles stay on the text.
   useEffect(() => {
-    if (!isTextSelected) return;
+    if (!isTextSelected && !selectedPictures.length) return;
     const wrapper = textLayerRef.current;
-    if (!wrapper || typeof ResizeObserver === 'undefined') return;
-
+    const editor = getEditor();
+    if (!wrapper || !editor) return;
     const remeasure = () => {
-      const measured = measureTextBlock();
-      textBlockBoxRef.current = measured?.box ?? null;
+      const pictures = selectedPicturesRef.current.filter((image) => editor.contains(image));
+      if (pictures.length !== selectedPicturesRef.current.length) {
+        selectedPicturesRef.current = pictures;
+        setSelectedPictures(pictures);
+      }
+      if (isTextSelectedRef.current) textBlockBoxRef.current = measureTextBlock();
       setTextBlockBoxVersion((version) => version + 1);
     };
-    const observer = new ResizeObserver(remeasure);
-    observer.observe(wrapper);
-    return () => observer.disconnect();
-  }, [isTextSelected, measureTextBlock]);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure);
+    observer?.observe(wrapper);
+    const mutations = new MutationObserver(remeasure);
+    mutations.observe(editor, { childList: true, subtree: true, characterData: true });
+    wrapper.addEventListener('load', remeasure, true);
+    return () => {
+      observer?.disconnect();
+      mutations.disconnect();
+      wrapper.removeEventListener('load', remeasure, true);
+    };
+  }, [getEditor, isTextSelected, measureTextBlock, selectedPictures]);
 
   // Keep the canvas in sync when stylus defaults change in Settings. These only
   // fire on actual prop changes, so in-canvas tool picks are never clobbered.
@@ -640,16 +648,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const currentStrokeRef = useRef<Stroke | null>(null);
   const isStylusActiveRef = useRef<boolean>(false);
 
-  /** Open finger contact, so a tap can be told apart from a swipe on lift. */
-  const fingerTapRef = useRef<{
-    pointerId: number;
-    x: number;
-    y: number;
-    time: number;
-    moved: boolean;
-    drawsInk: boolean;
-  } | null>(null);
-
   const syncHistoryFlags = useCallback(() => {
     setCanUndo(historyRef.current.canUndo);
     setCanRedo(historyRef.current.canRedo);
@@ -820,7 +818,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    * first finger painted are discarded rather than saved as a stray stroke.
    */
   const abortActiveCanvasDrag = useCallback(() => {
-    fingerTapRef.current = null;
+    selectionPointerRef.current = null;
     currentStrokeRef.current = null;
     isEraserDrawingRef.current = false;
     previewStrokesRef.current = null;
@@ -1023,8 +1021,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   /**
    * Two-finger pinch on the page viewport (paper or desk), plus trackpad pinch
-   * (reported as Ctrl + wheel). Finger touches on the canvas normally draw ink,
-   * so the gesture handlers explicitly take the drag away on a second finger.
+   * (reported as Ctrl + wheel). A second finger takes over an open selection drag.
    */
   useEffect(() => {
     const node = scrollRef.current;
@@ -1074,9 +1071,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       updateGesture(touches);
       if (isPinchingRef.current) {
         event.preventDefault();
-      } else if (touches.length === 1 && !(event.target as Element).closest('.ink-canvas, [data-ink-ui=selection]')) {
-        // Text and the desk can still scroll with one finger. Let a stationary
-        // touch place the caret or activate a control normally.
+      } else if (touches.length === 1 && selectionPointerRef.current === null && !transformDragRef.current &&
+        !(event.target as Element).closest('.ink-canvas, [data-note-editor], [data-ink-ui=selection]')) {
+        // The desk outside the sheet can still scroll with one finger.
         const [touch] = touches;
         const point = { x: touch.clientX, y: touch.clientY };
         single = { id: touch.identifier, start: point, last: point, scrolling: false };
@@ -1223,7 +1220,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   }, []);
 
   // Extract pointer coordinates relative to canvas
-  const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>): StrokePoint => {
+  const getCanvasPoint = (e: React.PointerEvent): StrokePoint => {
     const point = getPagePointFromClient(e.clientX, e.clientY);
     const { x, y } = point;
 
@@ -1382,23 +1379,35 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const deleteSelection = useCallback(() => {
     const ids = new Set(selectedIdsRef.current);
     const hadText = isTextSelectedRef.current;
-    if (ids.size === 0 && !hadText) return;
+    const pictures = new Set(selectedPicturesRef.current);
+    if (ids.size === 0 && !hadText && !pictures.size) return;
 
     // The typed text is not part of the ink undo history, so make clearing it
     // an explicit choice rather than a single accidental tap.
     if (hadText && !window.confirm('Delete the selected text block?')) return;
 
     setSelection([]);
+    pictures.forEach((picture) => picture.remove());
     if (hadText) {
-      // Deleting the block removes its text and resets the placement, so new
-      // text starts at the top of the page instead of inheriting the transform.
-      setTextBlockLayout(IDENTITY_TEXT_BLOCK_LAYOUT);
-      onDeleteText?.();
+      const remaining = getPictures();
+      const editor = getEditor();
+      if (editor && remaining.length) {
+        editor.replaceChildren(...remaining.map(({ image, placement, editorOffset, width }) => {
+          placePicture(image, { x: placement.x - editorOffset.x, y: placement.y - editorOffset.y }, width, placement.rotation);
+          return image;
+        }));
+        textEditor?.current?.savePageObjects();
+      } else {
+        setTextBlockLayout(IDENTITY_TEXT_BLOCK_LAYOUT);
+        onDeleteText?.();
+      }
+    } else if (pictures.size) {
+      textEditor?.current?.savePageObjects();
     }
     if (ids.size > 0) {
       commitStrokes(strokesRef.current.filter((stroke) => !ids.has(stroke.id)));
     }
-  }, [commitStrokes, onDeleteText, setSelection]);
+  }, [commitStrokes, getEditor, getPictures, onDeleteText, setSelection, textEditor]);
 
   const bringSelectionToFront = useCallback(() => {
     const ids = new Set(selectedIdsRef.current);
@@ -1420,7 +1429,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const beginTransform = useCallback(
     (kind: TransformDrag['kind'], corner: ResizeCorner | null, e: React.PointerEvent) => {
       const bounds = selectionBoundsRef.current;
-      if (!bounds || (selectedIdsRef.current.length === 0 && !isTextSelectedRef.current)) return;
+      if (!bounds || transformDragRef.current || e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
 
@@ -1434,6 +1443,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       };
       transformDragRef.current = drag;
       const baseTextLayout = textBlockLayoutRef.current;
+      const pictures = isTextSelectedRef.current ? [] : getPictures(selectedPicturesRef.current);
+      const pointerId = e.pointerId;
 
       const center: Point = {
         x: bounds.x + bounds.width / 2,
@@ -1472,12 +1483,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       };
 
       const onMove = (event: PointerEvent) => {
-        const transform = computeTransform(getPagePoint(event.clientX, event.clientY));
+        if (event.pointerId !== pointerId || isPinchingRef.current) return;
+        const point = getPagePoint(event.clientX, event.clientY);
+        if (kind === 'move' && !liveTransformRef.current &&
+          Math.hypot(point.x - start.x, point.y - start.y) * zoomRef.current < 3) return;
+        const transform = computeTransform(point);
         previewStrokesRef.current = applyInkTransform(
           drag.baseStrokes,
           new Set(selectedIdsRef.current),
           transform
         );
+        pictures.forEach((picture) => transformPicture(picture, baseTextLayout, transform, false));
         liveTransformRef.current = transform;
         setLiveTransform(transform);
         redraw();
@@ -1495,7 +1511,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         liveTransformRef.current = null;
         setLiveTransform(null);
 
+        pictures.forEach(({ image }) => {
+          image.style.translate = '';
+          image.style.transform = '';
+        });
         if (commit && transform && !isIdentityTransform(transform)) {
+          if (pictures.length) {
+            pictures.forEach((picture) => transformPicture(picture, baseTextLayout, transform, true));
+            textEditor?.current?.savePageObjects();
+            setTextBlockBoxVersion((version) => version + 1);
+          }
           if (preview && selectedIdsRef.current.length > 0) {
             commitStrokes(preview);
           } else {
@@ -1514,63 +1539,135 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         }
       };
 
-      const onUp = () => finish(true);
-      const onCancel = () => finish(false);
+      const onUp = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(true); };
+      const onCancel = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(false); };
 
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
       window.addEventListener('pointercancel', onCancel);
       transformCleanupRef.current = () => finish(false);
     },
-    [commitStrokes, getPagePoint, onChangeTextLayout, redraw]
+    [commitStrokes, getPagePoint, getPictures, onChangeTextLayout, redraw, textEditor]
   );
 
-  /** Select mode touch-down: drag the frame, or start a new marquee. */
-  const handleSelectPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const enableText = () => {
+    if (selectedToolRef.current === 'text') return;
+    flushSync(() => {
+      setSelection([]);
+      selectedToolRef.current = 'text';
+      setSelectedTool('text');
+    });
+  };
+
+  const editSelectedText = () => {
+    enableText();
+    textEditor?.current?.focusEditor();
+  };
+
+  const setPictureWrap = (wrap: PictureWrap) => {
+    const pictures = getPictures(selectedPicturesRef.current);
+    const editor = getEditor();
+    const layer = textLayerRef.current;
+    if (!editor || !layer || !pictures.length) return;
+    for (const { image, placement, editorOffset, width } of pictures) {
+      if (wrap === getPictureWrap(image)) continue;
+      if (wrap === 'free') {
+        editor.append(image);
+        placePicture(image, { x: placement.x - editorOffset.x, y: placement.y - editorOffset.y }, width, placement.rotation);
+      } else {
+        if (getPictureWrap(image) === 'free') {
+          const blocks = Array.from(editor.children).filter((child): child is HTMLElement =>
+            child instanceof HTMLElement && child !== image && !child.matches('[data-picture-wrap="free"]'),
+          );
+          const anchor = blocks.find((block) => offsetWithin(block, layer).y + block.offsetHeight >= placement.y)
+            ?? blocks[blocks.length - 1];
+          if (anchor?.matches('[data-note-positioned]')) {
+            const line = anchor.querySelector('p') ?? anchor;
+            line.prepend(image);
+          } else if (anchor) {
+            editor.insertBefore(image, anchor);
+          }
+        }
+        image.dataset.pictureWrap = wrap;
+        image.style.left = '';
+        image.style.top = '';
+        image.style.rotate = '';
+      }
+    }
+    textEditor?.current?.savePageObjects();
+    setTextBlockBoxVersion((version) => version + 1);
+  };
+
+  const handlePictureDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files).filter((file) => file.type.startsWith('image/'));
+    if (!files.length) return;
+    const point = pointInEditor(getPagePoint(e.clientX, e.clientY));
+    setPictureError('');
+    try {
+      const images = await textEditor?.current?.dropPictures(files, point);
+      if (!images?.length || !images.every((image) => getEditor()?.contains(image))) return;
+      getEditor()?.blur();
+      if (selectedToolRef.current === 'text') {
+        selectedToolRef.current = lastWritingToolRef.current;
+        setSelectedTool(lastWritingToolRef.current);
+      }
+      setSelection([], false, images);
+    } catch (error) {
+      setPictureError(error instanceof Error ? error.message : 'Could not add the pictures.');
+    }
+  };
+
+  const pointInEditor = (point: Point) => {
+    const editor = getEditor();
+    const layer = textLayerRef.current;
+    if (!editor || !layer) return point;
+    const local = pointInTextLayer(point, textBlockLayoutRef.current);
+    const offset = offsetWithin(editor, layer);
+    return { x: local.x - offset.x, y: local.y - offset.y };
+  };
+
+  const pickObject = (point: Point, tolerance: number, textBoxes = measureTextBoxes()) => {
+    const front = hitTestStroke(strokesRef.current.filter((stroke) => stroke.layer !== 'back'), point, tolerance);
+    if (front) return { stroke: front };
+    const picture = getPictures().reverse().find(({ bounds }) => pointInBounds(point, bounds));
+    if (picture) return { picture };
+    const local = pointInTextLayer(point, textBlockLayoutRef.current);
+    if (textBoxes.some(({ x, y, width, height }) =>
+      pointInBounds(local, { x: x - 4, y: y - 4, width: width + 8, height: height + 8 })
+    )) return { text: true };
+    const back = hitTestStroke(strokesRef.current, point, tolerance);
+    return back ? { stroke: back } : null;
+  };
+
+  const handleSelectPointerDown = (e: React.PointerEvent) => {
     selectPointerTypeRef.current = e.pointerType;
     const point = getPagePoint(e.clientX, e.clientY);
-    const bounds = selectionBoundsRef.current;
-    const insideFrame =
-      !!bounds &&
-      point.x >= bounds.x - 4 &&
-      point.x <= bounds.x + bounds.width + 4 &&
-      point.y >= bounds.y - 4 &&
-      point.y <= bounds.y + bounds.height + 4;
+    const hit = pickObject(point, e.pointerType === 'touch' ? 14 : 8);
 
-    if (insideFrame) {
-      startSelectionMove(e);
+    if (hit) {
+      const ids = hit.stroke ? [hit.stroke.id] : [];
+      const pictures = hit.picture ? [hit.picture.image] : [];
+      const bounds = hit.picture?.bounds ?? (hit.stroke ? getStrokesBounds([hit.stroke]) :
+        textBlockBoxRef.current);
+      setSelection(ids, !!hit.text, pictures);
+      const textBounds = textBlockBoxRef.current;
+      selectionBoundsRef.current = hit.text && textBounds
+        ? transformTextBlockBounds(textBounds, textBlockLayoutRef.current) : bounds;
+      beginTransform('move', null, e);
       return;
     }
 
+    setSelection([]);
     const geometry: MarqueeGeometry = {
       mode: selectModeRef.current,
       start: point,
       end: point,
       points: [point]
     };
+    selectionPointerRef.current = e.pointerId;
+    selectionStartClient.current = { x: e.clientX, y: e.clientY };
     marqueeRef.current = geometry;
-    setMarquee(geometry);
-  };
-
-  /**
-   * Starts a drag from the selection frame. If the press lands on an ink object
-   * that is not part of the selection, that object becomes the selection first,
-   * so a stroke hidden behind the text or behind another selection can be
-   * picked up without dismissing the frame first.
-   */
-  const startSelectionMove = (e: React.PointerEvent) => {
-    selectPointerTypeRef.current = e.pointerType;
-    const point = getPagePoint(e.clientX, e.clientY);
-    const tolerance = e.pointerType === 'touch' ? 18 : 10;
-    const hit = hitTestStroke(strokesRef.current, point, tolerance);
-
-    if (hit && !selectedIdsRef.current.includes(hit.id)) {
-      setSelection([hit.id], false);
-      // beginTransform reads this ref immediately, before React re-renders.
-      selectionBoundsRef.current = getStrokesBounds([hit]);
-    }
-
-    beginTransform('move', null, e);
   };
 
   const updateMarquee = (point: Point) => {
@@ -1588,100 +1685,81 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setMarquee(next);
   };
 
-  /** Turns the finished rubber band into a selection (a tap picks one object). */
   const finalizeSelection = () => {
     const geometry = marqueeRef.current;
+    selectionPointerRef.current = null;
     marqueeRef.current = null;
     setMarquee(null);
     if (!geometry) return;
 
-    const measured = measureTextBlock();
-    if (measured) textBlockBoxRef.current = measured.box;
-    const textBounds = measured
-      ? transformTextBlockBounds(measured.box, textBlockLayoutRef.current)
-      : null;
-
-    const width = Math.abs(geometry.end.x - geometry.start.x);
-    const height = Math.abs(geometry.end.y - geometry.start.y);
-    const isTap = geometry.mode !== 'lasso' && width < 4 && height < 4;
-    const tolerance = selectPointerTypeRef.current === 'touch' ? 18 : 10;
-
+    const isTap = Math.hypot(geometry.end.x - geometry.start.x, geometry.end.y - geometry.start.y)
+      * zoomRef.current < SELECTION_TAP_SLOP && (geometry.points?.length ?? 0) < 3;
     if (isTap) {
-      // Ink wins a tap when it is actually under the point; otherwise a tap on
-      // the typed text picks the text block. This keeps strokes that pass
-      // behind the text selectable.
-      const hit = hitTestStroke(strokesRef.current, geometry.end, tolerance);
-      if (hit) {
-        setSelection([hit.id], false);
-        return;
+      if (selectPointerTypeRef.current === 'touch') {
+        enableText();
+        if (textEditor?.current) textEditor.current.focusAt(pointInEditor(geometry.start));
+        else onFingerTap?.();
       }
-      setSelection([], !!textBounds && pointInBounds(geometry.end, textBounds));
       return;
     }
 
     const ids = selectStrokeIds(strokesRef.current, geometry);
-    const textHit = !!textBounds && marqueeSelectsTextBlock(geometry, textBounds);
-    setSelection(ids, textHit);
+    const textHit = measureTextBoxes().some((box) =>
+      marqueeSelectsTextBlock(geometry, transformTextBlockBounds(box, textBlockLayoutRef.current))
+    );
+    const pictures = getPictures().filter(({ bounds }) => marqueeSelectsTextBlock(geometry, bounds));
+    setSelection(ids, textHit, pictures.map(({ image }) => image));
   };
 
-  // Pointer Down (stylus touches screen)
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType === 'pen' && (!spenTipDownRef.current || isPinchingRef.current)) return;
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
+    if (e.pointerType === 'pen' && !spenTipDownRef.current) return;
     dragSawPressureRef.current = false;
     zeroPressureSamplesRef.current = 0;
 
-    // 1. Stylus-Only Mode: Completely ignore any non-pen touch. The Select tool
-    // is the exception: selection should work with a finger as well as the pen.
-    if (isStylusOnly && e.pointerType !== 'pen' && activeTool !== 'select') {
-      return;
-    }
+    const touch = e.pointerType === 'touch';
+    const mousePicture = e.pointerType === 'mouse' &&
+      getPictures().some(({ bounds }) => pointInBounds(getPagePoint(e.clientX, e.clientY), bounds));
+    const selecting = touch || mousePicture || activeTool === 'select';
+    if (!selecting && isStylusOnly && e.pointerType !== 'pen') return;
+    if (touch && (!e.isPrimary || touchCountRef.current > 1 || isStylusActiveRef.current ||
+      e.width > 40 || e.height > 40)) return;
 
-    // 2. Palm Rejection via Contact Geometry. Selection is deliberately more
-    // permissive: a finger is a first-class selection input, so only obvious
-    // palm-sized contacts are rejected there.
-    const palmLimit = activeTool === 'select' ? 40 : 22;
-    if (e.pointerType === 'touch' && (e.width > palmLimit || e.height > palmLimit)) {
-      return; // Reject broad palm contact
+    if (activeTool === 'text') {
+      if (!touch && !mousePicture) return;
+      if (e.target instanceof Element && e.target.closest('a[download]')) return;
+      const point = getPagePoint(e.clientX, e.clientY);
+      const local = pointInTextLayer(point, textBlockLayoutRef.current);
+      const insideText = measureTextBoxes().some(({ x, y, width, height }) =>
+        pointInBounds(local, { x: x - 8, y: y - 10, width: width + 16, height: height + 20 })
+      );
+      const targetBlock = e.target instanceof Element ? e.target.closest('[data-note-positioned]') : null;
+      const caret = window.getSelection()?.anchorNode;
+      const insideWritingBlock = !!caret && targetBlock?.contains(caret);
+      if (!(e.target instanceof HTMLImageElement) &&
+        (insideText || insideWritingBlock)) return;
+      e.preventDefault();
+      const editor = getEditor();
+      editor?.blur();
+      if (editor?.contains(window.getSelection()?.anchorNode ?? null)) window.getSelection()?.removeAllRanges();
+      selectedToolRef.current = lastWritingToolRef.current;
+      setSelectedTool(lastWritingToolRef.current);
     }
-
-    // 3. Stylus priority palm rejection
-    if (e.pointerType === 'pen') {
-      isStylusActiveRef.current = true;
-    } else if (isStylusActiveRef.current && e.pointerType === 'touch') {
-      return;
-    }
-
-    // Touch events take ownership from the first finger once the second lands.
-    if (e.pointerType === 'touch' && (isPinchingRef.current || !e.isPrimary || touchCountRef.current > 1)) return;
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
-      // The pointer can already be gone (or be a synthetic event); the drag
-      // still works through the canvas' own move/up handlers.
+      // A synthetic pointer may have no active capture.
     }
 
-    // Select tool: rubber-band over drawn objects instead of inking.
-    if (activeTool === 'select') {
-      fingerTapRef.current = null;
+    if (selecting || activeTool === 'text') {
+      e.preventDefault();
       handleSelectPointerDown(e);
       return;
     }
 
-    // Finger contact is ambiguous until it moves: remember the touchdown so a
-    // stationary tap can hand the caret to the note sheet on lift.
-    if (e.pointerType === 'touch') {
-      fingerTapRef.current = {
-        pointerId: e.pointerId,
-        x: e.clientX,
-        y: e.clientY,
-        time: Date.now(),
-        moved: false,
-        drawsInk: !(isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser')
-      };
-    } else {
-      fingerTapRef.current = null;
-    }
+    if (e.pointerType === 'pen') isStylusActiveRef.current = true;
+    if (selectedIdsRef.current.length || selectedPicturesRef.current.length || isTextSelectedRef.current) setSelection([]);
 
     const isEraserNow = isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser';
     const startPoint = getCanvasPoint(e);
@@ -1703,10 +1781,18 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   // Pointer Move (coalesced 120Hz events loop)
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handlePointerMove = (e: React.PointerEvent) => {
     if (isPinchingRef.current || (e.pointerType === 'touch' && !e.isPrimary)) return;
-    if (isStylusOnly && e.pointerType !== 'pen' && activeTool !== 'select') return;
-    if (isStylusActiveRef.current && e.pointerType === 'touch') return;
+    if (selectionPointerRef.current === e.pointerId) {
+      if (marqueeRef.current && (marquee ||
+        Math.hypot(e.clientX - (selectionStartClient.current?.x ?? e.clientX),
+          e.clientY - (selectionStartClient.current?.y ?? e.clientY)) >= SELECTION_TAP_SLOP)) {
+        updateMarquee(getPagePoint(e.clientX, e.clientY));
+      }
+      return;
+    }
+    if (e.pointerType === 'touch' || transformDragRef.current || activeTool === 'select' || activeTool === 'text') return;
+    if (isStylusOnly && e.pointerType !== 'pen') return;
 
     if (e.pointerType === 'pen' && !spenTipDownRef.current) {
       if (isStylusActiveRef.current) handlePointerUp(e);
@@ -1715,21 +1801,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (e.pointerType === 'pen' && spenTipDownRef.current && !isStylusActiveRef.current) {
       handlePointerDown(e);
       return;
-    }
-
-    if (activeTool === 'select') {
-      if (marqueeRef.current) updateMarquee(getPagePoint(e.clientX, e.clientY));
-      return;
-    }
-
-    // A finger that travels is swiping (insert drawing), not tapping.
-    const fingerTap = fingerTapRef.current;
-    if (fingerTap && fingerTap.pointerId === e.pointerId && !fingerTap.moved) {
-      const dx = e.clientX - fingerTap.x;
-      const dy = e.clientY - fingerTap.y;
-      if (dx * dx + dy * dy > FINGER_TAP_SLOP_PX * FINGER_TAP_SLOP_PX) {
-        fingerTap.moved = true;
-      }
     }
 
     const canvas = canvasRef.current;
@@ -1815,64 +1886,26 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   // End the drag without changing the independent side-button state.
-  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // Lifting a finger during a pinch must not commit the stroke the first
-    // finger started (it was already discarded when the pinch began).
-    if (isPinchingRef.current || (e.pointerType === 'touch' && (!e.isPrimary || isStylusActiveRef.current))) return;
-
-    if (e.pointerType === 'pen' && spenTipDownRef.current) return;
-    if (activeTool === 'select') {
-      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-        try {
-          e.currentTarget.releasePointerCapture(e.pointerId);
-        } catch {}
-      }
-      if (e.pointerType === 'pen') {
-        isStylusActiveRef.current = false;
-      }
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (isPinchingRef.current) return;
+    if (selectionPointerRef.current === e.pointerId) {
+      updateMarquee(getPagePoint(e.clientX, e.clientY));
       finalizeSelection();
       return;
     }
-
-    dragSawPressureRef.current = false;
-    zeroPressureSamplesRef.current = 0;
-
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {}
-    }
-
-    if (e.pointerType === 'pen') {
-      isStylusActiveRef.current = false;
-    }
-
-    // Commit the eraser drag or ink stroke as a single undoable step
+    if (e.pointerType === 'touch' || (e.pointerType === 'pen' && spenTipDownRef.current)) return;
+    if (e.pointerType === 'pen') isStylusActiveRef.current = false;
     commitActiveDrag();
-
-    // A finger tap that never travelled shows the writing cursor instead: the
-    // single-point dot it drew was discarded by commitActiveDrag above.
-    const fingerTap = fingerTapRef.current;
-    fingerTapRef.current = null;
-    if (
-      fingerTap &&
-      e.pointerType === 'touch' &&
-      fingerTap.pointerId === e.pointerId &&
-      !fingerTap.moved &&
-      fingerTap.drawsInk &&
-      Date.now() - fingerTap.time <= FINGER_TAP_MAX_MS
-    ) {
-      // The tap asks for the caret, so the sheet becomes the active tool.
-      setSelectedTool('text');
-      selectedToolRef.current = 'text';
-      onFingerTap?.();
-    }
   };
 
-  const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // A cancelled touch is never a tap: only a clean lift hands over the caret.
-    fingerTapRef.current = null;
-    handlePointerUp(e);
+  const handlePointerCancel = (e: React.PointerEvent) => {
+    if (selectionPointerRef.current === e.pointerId) {
+      selectionPointerRef.current = null;
+      marqueeRef.current = null;
+      setMarquee(null);
+      return;
+    }
+    if (e.pointerType !== 'touch') handlePointerUp(e);
   };
 
   // Keeps the browser's own context menu off the canvas. S Pen button presses
@@ -1898,7 +1931,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     if (tool === 'text') {
       onRequestTextFocus?.();
-    } else if (tool !== 'select') {
+    }
+    if (tool !== 'select') {
       setSelection([]);
       marqueeRef.current = null;
       setMarquee(null);
@@ -1912,20 +1946,20 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const spenLogEntries = spenLogRef.current.slice(-SPEN_LOG_RENDER_LIMIT).reverse();
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const currentPictureWrap = selectedPictures.length &&
+    selectedPictures.every((picture) => getPictureWrap(picture) === getPictureWrap(selectedPictures[0]))
+      ? getPictureWrap(selectedPictures[0]) : '';
   const selectionBounds = useMemo(() => {
     const strokeBounds = getStrokesBounds(
       strokes.filter((stroke) => selectedIdSet.has(stroke.id))
     );
-    if (!isTextSelected) return strokeBounds;
-
-    const local = textBlockBoxRef.current;
-    const textBounds = local
-      ? transformTextBlockBounds(local, textBlockLayoutRef.current)
-      : null;
-    return unionBounds(strokeBounds, textBounds);
-    // textBlockLayout is read through its ref; the dependency keeps the box in
-    // sync after a committed text transform.
-  }, [strokes, selectedIdSet, isTextSelected, textBlockBoxVersion, textBlockLayout]);
+    const local = isTextSelected ? textBlockBoxRef.current : null;
+    const textBounds = local ? transformTextBlockBounds(local, textBlockLayout) : null;
+    return getPictures(selectedPictures).reduce<Bounds | null>(
+      (bounds, picture) => unionBounds(bounds, picture.bounds),
+      unionBounds(strokeBounds, textBounds)
+    );
+  }, [strokes, selectedIdSet, isTextSelected, textBlockBoxVersion, textBlockLayout, selectedPictures, getPictures]);
   selectionBoundsRef.current = selectionBounds;
 
   /** Outline for the rubber band currently being dragged. */
@@ -2006,19 +2040,25 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   return (
     <div className="flex flex-col w-full h-full relative select-none">
+      {pictureToolbarTarget && selectedPictures.length > 0 && createPortal(
+        <select
+          aria-label="Image wrapping"
+          title="Image wrapping"
+          value={currentPictureWrap}
+          onChange={(event) => setPictureWrap(event.target.value as PictureWrap)}
+          className="max-w-24 rounded-lg border border-surface-subtle-light bg-surface-light px-1.5 py-1.5 text-xs dark:border-surface-subtle-dark dark:bg-surface-dark sm:max-w-36"
+        >
+          {!currentPictureWrap && <option value="" disabled>Mixed wrapping</option>}
+          {Object.entries(pictureWraps).map(([wrap, label]) => <option key={wrap} value={wrap}>{label}</option>)}
+        </select>,
+        pictureToolbarTarget
+      )}
       <div className="relative z-10 shrink-0 pointer-events-auto" data-ink-ui="toolbar-shell">
         {textEditor && onChangeBackground ? (
           <NoteRibbon
             editor={textEditor}
             textActive={activeTool === 'text'}
-            enableText={() => {
-              if (selectedToolRef.current === 'text') return;
-              // Make the page editable before running the ribbon command, preserving the caret.
-              flushSync(() => {
-                selectedToolRef.current = 'text';
-                setSelectedTool('text');
-              });
-            }}
+            enableText={enableText}
             drawingTools={drawingTools}
             orientation={pageLayout}
             background={background}
@@ -2028,6 +2068,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         ) : (
           <div className="flex justify-center px-4 py-2">{drawingTools}</div>
         )}
+        {pictureError && <p role="alert" className="px-4 py-1 text-sm text-rose-600 dark:text-rose-400">{pictureError}</p>}
       </div>
 
       {/* The note page: an A4 sheet floating on the desk. Ruling, back ink,
@@ -2058,8 +2099,19 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
               >
                 <div
                   ref={containerRef}
-                  onContextMenu={suppressCanvasMenu}
-                  onAuxClick={suppressCanvasMenu}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerCancel={handlePointerCancel}
+                  onPointerLeave={(event) => {
+                    if (activeTool !== 'select' && event.pointerType !== 'touch') handlePointerCancel(event);
+                  }}
+                  onDragOver={(event) => {
+                    if (!event.dataTransfer.types.includes('Files')) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'copy';
+                  }}
+                  onDrop={(event) => void handlePictureDrop(event)}
                   className="relative w-full"
                   style={{ minHeight: `${pageSize.height}px` }}
                 >
@@ -2086,15 +2138,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
                   <canvas
                     ref={canvasRef}
-                    onPointerDown={handlePointerDown}
-                    onPointerMove={handlePointerMove}
-                    onPointerUp={handlePointerUp}
-                    onPointerCancel={handlePointerCancel}
-                    onPointerLeave={(e) => {
-                      // A rubber band or a selection drag may legitimately travel
-                      // past the page edge; only ink drags end on leave.
-                      if (activeTool !== 'select') handlePointerCancel(e);
-                    }}
                     onContextMenu={suppressCanvasMenu}
                     onAuxClick={suppressCanvasMenu}
                     className={`ink-canvas absolute inset-0 z-30 block ${activeTool === 'text' ? 'pointer-events-none' : ''}`}
@@ -2104,19 +2147,21 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                     }}
                   />
 
-                  {activeTool === 'select' && marquee && (
+                  {marquee && (
                     <svg className="absolute inset-0 z-40 w-full h-full pointer-events-none" aria-hidden="true">
                       {renderMarquee(marquee)}
                     </svg>
                   )}
 
-                  {activeTool === 'select' && selectionBounds && (
+                  {selectionBounds && (
                     <SelectionOverlay
                       bounds={selectionBounds}
                       transform={liveTransform}
                       count={selectedIdSet.size}
                       textSelected={isTextSelected}
-                      onStartMove={startSelectionMove}
+                      pictureCount={selectedPictures.length}
+                      onEditText={isTextSelected ? editSelectedText : undefined}
+                      onStartMove={(event) => beginTransform('move', null, event)}
                       onStartResize={(corner, e) => beginTransform('resize', corner, e)}
                       onStartRotate={(e) => beginTransform('rotate', null, e)}
                       onBringToFront={bringSelectionToFront}

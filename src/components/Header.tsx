@@ -20,6 +20,7 @@ export type ViewMode = 'text' | 'ink';
 
 interface HeaderProps {
   note: Note | null;
+  pictureToolbarRef?: React.Ref<HTMLDivElement>;
   onUpdateTitle: (title: string) => void;
   onUpdateTags?: (tags: string[]) => void;
   allTags?: string[];
@@ -37,6 +38,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   note,
+  pictureToolbarRef,
   onUpdateTitle,
   onUpdateTags,
   allTags = [],
@@ -109,13 +111,15 @@ export const Header: React.FC<HeaderProps> = ({
             value={note.title}
             placeholder="Untitled Note..."
             onChange={(e) => onUpdateTitle(e.target.value)}
-            className="font-semibold text-base bg-transparent border-none outline-none text-ink-light dark:text-ink-dark placeholder-ink-muted-light/60 dark:placeholder-ink-muted-dark/60 truncate flex-1 max-w-md focus:ring-1 focus:ring-violet-500 rounded px-1 transition"
+            className="font-semibold text-base bg-transparent border-none outline-none text-ink-light dark:text-ink-dark placeholder-ink-muted-light/60 dark:placeholder-ink-muted-dark/60 truncate flex-1 min-w-0 max-w-md focus:ring-1 focus:ring-violet-500 rounded px-1 transition"
           />
         ) : (
           <span className="text-sm font-medium text-ink-muted-light dark:text-ink-muted-dark">
             Select or create a note
           </span>
         )}
+
+        {pictureToolbarRef && <div ref={pictureToolbarRef} className="shrink-0 empty:hidden" />}
 
         {/* Tags */}
         {note && onUpdateTags && (

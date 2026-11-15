@@ -271,7 +271,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     Stylus-Only Palm Shield
                   </p>
                   <p className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark mt-0.5">
-                    Ignore finger and palm input on the canvas by default
+                    Use the stylus for ink and keep touch available for selection
                   </p>
                 </div>
                 <input

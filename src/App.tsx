@@ -42,6 +42,7 @@ export default function App() {
   );
   // Bumped when the Draw surface hands the caret back to the note sheet.
   const [textFocusRequest, setTextFocusRequest] = useState(0);
+  const [pictureToolbar, setPictureToolbar] = useState<HTMLDivElement | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 1024);
   const [isScribbleModalOpen, setIsScribbleModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
@@ -797,6 +798,7 @@ export default function App() {
       <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative transition-all duration-300">
         <Header
           note={activeNote}
+          pictureToolbarRef={setPictureToolbar}
           onUpdateTitle={handleUpdateTitle}
           onUpdateTags={handleUpdateTags}
           allTags={allTags}
@@ -839,6 +841,7 @@ export default function App() {
                 />
               }
               textEditor={textEditorRef}
+              pictureToolbarTarget={pictureToolbar}
               defaultTool={settings.defaultPenTool}
               defaultColor={settings.defaultPenColor}
               defaultWidth={settings.defaultPenWidth}

@@ -2,9 +2,14 @@ import React, { forwardRef, useImperativeHandle, useRef, useEffect, useMemo } fr
 import { Note } from '../types/note';
 import { FormatToolbar } from './FormatToolbar';
 import { pdfData, sanitizeNoteHtml } from '../utils/noteHtml';
+import type { Point } from '../utils/inkSelection';
+import { placePicture } from '../utils/pageObjects';
 
 export interface TextEditorRef {
   focusEditor: () => void;
+  focusAt: (point: Point) => void;
+  savePageObjects: () => void;
+  dropPictures: (files: File[], point: Point) => Promise<HTMLImageElement[]>;
   applyFormat: (command: string, value?: string) => Promise<void>;
   insertTable: (rows: number, columns: number) => void;
   insertFile: (file: File, kind: 'picture' | 'pdf') => Promise<void>;
@@ -100,6 +105,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
   const editorRef = useRef<HTMLDivElement>(null);
   const internalUpdateRef = useRef<{ noteId: string; content: string } | null>(null);
   const savedRange = useRef<Range | null>(null);
+  const emptyWritingBlock = useRef<HTMLDivElement | null>(null);
   const latestNote = useRef(note);
   if (latestNote.current.id !== note.id) savedRange.current = null;
   latestNote.current = note;
@@ -134,6 +140,23 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
         editorRef.current.innerHTML = content;
       }
     }
+  }, [note.id, note.content]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const objects = Array.from(editor.querySelectorAll<HTMLElement>(
+      ':scope > [data-note-positioned], :scope > img[data-picture-wrap="free"]',
+    ));
+    const fitContent = () => {
+      const bottom = objects.reduce((max, object) => Math.max(max, object.offsetTop + object.offsetHeight), 0);
+      editor.style.minHeight = bottom > 400 ? `${bottom}px` : '';
+    };
+    fitContent();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(fitContent);
+    objects.forEach((object) => observer.observe(object));
+    return () => observer.disconnect();
   }, [note.id, note.content]);
 
   // A single finger tap on the Draw surface hands the sheet the caret, so the
@@ -178,6 +201,62 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       internalUpdateRef.current = { noteId: note.id, content };
       onChangeContent(content);
     }
+  };
+
+  const discardEmptyWritingBlock = () => {
+    const block = emptyWritingBlock.current;
+    if (block && !block.textContent && !block.querySelector('img, a, table')) block.remove();
+    emptyWritingBlock.current = null;
+  };
+
+  const focusAt = (point: Point) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    discardEmptyWritingBlock();
+    const block = document.createElement('div');
+    block.dataset.notePositioned = 'true';
+    block.style.left = `${Math.round(Math.max(0, Math.min(editor.clientWidth - 48, point.x)))}px`;
+    block.style.top = `${Math.round(Math.max(0, point.y))}px`;
+    const paragraph = document.createElement('p');
+    paragraph.append(document.createElement('br'));
+    block.append(paragraph);
+    editor.append(block);
+    emptyWritingBlock.current = block;
+    const range = document.createRange();
+    range.setStart(paragraph, 0);
+    range.collapse(true);
+    focusRange(editor, range);
+  };
+
+  const dropPictures = async (files: File[], point: Point) => {
+    const editor = editorRef.current;
+    if (!editor) return [];
+    const noteId = latestNote.current.id;
+    if (files.some((file) => !pictureType.test(file.type))) {
+      throw new Error('Drop a PNG, JPEG, GIF, WebP, AVIF or BMP picture.');
+    }
+    if (files.some((file) => !file.size || file.size > MAX_FILE_BYTES)) {
+      throw new Error('Each picture must be between 1 byte and 5 MB.');
+    }
+    if (files.reduce((bytes, file) => bytes + file.size, 0) * 4 / 3 > MAX_NOTE_BYTES) {
+      throw new Error('These pictures would take the note above the 10 MB sync limit.');
+    }
+    const images = await Promise.all(files.map(async (file, index) => {
+      const image = document.createElement('img');
+      image.src = await readDataUrl(file);
+      image.alt = file.name;
+      const width = Math.max(48, Math.min(280, editor.clientWidth - point.x));
+      placePicture(image, { x: point.x + index * 16, y: point.y + index * 16 }, width);
+      return image;
+    }));
+    if (editor !== editorRef.current || noteId !== latestNote.current.id) return [];
+    const content = sanitizeNoteHtml(editor.innerHTML) + images.map((image) => image.outerHTML).join('');
+    if (new Blob([JSON.stringify({ ...latestNote.current, content })]).size > MAX_NOTE_BYTES) {
+      throw new Error('These pictures would take the note above the 10 MB sync limit.');
+    }
+    editor.append(...images);
+    handleInput();
+    return images;
   };
 
   const handleFormat = async (command: string, value: string = '') => {
@@ -255,7 +334,13 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
 
   // The unified page's toolbar drives formatting through this handle.
   useImperativeHandle(ref, () => ({
-    focusEditor: () => editorRef.current?.focus(),
+    focusEditor: () => {
+      const editor = editorRef.current;
+      if (editor) focusRange(editor, getEditorRange(editor));
+    },
+    focusAt,
+    savePageObjects: handleInput,
+    dropPictures,
     applyFormat: handleFormat,
     insertTable: (rows, columns) => {
       const editor = editorRef.current;
@@ -322,6 +407,10 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       contentEditable={embedded ? editable : true}
       suppressContentEditableWarning
       onInput={handleInput}
+      onBlur={discardEmptyWritingBlock}
+      onDragStart={(event) => {
+        if (event.target instanceof HTMLImageElement) event.preventDefault();
+      }}
       onPaste={handlePaste}
       onClick={(event) => {
         if (!(event.target instanceof Element)) return;

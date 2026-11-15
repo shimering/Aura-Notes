@@ -29,3 +29,23 @@ it('blocks executable and remote content in inserted media markup', () => {
   expect(doc.querySelectorAll('img')).toHaveLength(1);
   expect(doc.querySelector('[href], [download], [onerror]')).toBeNull();
 });
+
+it('preserves image wrapping and positioned text through save and reload', () => {
+  const html = sanitizeNoteHtml(
+    '<div data-note-positioned="true" style="left: 36px; top: 420px; position: fixed"><p>Typed here</p></div>' +
+    '<img data-picture-wrap="free" src="data:image/png;base64,AAAA" style="left: -3px; top: 74px; width: 156px; rotate: -12.25deg; transform: scale(99)">' +
+    '<img data-picture-wrap="left" src="data:image/png;base64,AAAB">' +
+    '<img data-picture-wrap="unknown" src="data:image/png;base64,AAAC">',
+  );
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const block = doc.querySelector<HTMLElement>('[data-note-positioned]')!;
+  expect(block.style.top).toBe('420px');
+  expect(block.style.position).toBe('');
+  const [free, wrapped, invalid] = doc.querySelectorAll('img');
+  expect(free.style.left).toBe('-3px');
+  expect(free.style.rotate).toBe('-12.25deg');
+  expect(free.style.width).toBe('156px');
+  expect(free.style.transform).toBe('');
+  expect(wrapped.dataset.pictureWrap).toBe('left');
+  expect(invalid.dataset.pictureWrap).toBeUndefined();
+});

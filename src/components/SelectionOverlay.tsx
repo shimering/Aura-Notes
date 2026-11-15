@@ -1,5 +1,5 @@
 import React from 'react';
-import { BringToFront, SendToBack, Trash2, RotateCw } from 'lucide-react';
+import { BringToFront, SendToBack, Trash2, RotateCw, Pencil } from 'lucide-react';
 import { Bounds, InkTransform } from '../utils/inkSelection';
 
 export type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
@@ -12,6 +12,8 @@ interface SelectionOverlayProps {
   count: number;
   /** True when the note's typed text block is part of the selection. */
   textSelected?: boolean;
+  pictureCount?: number;
+  onEditText?: () => void;
   onStartMove: (e: React.PointerEvent) => void;
   onStartResize: (corner: ResizeCorner, e: React.PointerEvent) => void;
   onStartRotate: (e: React.PointerEvent) => void;
@@ -41,6 +43,8 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
   transform,
   count,
   textSelected = false,
+  pictureCount = 0,
+  onEditText,
   onStartMove,
   onStartResize,
   onStartRotate,
@@ -48,7 +52,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
   onSendToBack,
   onDelete
 }) => {
-  const objectCount = count + (textSelected ? 1 : 0);
+  const objectCount = count + pictureCount + (textSelected ? 1 : 0);
   const style: React.CSSProperties = {
     left: bounds.x,
     top: bounds.y,
@@ -109,10 +113,20 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
       >
         <span
           className="px-1 text-ink-muted-light dark:text-ink-muted-dark"
-          title={textSelected ? 'Text block selected' : 'Ink objects selected'}
+          title={`${objectCount} selected`}
         >
-          {textSelected ? (count > 0 ? `${count} + text` : 'Text') : objectCount}
+          {objectCount === 1 && textSelected ? 'Text' : objectCount === 1 && pictureCount ? 'Image' : objectCount}
         </span>
+        {onEditText && (
+          <button
+            type="button"
+            onClick={onEditText}
+            className="flex items-center gap-1 rounded-lg px-3 py-2 font-semibold hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark"
+          >
+            <Pencil className="w-3.5 h-3.5" />
+            Edit text
+          </button>
+        )}
         <button
           type="button"
           onClick={onBringToFront}

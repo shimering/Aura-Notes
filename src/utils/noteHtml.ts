@@ -1,4 +1,5 @@
 import createDOMPurify from 'dompurify';
+import { pictureWraps } from './pageObjects';
 
 const tags = [
   'p', 'div', 'br', 'hr', 'span', 'font', 'b', 'strong', 'i', 'em', 'u', 's',
@@ -23,6 +24,15 @@ const formattingStyles = {
   'text-decoration': decorationValue,
   'text-decoration-line': decorationValue,
 };
+const positionStyles = {
+  left: /^-?\d{1,5}px$/,
+  top: /^-?\d{1,5}px$/,
+};
+const pictureStyles = {
+  ...positionStyles,
+  width: /^[1-9]\d{0,3}px$/,
+  rotate: /^-?\d{1,3}(?:\.\d{1,3})?deg$/,
+};
 let purifier: ReturnType<typeof createDOMPurify> | undefined;
 
 export function sanitizeNoteHtml(html: string): string {
@@ -43,10 +53,17 @@ export function sanitizeNoteHtml(html: string): string {
         attribute.keepAttr = node.nodeName === 'FONT' && formattingStyles['font-family'].test(attribute.attrValue);
       } else if (attribute.attrName === 'color') {
         attribute.keepAttr = colorValue.test(attribute.attrValue.trim());
+      } else if (attribute.attrName === 'data-picture-wrap') {
+        attribute.keepAttr = node.nodeName === 'IMG' && Object.hasOwn(pictureWraps, attribute.attrValue);
+      } else if (attribute.attrName === 'data-note-positioned') {
+        attribute.keepAttr = ['P', 'DIV'].includes(node.nodeName) && attribute.attrValue === 'true';
       } else if (attribute.attrName === 'style') {
         const css = node.ownerDocument.createElement('span').style;
         css.cssText = attribute.attrValue;
-        attribute.attrValue = Object.entries(formattingStyles).flatMap(([property, allowed]) => {
+        const styles = node.nodeName === 'IMG' ? { ...formattingStyles, ...pictureStyles }
+          : node.getAttribute('data-note-positioned') === 'true' && ['P', 'DIV'].includes(node.nodeName)
+            ? { ...formattingStyles, ...positionStyles } : formattingStyles;
+        attribute.attrValue = Object.entries(styles).flatMap(([property, allowed]) => {
           const value = css.getPropertyValue(property);
           return allowed.test(value) ? [`${property}: ${value};`] : [];
         }).join(' ');
@@ -62,7 +79,7 @@ export function sanitizeNoteHtml(html: string): string {
     ? purifier.sanitize(html, {
       ALLOWED_TAGS: tags,
       ALLOWED_ATTR: ['style', 'color', 'start', 'reversed', 'value', 'align', 'size', 'face',
-        'src', 'alt', 'href', 'download'],
+        'src', 'alt', 'href', 'download', 'data-picture-wrap', 'data-note-positioned'],
       ADD_DATA_URI_TAGS: ['a'],
       ALLOW_DATA_ATTR: false,
       ALLOW_ARIA_ATTR: false,
