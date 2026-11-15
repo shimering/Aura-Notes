@@ -726,7 +726,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (spenButtonPressStartRef.current !== null) {
       // The press is already tracked (it started in mid-air). Landing the tip
       // must still erase immediately rather than wait for the hold threshold.
-      if ((isPenDownRef.current || isEraserDrawingRef.current) && !isSpenEraserArmedRef.current) {
+      if (isPenDownRef.current && !isSpenEraserArmedRef.current) {
         spenButtonSawContactRef.current = true;
         activateSpenEraser(`${source} (contact)`);
       }
@@ -734,7 +734,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
 
     spenButtonPressStartRef.current = Date.now();
-    spenButtonSawContactRef.current = isPenDownRef.current || isEraserDrawingRef.current;
+    spenButtonSawContactRef.current = isPenDownRef.current;
     activateSpenEraser(source);
   }, [activateSpenEraser, cancelScheduledSpenDeactivation]);
 
@@ -804,6 +804,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    * The timestamp is kept so click-vs-hold uses the real release time.
    */
   const noteSpenReleaseEvidence = useCallback((source: string) => {
+    // No press in flight means there is nothing to conclude; every evidence
+    // source can call this unconditionally.
+    if (spenButtonPressStartRef.current === null && !isSpenEraserArmedRef.current) return;
     if (spenButtonReleaseEvidenceAtRef.current === null) {
       spenButtonReleaseEvidenceAtRef.current = Date.now();
     }
@@ -880,12 +883,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             }
           } else {
             spenHoverButtonSamplesRef.current = 0;
-            if (
-              (spenButtonPressStartRef.current !== null || isSpenEraserArmedRef.current) &&
-              !isEraserDrawingRef.current
-            ) {
-              noteSpenReleaseEvidence('hover-release');
-            }
+            noteSpenReleaseEvidence('hover-release');
           }
         } else if (hasBarrelButton) {
           // Button pressed with the tip already on the glass: the canvas hands
@@ -921,21 +919,22 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const handleGlobalPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'pen') {
+        // A tip touch sets buttons = 1 by itself. Only an auxiliary/barrel bit
+        // proves the S Pen button is physically held.
+        const hasBarrel = isSpenBarrelOrEraser(e.buttons, e.button);
         isPenDownRef.current = true;
         spenHoverButtonSamplesRef.current = 0;
-        spenContactButtonSamplesRef.current = isSpenBarrelOrEraser(e.buttons, e.button) ? 1 : 0;
+        spenContactButtonSamplesRef.current = hasBarrel ? 1 : 0;
         logSpenSample('down', {
           pointerType: e.pointerType,
           buttons: e.buttons,
           button: e.button,
           pressure: e.pressure,
           contact: true,
-          note: isSpenBarrelOrEraser(e.buttons, e.button) ? 'barrel-bit' : 'tip-only'
+          note: hasBarrel ? 'barrel-bit' : 'tip-only'
         });
         if (isInkUiTarget(e.target)) return;
-        // A tip touch sets buttons = 1 by itself. Only an auxiliary/barrel bit
-        // proves the S Pen button is physically held.
-        if (isSpenBarrelOrEraser(e.buttons, e.button)) {
+        if (hasBarrel) {
           spenButtonSawContactRef.current = true;
           if (!isSpenEraserArmedRef.current) {
             beginSpenButtonPress(`global-pointerdown-press (buttons=${e.buttons})`);
@@ -965,7 +964,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         logSpenSample('contextmenu', { buttons: e.buttons, button: e.button, note: hasBarrel ? 'barrel-bit' : 'no-barrel-bit' });
         if (hasBarrel) {
           beginSpenButtonPress('contextmenu-press');
-        } else if (spenButtonPressStartRef.current !== null || isSpenEraserArmedRef.current) {
+        } else {
           noteSpenReleaseEvidence('contextmenu-release');
         }
       }
@@ -992,7 +991,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         logSpenSample('auxclick', { buttons: e.buttons, button: e.button, note: hasBarrel ? 'barrel-bit' : 'no-barrel-bit' });
         if (hasBarrel) {
           beginSpenButtonPress('auxclick-press');
-        } else if (spenButtonPressStartRef.current !== null || isSpenEraserArmedRef.current) {
+        } else {
           noteSpenReleaseEvidence('auxclick-release');
         }
       }
@@ -1092,15 +1091,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       return;
     }
 
-    // Check if S Pen button is pressed upon touch-down. Tip contact alone
-    // reports buttons = 1, so require an actual auxiliary/barrel bit.
-    if (e.pointerType === 'pen' && isSpenBarrelOrEraser(e.buttons, e.button)) {
-      spenButtonSawContactRef.current = true;
-      if (!isSpenEraserArmedRef.current) {
-        beginSpenButtonPress('touch-down-button');
-      }
-    }
-
+    // Press-on-touchdown is handled by the global capture pointerdown listener,
+    // which always runs before this canvas handler.
     e.currentTarget.setPointerCapture(e.pointerId);
 
     const isEraserNow = isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser';
@@ -1271,17 +1263,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     handlePointerUp(e);
   };
 
-  // Prevent default context menu from consuming S Pen button gestures on canvas
-  const handleContextMenu = (e: React.MouseEvent) => {
+  // Keeps the browser's own context menu off the canvas. S Pen button presses
+  // are handled by the global capture listeners, which run first.
+  const suppressCanvasMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    beginSpenButtonPress('canvas-contextmenu');
-  };
-
-  const handleAuxClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    beginSpenButtonPress('canvas-auxclick');
   };
 
   // History controls
@@ -1341,8 +1327,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       {/* Drawing Canvas Container */}
       <div 
         ref={containerRef} 
-        onContextMenu={handleContextMenu}
-        onAuxClick={handleAuxClick}
+        onContextMenu={suppressCanvasMenu}
+        onAuxClick={suppressCanvasMenu}
         className="flex-1 w-full h-full relative cursor-crosshair overflow-hidden touch-none"
       >
         <canvas
@@ -1357,8 +1343,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
           onPointerLeave={handlePointerCancel}
-          onContextMenu={handleContextMenu}
-          onAuxClick={handleAuxClick}
+          onContextMenu={suppressCanvasMenu}
+          onAuxClick={suppressCanvasMenu}
           className="ink-canvas absolute inset-0 block w-full h-full"
         />
 
