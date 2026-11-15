@@ -58,6 +58,66 @@ const memoryVaultStore = new Map<string, string>();
 const MAX_SYNC_PAYLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_TOMBSTONES = 5000;
 const VAULT_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+/** How long a push request is held open before answering "nothing changed". */
+const WATCH_HOLD_MS = 18000;
+/** How often a held request re-reads storage. */
+const VAULT_WATCH_POLL_MS = 750;
+const NOTES_WATCH_POLL_MS = 1200;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface StoredVault {
+  vaultKey?: string;
+  notes?: any[];
+  settings?: any;
+  deletedNoteIds?: string[];
+  updatedAt?: number;
+  /** Bumped only when the vault content really changes. */
+  rev?: number;
+  /** Device id of the last upload, used to avoid waking the writer itself. */
+  lastWriter?: string;
+}
+
+/**
+ * Serialization-independent identity of a vault. Every note edit bumps its
+ * `updatedAt`, so comparing clocks is enough to tell whether anything new
+ * arrived, and two identical merges can never ping-pong a revision bump.
+ */
+function vaultFingerprint(vault: StoredVault): string {
+  const notes = (vault.notes || [])
+    .map((note) => `${String(note?.id ?? '')}@${Number(note?.updatedAt) || 0}`)
+    .sort();
+  const deleted = [...(vault.deletedNoteIds || [])].map(String).sort();
+  const settings = Object.keys(vault.settings || {})
+    .sort()
+    .map((key) => [key, vault.settings[key]]);
+  return JSON.stringify([notes, deleted, settings]);
+}
+
+async function readVault(env: Env, storageKey: string): Promise<{ raw: string | null; vault: StoredVault }> {
+  let raw: string | null = null;
+  if (env.AURA_SYNC_KV) {
+    raw = await env.AURA_SYNC_KV.get(storageKey);
+  } else {
+    raw = memoryVaultStore.get(storageKey) || null;
+  }
+  if (!raw) return { raw: null, vault: {} };
+  try {
+    return { raw, vault: JSON.parse(raw) as StoredVault };
+  } catch {
+    return { raw: null, vault: {} };
+  }
+}
+
+async function writeVault(env: Env, storageKey: string, serialized: string): Promise<void> {
+  if (env.AURA_SYNC_KV) {
+    await env.AURA_SYNC_KV.put(storageKey, serialized);
+  } else {
+    memoryVaultStore.set(storageKey, serialized);
+  }
+}
 
 function jsonResponse(body: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
@@ -431,6 +491,92 @@ function handleAuthConfig(request: Request, env: Env): Response {
   );
 }
 
+/* ------------------------------ Push channel ------------------------------ */
+
+/**
+ * Holds one request open per device and answers only once another device has
+ * written to the vault. Idle devices therefore send a request every ~18s
+ * instead of polling on a timer, and updates arrive within a second.
+ */
+async function handleVaultWatch(
+  request: Request,
+  env: Env,
+  vaultKey: string,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  if (request.method !== 'GET') {
+    return new Response('Method not allowed', { status: 405, headers: corsHeaders });
+  }
+
+  const url = new URL(request.url);
+  const sinceParam = url.searchParams.get('v');
+  const deviceId = (url.searchParams.get('device') || '').slice(0, 128);
+  const storageKey = `vault:${vaultKey}`;
+  const headers = { ...corsHeaders, 'Cache-Control': 'private, no-store' };
+
+  let { vault } = await readVault(env, storageKey);
+  const currentRev = vault.rev || 0;
+
+  // A client without a revision is asking for the baseline.
+  if (sinceParam === null || sinceParam.trim() === '') {
+    return jsonResponse({ changed: false, version: currentRev }, 200, headers);
+  }
+
+  const since = Number(sinceParam);
+  if (!Number.isFinite(since)) {
+    return jsonResponse({ changed: false, version: currentRev }, 200, headers);
+  }
+
+  const deadline = Date.now() + WATCH_HOLD_MS;
+  let rev = currentRev;
+  let lastWriter = vault.lastWriter || '';
+
+  while (rev === since && Date.now() < deadline) {
+    await sleep(VAULT_WATCH_POLL_MS);
+    vault = (await readVault(env, storageKey)).vault;
+    rev = vault.rev || 0;
+    lastWriter = vault.lastWriter || '';
+  }
+
+  // A device is never woken by its own upload.
+  const changed = rev !== since && (!deviceId || lastWriter !== deviceId);
+  return jsonResponse({ changed, version: rev }, 200, headers);
+}
+
+async function notesVersion(userId: string, db: D1DatabaseLike): Promise<string> {
+  const row = await db
+    .prepare('SELECT COUNT(*) AS total, MAX(updated_at) AS latest FROM notes WHERE user_sub = ?')
+    .bind(userId)
+    .first<{ total: number | null; latest: number | null }>();
+  return `${Number(row?.latest) || 0}.${Number(row?.total) || 0}`;
+}
+
+/** Same hanging-GET contract for a signed-in account's notes. */
+async function handleNotesWatch(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'GET') {
+    return jsonResponse({ error: 'Method not allowed' }, 405, NO_STORE);
+  }
+
+  const account = await requireAccount(request, env);
+  if (account instanceof Response) return account;
+
+  const url = new URL(request.url);
+  const since = url.searchParams.get('v');
+  let version = await notesVersion(account.user.id, account.db);
+
+  if (!since || since.trim() === '') {
+    return jsonResponse({ changed: false, version }, 200, NO_STORE);
+  }
+
+  const deadline = Date.now() + WATCH_HOLD_MS;
+  while (version === since && Date.now() < deadline) {
+    await sleep(NOTES_WATCH_POLL_MS);
+    version = await notesVersion(account.user.id, account.db);
+  }
+
+  return jsonResponse({ changed: version !== since, version }, 200, NO_STORE);
+}
+
 async function handleRequest(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
@@ -450,6 +596,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         );
       }
       return config.auth.handler(request);
+    }
+
+    // Push channel for account sync: answers when this user's notes change.
+    if (url.pathname === '/api/notes/watch') {
+      return handleNotesWatch(request, env);
     }
 
     // Per-user note storage: /api/notes and /api/notes/:id
@@ -478,6 +629,21 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return new Response(null, { headers: corsHeaders });
     }
 
+    // Push channel: holds the request open until another device writes.
+    const vaultWatchMatch = url.pathname.match(/^\/api\/sync\/vault\/([^/]+)\/watch\/?$/);
+    if (vaultWatchMatch) {
+      let watchKey = '';
+      try {
+        watchKey = decodeURIComponent(vaultWatchMatch[1]).trim();
+      } catch {
+        return jsonResponse({ error: 'Invalid vault key' }, 400, corsHeaders);
+      }
+      if (!VAULT_KEY_PATTERN.test(watchKey)) {
+        return jsonResponse({ error: 'Invalid vault key' }, 400, corsHeaders);
+      }
+      return handleVaultWatch(request, env, watchKey, corsHeaders);
+    }
+
     // Sync API routes: /api/sync/vault/:key
     if (url.pathname.startsWith('/api/sync/vault/')) {
       const vaultKey = decodeURIComponent(url.pathname.replace('/api/sync/vault/', '')).trim();
@@ -500,18 +666,15 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       const storageKey = `vault:${vaultKey}`;
 
       if (request.method === 'GET') {
-        let storedData: string | null = null;
-        if (env.AURA_SYNC_KV) {
-          storedData = await env.AURA_SYNC_KV.get(storageKey);
-        } else {
-          storedData = memoryVaultStore.get(storageKey) || null;
+        const { raw } = await readVault(env, storageKey);
+        if (!raw) {
+          return jsonResponse(
+            { notes: [], settings: {}, deletedNoteIds: [], updatedAt: 0, rev: 0 },
+            200,
+            corsHeaders
+          );
         }
-
-        if (!storedData) {
-          return jsonResponse({ notes: [], settings: {}, updatedAt: 0 }, 200, corsHeaders);
-        }
-
-        return new Response(storedData, {
+        return new Response(raw, {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
@@ -523,26 +686,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           const incomingSettings = body.settings || {};
           const incomingDeleted = Array.isArray(body.deletedNoteIds) ? body.deletedNoteIds : [];
 
-          // Fetch existing vault
-          let existingDataStr: string | null = null;
-          if (env.AURA_SYNC_KV) {
-            existingDataStr = await env.AURA_SYNC_KV.get(storageKey);
-          } else {
-            existingDataStr = memoryVaultStore.get(storageKey) || null;
-          }
-
-          let existingVault = { 
-            notes: [] as any[], 
-            settings: {} as any, 
-            deletedNoteIds: [] as string[], 
-            updatedAt: 0 
-          };
-
-          if (existingDataStr) {
-            try {
-              existingVault = JSON.parse(existingDataStr);
-            } catch {}
-          }
+          const { vault: existingVault } = await readVault(env, storageKey);
 
           // Merge deleted IDs (bounded so the tombstone list cannot grow forever)
           const allDeleted = Array.from(
@@ -589,13 +733,26 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
             ? { ...existingVault.settings, ...incomingSettings }
             : { ...incomingSettings, ...existingVault.settings };
 
-          const mergedVault = {
+          const mergedVault: StoredVault = {
             vaultKey,
             notes: Array.from(noteMap.values()),
             settings: mergedSettings,
             deletedNoteIds: allDeleted,
-            updatedAt: Date.now()
+            updatedAt: existingVault.updatedAt || 0,
+            rev: existingVault.rev || 0,
+            lastWriter: existingVault.lastWriter || ''
           };
+
+          // Only a real content change bumps the revision that wakes other
+          // devices; an idempotent re-sync must not start a notify loop.
+          if (vaultFingerprint(mergedVault) !== vaultFingerprint(existingVault)) {
+            mergedVault.updatedAt = Date.now();
+            mergedVault.rev = (existingVault.rev || 0) + 1;
+          }
+
+          const clientDeviceId =
+            typeof body.clientDeviceId === 'string' ? body.clientDeviceId.slice(0, 128) : '';
+          if (clientDeviceId) mergedVault.lastWriter = clientDeviceId;
 
           const mergedVaultStr = JSON.stringify(mergedVault);
           if (mergedVaultStr.length > MAX_SYNC_PAYLOAD_BYTES) {
@@ -606,11 +763,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
             );
           }
 
-          if (env.AURA_SYNC_KV) {
-            await env.AURA_SYNC_KV.put(storageKey, mergedVaultStr);
-          } else {
-            memoryVaultStore.set(storageKey, mergedVaultStr);
-          }
+          await writeVault(env, storageKey, mergedVaultStr);
 
           return new Response(mergedVaultStr, {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }

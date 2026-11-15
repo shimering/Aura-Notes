@@ -17,6 +17,7 @@ import {
 } from './services/syncService';
 import { fetchAuthConfig, fetchAuthSession, AuthUser } from './services/authService';
 import { AccountSyncError, syncAccountNotes } from './services/accountSyncService';
+import { watchAccountChanges, watchVaultChanges } from './services/liveSyncService';
 import { Header, ViewMode } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { TextEditor } from './components/TextEditor';
@@ -335,6 +336,49 @@ export default function App() {
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [executeSync, executeAccountSync]);
+
+  /**
+   * Live push channel: the Worker holds one request open per device and answers
+   * as soon as another device writes, so nothing is polled while nothing
+   * changes. The answer just triggers the normal sync pass.
+   */
+  useEffect(() => {
+    const vaultKey = settings.syncVaultKey;
+    const signedIn = !!account;
+    if (!settings.autoSyncEnabled || (!signedIn && !vaultKey)) return;
+
+    const controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+
+    const pullLatest = () => {
+      const run = () => {
+        // A sync already in flight will see the newest server state anyway.
+        if (isSyncingRef.current) {
+          if (attempts++ < 15) retryTimer = setTimeout(run, 800);
+          return;
+        }
+        attempts = 0;
+        if (accountRef.current) {
+          executeAccountSync();
+        } else if (settingsRef.current.syncVaultKey) {
+          executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
+        }
+      };
+      run();
+    };
+
+    if (signedIn) {
+      watchAccountChanges({ signal: controller.signal, onChanged: pullLatest });
+    } else {
+      watchVaultChanges(vaultKey, { signal: controller.signal, onChanged: pullLatest });
+    }
+
+    return () => {
+      controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [account, settings.autoSyncEnabled, settings.syncVaultKey, executeSync, executeAccountSync]);
 
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
   const allTags = Array.from(new Set(notes.flatMap((n) => n.tags || []))).sort((a, b) =>
