@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
+import { flushSync } from 'react-dom';
 import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode, TextBlockLayout, PageLayout } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint, eraseStrokesPartial } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
@@ -27,6 +28,8 @@ import { SelectionOverlay, ResizeCorner } from './SelectionOverlay';
 import { isSpenHardwareKeyEvent } from '../utils/spenDetection';
 import { createSpenGesture } from '../utils/spenGesture';
 import { PenToolbar } from './PenToolbar';
+import { NoteRibbon } from './NoteRibbon';
+import type { TextEditorRef } from './TextEditor';
 import { SPenQuickMenu } from './SPenQuickMenu';
 import {
   clampPageZoom,
@@ -69,8 +72,7 @@ interface InkCanvasProps {
   onToolChange?: (tool: PenTool) => void;
   /** The note's typed text, drawn between the back and front ink layers. */
   textLayer?: React.ReactNode;
-  /** Extra toolbar content for the active tool (text formatting while typing). */
-  toolbarExtra?: React.ReactNode;
+  textEditor?: React.RefObject<TextEditorRef | null>;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
   /** A4 orientation of the note sheet. */
@@ -198,7 +200,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   onRequestTextFocus,
   onToolChange,
   textLayer,
-  toolbarExtra,
+  textEditor,
   background = 'none',
   onChangeBackground,
   pageLayout = 'portrait',
@@ -421,7 +423,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   }, [activeTool, setSelection]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     onToolChange?.(activeTool);
   }, [activeTool, onToolChange]);
 
@@ -1974,40 +1976,58 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         transform: `translate(${displayTextLayout.x}px, ${displayTextLayout.y}px) rotate(${displayTextLayout.rotation}rad) scale(${displayTextLayout.scale})`
       };
 
+  const drawingTools = (
+    <PenToolbar
+      activeTool={activeTool}
+      onSelectTool={handleManualToolSelect}
+      color={penColor}
+      onChangeColor={setPenColor}
+      width={penWidth}
+      onChangeWidth={setPenWidth}
+      eraserWidth={eraserWidth}
+      onChangeEraserWidth={setEraserWidth}
+      eraserMode={eraserMode}
+      onChangeEraserMode={setEraserMode}
+      canUndo={canUndo}
+      canRedo={canRedo}
+      onUndo={handleUndo}
+      onRedo={handleRedo}
+      onClear={handleClear}
+      onScribbleToText={onScribbleToText}
+      hasStrokes={strokes.length > 0}
+      isStylusOnly={isStylusOnly}
+      onToggleStylusOnly={() => setIsStylusOnly(!isStylusOnly)}
+      onOpenSPenMenu={() => openQuickMenu(null)}
+      lastWritingTool={lastWritingToolRef.current}
+      selectMode={selectMode}
+      onChangeSelectMode={setSelectMode}
+    />
+  );
+
   return (
     <div className="flex flex-col w-full h-full relative select-none">
-      {/* Top Floating Pen Toolbar */}
-      <div className="px-4 py-2 flex justify-center items-center relative z-10 pointer-events-auto" data-ink-ui="toolbar-shell">
-        <PenToolbar
-          activeTool={activeTool}
-          onSelectTool={handleManualToolSelect}
-          color={penColor}
-          onChangeColor={setPenColor}
-          width={penWidth}
-          onChangeWidth={setPenWidth}
-          eraserWidth={eraserWidth}
-          onChangeEraserWidth={setEraserWidth}
-          eraserMode={eraserMode}
-          onChangeEraserMode={setEraserMode}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          onClear={handleClear}
-          onScribbleToText={onScribbleToText}
-          hasStrokes={strokes.length > 0}
-          isStylusOnly={isStylusOnly}
-          onToggleStylusOnly={() => setIsStylusOnly(!isStylusOnly)}
-          onOpenSPenMenu={() => openQuickMenu(null)}
-          lastWritingTool={lastWritingToolRef.current}
-          background={background}
-          onChangeBackground={onChangeBackground}
-          pageLayout={pageLayout}
-          onChangePageLayout={changePageLayout}
-          selectMode={selectMode}
-          onChangeSelectMode={setSelectMode}
-          extra={toolbarExtra}
-        />
+      <div className="relative z-10 shrink-0 pointer-events-auto" data-ink-ui="toolbar-shell">
+        {textEditor && onChangeBackground ? (
+          <NoteRibbon
+            editor={textEditor}
+            textActive={activeTool === 'text'}
+            enableText={() => {
+              if (selectedToolRef.current === 'text') return;
+              // Make the page editable before running the ribbon command, preserving the caret.
+              flushSync(() => {
+                selectedToolRef.current = 'text';
+                setSelectedTool('text');
+              });
+            }}
+            drawingTools={drawingTools}
+            orientation={pageLayout}
+            background={background}
+            onOrientationChange={changePageLayout}
+            onBackgroundChange={onChangeBackground}
+          />
+        ) : (
+          <div className="flex justify-center px-4 py-2">{drawingTools}</div>
+        )}
       </div>
 
       {/* The note page: an A4 sheet floating on the desk. Ruling, back ink,

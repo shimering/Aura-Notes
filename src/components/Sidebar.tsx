@@ -16,6 +16,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { NOTE_TEMPLATES } from '../utils/templates';
+import { sanitizeNoteHtml } from '../utils/noteHtml';
 
 interface SidebarProps {
   notes: Note[];
@@ -82,7 +83,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const stripHtml = (html: string) => {
     const tmp = document.createElement('div');
-    tmp.innerHTML = html;
+    tmp.innerHTML = sanitizeNoteHtml(html);
     return tmp.textContent || tmp.innerText || '';
   };
 

@@ -1,195 +1,159 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  Bold,
-  Italic,
-  Underline,
-  Strikethrough,
-  Heading1,
-  Heading2,
-  List,
-  ListOrdered,
-  Quote,
-  Minus,
-  Palette,
-  Highlighter,
-  RemoveFormatting
+  AlignCenter, AlignJustify, AlignLeft, AlignRight, Bold, ChevronDown, ClipboardPaste,
+  Copy, Eraser, IndentDecrease, IndentIncrease, Italic, List, ListOrdered, Minus,
+  Palette, Redo2, Scissors, Strikethrough, Subscript, Superscript, Underline, Undo2,
+  type LucideIcon,
 } from 'lucide-react';
 import { ColorPalette } from './ColorPalette';
 
 interface FormatToolbarProps {
   onApplyFormat: (command: string, value?: string) => void;
-  /** Drops the panel chrome so the bar can live inside a toolbar dropdown. */
-  embedded?: boolean;
+  compact?: boolean;
 }
 
-export const FormatToolbar: React.FC<FormatToolbarProps> = ({ onApplyFormat, embedded = false }) => {
-  const [showColorPopover, setShowColorPopover] = useState(false);
-  const popoverRef = useRef<HTMLDivElement>(null);
+const FONT_FAMILIES = ['Arial', 'Georgia', 'Segoe UI', 'Times New Roman', 'Verdana', 'Courier New'];
+const FONT_SIZES = [
+  ['1', '8'], ['2', '10'], ['3', '12'], ['4', '14'], ['5', '18'], ['6', '24'], ['7', '36'],
+];
 
+export function FormatToolbar({ onApplyFormat, compact = false }: FormatToolbarProps) {
+  const [showColors, setShowColors] = useState(false);
+  const toolbar = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setShowColorPopover(false);
-      }
+    if (!showColors) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!toolbar.current?.contains(event.target as Node)) setShowColors(false);
     };
-    if (showColorPopover) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showColorPopover]);
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [showColors]);
 
-  const handleCommand = (e: React.MouseEvent, cmd: string, val: string = '') => {
-    e.preventDefault();
-    onApplyFormat(cmd, val);
-  };
+  const command = (Icon: LucideIcon, label: string, name: string, expandedOnly = false) =>
+    (!compact || !expandedOnly) && (
+      <button
+        type="button"
+        className="ribbon-command"
+        title={label}
+        aria-label={label}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          setShowColors(false);
+          onApplyFormat(name);
+        }}
+      >
+        <Icon size={16} />
+      </button>
+    );
 
   return (
     <div
-      className={
-        embedded
-          ? 'relative flex items-center flex-wrap gap-1 select-none'
-          : 'relative flex items-center flex-wrap gap-1 p-1.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark transition-all select-none'
-      }
+      ref={toolbar}
+      className="ribbon-groups ribbon-home"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setShowColors(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') setShowColors(false);
+      }}
     >
-      {/* Text Style Section */}
-      <div className="flex items-center gap-0.5 pr-1.5 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'bold')}
-          title="Bold (Ctrl+B)"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <Bold className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'italic')}
-          title="Italic (Ctrl+I)"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <Italic className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'underline')}
-          title="Underline (Ctrl+U)"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <Underline className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'strikeThrough')}
-          title="Strikethrough"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <Strikethrough className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Headings */}
-      <div className="flex items-center gap-0.5 pr-1.5 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'formatBlock', '<h1>')}
-          title="Large Heading"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <Heading1 className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'formatBlock', '<h2>')}
-          title="Medium Heading"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <Heading2 className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Lists & Blocks */}
-      <div className="flex items-center gap-0.5 pr-1.5 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'insertUnorderedList')}
-          title="Bullet List"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <List className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'insertOrderedList')}
-          title="Numbered List"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <ListOrdered className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'formatBlock', '<blockquote>')}
-          title="Quote Block"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <Quote className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onMouseDown={(e) => handleCommand(e, 'insertHorizontalRule')}
-          title="Horizontal Divider"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark transition active:scale-95"
-        >
-          <Minus className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Color and Highlighter trigger */}
-      <div className="relative" ref={popoverRef}>
-        <button
-          type="button"
-          onMouseDown={(e) => {
-            // Prevent taking focus away from editor
-            e.preventDefault();
-            setShowColorPopover(!showColorPopover);
-          }}
-          title="Text Color & Highlight Palette"
-          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium transition active:scale-95 ${
-            showColorPopover
-              ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300'
-              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-          }`}
-        >
-          <Palette className="w-4 h-4 text-violet-500" />
-          <span>Colors</span>
-        </button>
-
-        {showColorPopover && (
-          <div className="absolute top-full left-0 mt-2 z-50">
-            <ColorPalette
-              onSelectTextColor={(color) => {
-                onApplyFormat('foreColor', color);
-                setShowColorPopover(false);
-              }}
-              onSelectHighlightColor={(color) => {
-                onApplyFormat('hiliteColor', color);
-                setShowColorPopover(false);
-              }}
-            />
+      {!compact && (
+        <div className="ribbon-group">
+          <div className="ribbon-row">
+            <button type="button" className="ribbon-command ribbon-large-command"
+              onMouseDown={(event) => event.preventDefault()} onClick={() => onApplyFormat('paste')}>
+              <ClipboardPaste size={21} /> Paste
+            </button>
+            <div className="ribbon-stack">
+              {command(Scissors, 'Cut', 'cut')}
+              {command(Copy, 'Copy', 'copy')}
+            </div>
           </div>
-        )}
+          <span className="ribbon-group-label">Clipboard</span>
+        </div>
+      )}
+      <div className="ribbon-group">
+        <div className="ribbon-row">
+          <select className="ribbon-select ribbon-font" aria-label="Font family" value=""
+            onChange={(event) => onApplyFormat('fontName', event.target.value)}>
+            <option value="" disabled>Font</option>
+            {FONT_FAMILIES.map((font) => <option key={font}>{font}</option>)}
+          </select>
+          <select className="ribbon-select" aria-label="Font size" value=""
+            onChange={(event) => onApplyFormat('fontSize', event.target.value)}>
+            <option value="" disabled>Size</option>
+            {FONT_SIZES.map(([value, label]) => <option key={value} value={value}>{label} pt</option>)}
+          </select>
+          {compact && (
+            <>
+              {command(Undo2, 'Undo text edit', 'undo')}
+              {command(Redo2, 'Redo text edit', 'redo')}
+            </>
+          )}
+        </div>
+        <div className="ribbon-row">
+          {command(Bold, 'Bold', 'bold')}
+          {command(Italic, 'Italic', 'italic')}
+          {command(Underline, 'Underline', 'underline')}
+          {command(Strikethrough, 'Strikethrough', 'strikeThrough', true)}
+          {command(Subscript, 'Subscript', 'subscript', true)}
+          {command(Superscript, 'Superscript', 'superscript', true)}
+          <button type="button" className="ribbon-command" aria-label="Text color and highlight"
+            title="Text color and highlight" aria-expanded={showColors}
+            onMouseDown={(event) => event.preventDefault()} onClick={() => setShowColors(!showColors)}>
+            <Palette size={16} /><ChevronDown size={11} />
+          </button>
+          {command(Eraser, 'Clear formatting', 'removeFormat', true)}
+        </div>
+        {!compact && <span className="ribbon-group-label">Font</span>}
       </div>
-
-      {/* Clear Formatting */}
-      <button
-        type="button"
-        onMouseDown={(e) => handleCommand(e, 'removeFormat')}
-        title="Clear Formatting"
-        className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light transition active:scale-95 ml-1"
-      >
-        <RemoveFormatting className="w-4 h-4" />
-      </button>
+      <div className="ribbon-group">
+        <div className="ribbon-row">
+          {command(List, 'Bullets', 'insertUnorderedList')}
+          {command(ListOrdered, 'Numbering', 'insertOrderedList')}
+          {command(IndentDecrease, 'Decrease indent', 'outdent', true)}
+          {command(IndentIncrease, 'Increase indent', 'indent', true)}
+          {command(Minus, 'Horizontal divider', 'insertHorizontalRule', true)}
+        </div>
+        <div className="ribbon-row">
+          {command(AlignLeft, 'Align left', 'justifyLeft')}
+          {command(AlignCenter, 'Center', 'justifyCenter')}
+          {command(AlignRight, 'Align right', 'justifyRight')}
+          {command(AlignJustify, 'Justify', 'justifyFull')}
+        </div>
+        {!compact && <span className="ribbon-group-label">Paragraph</span>}
+      </div>
+      {!compact && (
+        <div className="ribbon-group">
+          <div className="ribbon-row">
+            {command(Undo2, 'Undo text edit', 'undo')}
+            {command(Redo2, 'Redo text edit', 'redo')}
+          </div>
+          <div className="ribbon-row">
+            {([['Body text', 'p'], ['Heading 1', 'h1'], ['Heading 2', 'h2'], ['Quote', 'blockquote']]).map(([label, tag]) => (
+              <button type="button" key={tag} className={`ribbon-command ribbon-style ribbon-style-${tag}`}
+                onMouseDown={(event) => event.preventDefault()} onClick={() => onApplyFormat('formatBlock', tag)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <span className="ribbon-group-label">Styles</span>
+        </div>
+      )}
+      {showColors && (
+        <div className="ribbon-popover">
+          <ColorPalette
+            onSelectTextColor={(color) => {
+              onApplyFormat('foreColor', color);
+              setShowColors(false);
+            }}
+            onSelectHighlightColor={(color) => {
+              onApplyFormat('hiliteColor', color);
+              setShowColors(false);
+            }}
+          />
+        </div>
+      )}
     </div>
   );
-};
+}

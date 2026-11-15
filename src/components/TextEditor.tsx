@@ -1,10 +1,26 @@
 import React, { forwardRef, useImperativeHandle, useRef, useEffect, useMemo } from 'react';
 import { Note } from '../types/note';
 import { FormatToolbar } from './FormatToolbar';
+import { pdfData, sanitizeNoteHtml } from '../utils/noteHtml';
 
 export interface TextEditorRef {
   focusEditor: () => void;
-  applyFormat: (command: string, value?: string) => void;
+  applyFormat: (command: string, value?: string) => Promise<void>;
+  insertTable: (rows: number, columns: number) => void;
+  insertFile: (file: File, kind: 'picture' | 'pdf') => Promise<void>;
+}
+
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_NOTE_BYTES = 10 * 1024 * 1024;
+const pictureType = /^image\/(?:png|jpeg|gif|webp|avif|bmp)$/i;
+
+function readDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Could not read the selected file.'));
+    reader.readAsDataURL(file);
+  });
 }
 
 interface TextEditorProps {
@@ -24,7 +40,7 @@ interface TextEditorProps {
  */
 function htmlToText(html: string): string {
   const div = document.createElement('div');
-  div.innerHTML = html || '';
+  div.innerHTML = sanitizeNoteHtml(html || '');
   div.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
   div
     .querySelectorAll('p, div, li, ul, ol, h1, h2, h3, h4, h5, h6, blockquote')
@@ -46,8 +62,7 @@ function cleanListMarkup(root: HTMLElement) {
       .filter(
         (declaration) =>
           declaration &&
-          !declaration.includes('var(--tw-') &&
-          !/^font-size\s*:/i.test(declaration)
+          !declaration.includes('var(--tw-')
       );
 
     if (declarations.length > 0) {
@@ -83,20 +98,40 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
   ref
 ) => {
   const editorRef = useRef<HTMLDivElement>(null);
-  const isInternalUpdateRef = useRef(false);
+  const internalUpdateRef = useRef<{ noteId: string; content: string } | null>(null);
+  const savedRange = useRef<Range | null>(null);
+  const latestNote = useRef(note);
+  if (latestNote.current.id !== note.id) savedRange.current = null;
+  latestNote.current = note;
+
+  useEffect(() => {
+    const rememberSelection = () => {
+      const selection = window.getSelection();
+      if (!selection?.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      if (editorRef.current?.contains(range.commonAncestorContainer)) {
+        savedRange.current = range.cloneRange();
+      }
+    };
+    document.addEventListener('selectionchange', rememberSelection);
+    return () => document.removeEventListener('selectionchange', rememberSelection);
+  }, []);
 
   // Synchronize content whenever external note or content changes
   useEffect(() => {
     if (editorRef.current) {
-      if (isInternalUpdateRef.current) {
+      const internalUpdate = internalUpdateRef.current;
+      internalUpdateRef.current = null;
+      if (internalUpdate?.noteId === note.id && internalUpdate.content === note.content) {
         // Change originated from user typing in this editor instance;
         // consume the flag and don't re-render innerHTML to preserve cursor.
-        isInternalUpdateRef.current = false;
         return;
       }
       // External change (e.g. note switched, or OCR Scribble text inserted)
-      if (editorRef.current.innerHTML !== note.content) {
-        editorRef.current.innerHTML = note.content;
+      const content = sanitizeNoteHtml(note.content);
+      if (editorRef.current.innerHTML !== content) {
+        savedRange.current = null;
+        editorRef.current.innerHTML = content;
       }
     }
   }, [note.id, note.content]);
@@ -117,28 +152,118 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     selection.addRange(range);
   }, [focusRequest]);
 
+  const getEditorRange = (editor: HTMLElement) => {
+    const selection = window.getSelection();
+    const current = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (current && editor.contains(current.commonAncestorContainer)) return current.cloneRange();
+    if (savedRange.current && editor.contains(savedRange.current.commonAncestorContainer)) {
+      return savedRange.current.cloneRange();
+    }
+    const end = document.createRange();
+    end.selectNodeContents(editor);
+    end.collapse(false);
+    return end;
+  };
+
+  const focusRange = (editor: HTMLElement, range: Range) => {
+    editor.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  };
+
   const handleInput = () => {
     if (editorRef.current) {
-      isInternalUpdateRef.current = true;
-      onChangeContent(editorRef.current.innerHTML);
+      const content = sanitizeNoteHtml(editorRef.current.innerHTML);
+      internalUpdateRef.current = { noteId: note.id, content };
+      onChangeContent(content);
     }
   };
 
-  const handleFormat = (command: string, value: string = '') => {
-    if (editorRef.current) {
-      editorRef.current.focus();
-      document.execCommand(command, false, value);
-      if (command === 'insertUnorderedList' || command === 'insertOrderedList') {
-        cleanListMarkup(editorRef.current);
+  const handleFormat = async (command: string, value: string = '') => {
+    const editor = editorRef.current;
+    if (!editor?.isContentEditable) return;
+    const range = getEditorRange(editor);
+    const noteId = note.id;
+    if (command === 'paste') {
+      if (!navigator.clipboard?.readText) throw new Error('Use Ctrl+V or your device’s Paste command.');
+      try {
+        value = await navigator.clipboard.readText();
+      } catch {
+        throw new Error('Clipboard access was blocked. Use Ctrl+V or your device’s Paste command.');
       }
-      handleInput();
+      if (editorRef.current !== editor || latestNote.current.id !== noteId ||
+        !editor.isContentEditable || !editor.contains(range.commonAncestorContainer)) return;
+      command = 'insertText';
     }
+    focusRange(editor, range);
+    const applied = document.execCommand(command, false, value);
+    if (!applied && (command === 'copy' || command === 'cut')) {
+      throw new Error(command === 'copy' ? 'Select text and use Ctrl+C to copy.' : 'Select text and use Ctrl+X to cut.');
+    }
+    if (['insertUnorderedList', 'insertOrderedList', 'indent', 'outdent'].includes(command)) {
+      cleanListMarkup(editor);
+    }
+    handleInput();
+  };
+
+  const insertMarkup = (editor: HTMLDivElement, range: Range, markup: string) => {
+    focusRange(editor, range);
+    if (!document.execCommand('insertHTML', false, markup)) {
+      throw new Error('Could not insert content. Place the cursor on the page and try again.');
+    }
+    handleInput();
+  };
+
+  const insertFile = async (file: File, kind: 'picture' | 'pdf') => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const range = getEditorRange(editor);
+    const content = latestNote.current.content;
+    const noteId = note.id;
+    if (!file.size || file.size > MAX_FILE_BYTES) throw new Error('Choose a file between 1 byte and 5 MB.');
+    if (kind === 'picture' && !pictureType.test(file.type)) {
+      throw new Error('Choose a PNG, JPEG, GIF, WebP, AVIF or BMP picture.');
+    }
+    if (kind === 'pdf' && !(await file.slice(0, 5).text()).startsWith('%PDF-')) {
+      throw new Error('The selected file is not a PDF.');
+    }
+
+    const data = await readDataUrl(file);
+    if (editorRef.current !== editor || latestNote.current.id !== noteId) return;
+    if (!editor.isContentEditable) throw new Error('Switch to the Text tool before inserting a file.');
+    const element = document.createElement(kind === 'picture' ? 'img' : 'a');
+    if (element instanceof HTMLImageElement) {
+      element.src = data;
+      element.alt = file.name;
+    } else {
+      element.href = data.replace(/^data:[^,]*,/, 'data:application/pdf;base64,');
+      element.download = file.name;
+      element.textContent = file.name;
+    }
+    const markup = `<p>${element.outerHTML}</p><p><br></p>`;
+    const noteBytes = new Blob([JSON.stringify({
+      ...latestNote.current,
+      content: sanitizeNoteHtml(editor.innerHTML) + markup,
+    })]).size;
+    if (noteBytes > MAX_NOTE_BYTES) throw new Error('This file would take the note above the 10 MB sync limit.');
+    const target = latestNote.current.content === content && editor.contains(range.commonAncestorContainer)
+      ? range
+      : getEditorRange(editor);
+    insertMarkup(editor, target, markup);
   };
 
   // The unified page's toolbar drives formatting through this handle.
   useImperativeHandle(ref, () => ({
     focusEditor: () => editorRef.current?.focus(),
-    applyFormat: (command: string, value: string = '') => handleFormat(command, value)
+    applyFormat: handleFormat,
+    insertTable: (rows, columns) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const row = `<tr>${'<td><br></td>'.repeat(columns)}</tr>`;
+      insertMarkup(editor, getEditorRange(editor), `<table><tbody>${row.repeat(rows)}</tbody></table><p><br></p>`);
+    },
+    insertFile,
   }));
 
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -157,6 +282,19 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     if (!anchor || !editor || !editor.contains(anchor)) return;
 
     const element = anchor.nodeType === Node.ELEMENT_NODE ? (anchor as Element) : anchor.parentElement;
+    const cell = element?.closest<HTMLTableCellElement>('td, th');
+    if (cell) {
+      const cells = Array.from(cell.closest('table')?.querySelectorAll('td, th') ?? []);
+      const next = cells[cells.indexOf(cell) + (e.shiftKey ? -1 : 1)];
+      if (next) {
+        e.preventDefault();
+        const range = document.createRange();
+        range.selectNodeContents(next);
+        focusRange(editor, range);
+      }
+      return;
+    }
+
     const listItem = element?.closest('li');
     if (!listItem || !editor.contains(listItem)) return;
 
@@ -185,6 +323,17 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       suppressContentEditableWarning
       onInput={handleInput}
       onPaste={handlePaste}
+      onClick={(event) => {
+        if (!(event.target instanceof Element)) return;
+        const attachment = event.target.closest<HTMLAnchorElement>('a[download]');
+        if (!attachment || !pdfData.test(attachment.getAttribute('href') ?? '')) return;
+        event.preventDefault();
+        const link = document.createElement('a');
+        link.href = attachment.href;
+        link.download = attachment.download;
+        link.click();
+      }}
+      onDrop={(event) => event.preventDefault()}
       onKeyDown={handleKeyDown}
       data-note-editor="true"
       data-placeholder="Start typing on the page, or draw anywhere with the pen..."

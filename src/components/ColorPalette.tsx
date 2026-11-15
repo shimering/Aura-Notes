@@ -77,10 +77,7 @@ export const ColorPalette: React.FC<ColorPaletteProps> = ({
               <button
                 key={c.name}
                 type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onSelectTextColor(c.value);
-                }}
+                onClick={() => onSelectTextColor(c.value)}
                 title={c.name}
                 className="w-8 h-8 rounded-full border border-black/10 dark:border-white/10 flex items-center justify-center hover:scale-110 transition active:scale-95 shadow-sm"
                 style={{ backgroundColor: c.value === 'inherit' ? '#e2e8f0' : c.value }}
@@ -115,10 +112,7 @@ export const ColorPalette: React.FC<ColorPaletteProps> = ({
               <button
                 key={c.name}
                 type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onSelectHighlightColor(c.value);
-                }}
+                onClick={() => onSelectHighlightColor(c.value)}
                 title={c.name}
                 className={`h-8 rounded-xl border border-black/10 dark:border-white/10 flex items-center justify-center text-xs font-medium hover:scale-105 transition active:scale-95 shadow-sm ${
                   c.value === 'transparent' ? 'bg-transparent text-ink-muted-light' : 'text-slate-800'

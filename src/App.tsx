@@ -21,13 +21,13 @@ import { watchAccountChanges, watchVaultChanges } from './services/liveSyncServi
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { TextEditor, TextEditorRef } from './components/TextEditor';
-import { FormatToolbar } from './components/FormatToolbar';
 import { InkCanvas, InkCanvasRef } from './components/InkCanvas';
 import { ScribbleRecognitionModal } from './components/ScribbleRecognitionModal';
 import { InstallModal } from './components/InstallModal';
 import { SyncModal } from './components/SyncModal';
 import { SettingsModal } from './components/SettingsModal';
 import { getNoteTemplate } from './utils/templates';
+import { plainTextToNoteHtml, sanitizeNoteHtml } from './utils/noteHtml';
 
 export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -625,7 +625,7 @@ export default function App() {
   const handleInsertScribbleText = (recognizedText: string, clearStrokes: boolean) => {
     if (!activeNote) return;
 
-    const formattedInsert = `<p>${recognizedText.replace(/\n/g, '<br/>')}</p>`;
+    const formattedInsert = `<p>${plainTextToNoteHtml(recognizedText)}</p>`;
     const updatedContent = activeNote.content 
       ? `${activeNote.content}<br/>${formattedInsert}` 
       : formattedInsert;
@@ -662,7 +662,7 @@ export default function App() {
     if (!activeNote) return;
 
     const div = document.createElement('div');
-    div.innerHTML = activeNote.content;
+    div.innerHTML = sanitizeNoteHtml(activeNote.content);
     const plainText = div.innerText || '';
 
     const mdContent = `# ${activeNote.title || 'Untitled Note'}\n\n${plainText}\n\n---\n*Created with Aura Notes Studio on ${new Date(activeNote.createdAt).toLocaleString()}*`;
@@ -838,16 +838,7 @@ export default function App() {
                   editable={surfaceTool === 'text'}
                 />
               }
-              toolbarExtra={
-                surfaceTool === 'text' ? (
-                  <FormatToolbar
-                    embedded
-                    onApplyFormat={(command, value) =>
-                      textEditorRef.current?.applyFormat(command, value)
-                    }
-                  />
-                ) : null
-              }
+              textEditor={textEditorRef}
               defaultTool={settings.defaultPenTool}
               defaultColor={settings.defaultPenColor}
               defaultWidth={settings.defaultPenWidth}
