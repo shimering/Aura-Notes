@@ -1,8 +1,22 @@
-import React, { useRef, useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
-import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode } from '../types/note';
+import React, { useRef, useEffect, useState, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
+import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint, eraseStrokesPartial } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
 import { drawInkBackground } from '../utils/inkBackground';
+import {
+  applyInkTransform,
+  Bounds,
+  getStrokesBounds,
+  hitTestStroke,
+  IDENTITY_INK_TRANSFORM,
+  InkTransform,
+  isIdentityTransform,
+  MarqueeGeometry,
+  Point,
+  reorderSelection,
+  selectStrokeIds
+} from '../utils/inkSelection';
+import { SelectionOverlay, ResizeCorner } from './SelectionOverlay';
 import { 
   isSpenBarrelOrEraser, 
   isSpenHoverButton,
@@ -29,6 +43,14 @@ interface InkCanvasProps {
   onScribbleToText: () => void;
   /** A finger tap that never travelled: the note sheet should take the caret. */
   onFingerTap?: () => void;
+  /** Asks the page to focus the text caret (Text tool, finger tap). */
+  onRequestTextFocus?: () => void;
+  /** Reports the active tool so the host can reflect it in the text sheet. */
+  onToolChange?: (tool: PenTool) => void;
+  /** The note's typed text, drawn between the back and front ink layers. */
+  textLayer?: React.ReactNode;
+  /** Extra toolbar content for the active tool (text formatting while typing). */
+  toolbarExtra?: React.ReactNode;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
   defaultTool?: PenTool;
@@ -117,6 +139,15 @@ const SPEN_POST_LIFT_GUARD_MS = 150;
 const FINGER_TAP_SLOP_PX = 8;
 const FINGER_TAP_MAX_MS = 600;
 
+/** One in-flight move / resize / rotate of the current selection. */
+type TransformDrag = {
+  kind: 'move' | 'resize' | 'rotate';
+  corner: ResizeCorner | null;
+  start: Point;
+  bounds: Bounds;
+  baseStrokes: Stroke[];
+};
+
 /** One captured S Pen sample for on-device diagnostics. */
 type SpenLogEntry = {
   t: number;
@@ -162,6 +193,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   onChangeStrokes,
   onScribbleToText,
   onFingerTap,
+  onRequestTextFocus,
+  onToolChange,
+  textLayer,
+  toolbarExtra,
   background = 'none',
   onChangeBackground,
   defaultTool = 'fountain',
@@ -175,23 +210,48 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const backgroundCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Ink assigned to the note's back layer is painted on this canvas, behind the text.
+  const backCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Detect dark mode for initial ink color
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
 
-  // Primary user-selected tool (fountain, ballpoint, highlighter, or eraser)
-  const [selectedTool, setSelectedTool] = useState<PenTool>(defaultTool);
+  // Primary user-selected tool (text, select, a pen, or the eraser).
+  // A keyboard/mouse desktop opens on the text sheet; a pen device opens with
+  // ink already live so the stylus works the moment it touches the page.
+  const [selectedTool, setSelectedTool] = useState<PenTool>(() =>
+    typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 ? defaultTool : 'text'
+  );
   const [penColor, setPenColor] = useState<string>(defaultColor || (isDarkMode ? '#ffffff' : '#1e293b'));
   const [penWidth, setPenWidth] = useState<number>(defaultWidth);
   const [eraserWidth, setEraserWidth] = useState<number>(defaultEraserWidth);
   const [eraserMode, setEraserMode] = useState<EraserMode>(defaultEraserMode);
   const [isStylusOnly, setIsStylusOnly] = useState<boolean>(defaultStylusOnly);
 
+  // ---- Select tool: marquee, selection frame, live transform ---------------
+  const [selectMode, setSelectMode] = useState<SelectMode>('rect');
+  const selectModeRef = useRef<SelectMode>('rect');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectedIdsRef = useRef<string[]>([]);
+  const [marquee, setMarquee] = useState<MarqueeGeometry | null>(null);
+  const marqueeRef = useRef<MarqueeGeometry | null>(null);
+  const [liveTransform, setLiveTransform] = useState<InkTransform | null>(null);
+  const liveTransformRef = useRef<InkTransform | null>(null);
+  const transformDragRef = useRef<TransformDrag | null>(null);
+  const transformCleanupRef = useRef<(() => void) | null>(null);
+  const selectionBoundsRef = useRef<Bounds | null>(null);
+
+  const setSelection = useCallback((ids: string[]) => {
+    selectedIdsRef.current = ids;
+    setSelectedIds(ids);
+  }, []);
+
   // Momentary S Pen Eraser State: active while pressing button, DEACTIVATES ON RELEASE
   const [isSpenEraserArmed, setIsSpenEraserArmed] = useState<boolean>(false);
   const isSpenEraserArmedRef = useRef<boolean>(false);
-  const selectedToolRef = useRef<PenTool>(defaultTool);
+  const selectedToolRef = useRef<PenTool>(selectedTool);
   const lastWritingToolRef = useRef<PenTool>(defaultTool === 'eraser' ? 'fountain' : defaultTool);
   const isEraserDrawingRef = useRef<boolean>(false);
   // A drag that has produced real pressure proves this device reports pressure,
@@ -230,14 +290,48 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   useEffect(() => {
     selectedToolRef.current = selectedTool;
-    if (selectedTool !== 'eraser') {
+    if (selectedTool !== 'eraser' && selectedTool !== 'text' && selectedTool !== 'select') {
       lastWritingToolRef.current = selectedTool;
     }
   }, [selectedTool]);
 
+  useEffect(() => {
+    selectModeRef.current = selectMode;
+  }, [selectMode]);
+
+  // Leaving the Select tool drops the frame; the objects stay where they are.
+  useEffect(() => {
+    if (activeTool !== 'select') {
+      if (selectedIdsRef.current.length > 0) setSelection([]);
+      marqueeRef.current = null;
+      setMarquee(null);
+    }
+  }, [activeTool, setSelection]);
+
+  useEffect(() => {
+    onToolChange?.(activeTool);
+  }, [activeTool, onToolChange]);
+
+  useEffect(() => () => transformCleanupRef.current?.(), []);
+
+  // Undo, erasing or sync can remove selected strokes: drop them from the frame.
+  useEffect(() => {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) return;
+    const alive = new Set(strokes.map((stroke) => stroke.id));
+    const next = ids.filter((id) => alive.has(id));
+    if (next.length !== ids.length) setSelection(next);
+  }, [strokes, setSelection]);
+
   // Keep the canvas in sync when stylus defaults change in Settings. These only
   // fire on actual prop changes, so in-canvas tool picks are never clobbered.
+  // The first run is skipped so the opening tool above survives mount.
+  const defaultToolAppliedRef = useRef(false);
   useEffect(() => {
+    if (!defaultToolAppliedRef.current) {
+      defaultToolAppliedRef.current = true;
+      return;
+    }
     setSelectedTool(defaultTool);
   }, [defaultTool]);
 
@@ -487,19 +581,28 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteId]);
 
-  // Redraw all strokes on canvas
+  // Redraw all strokes across the two ink layers (back = behind the text).
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
+    const backCanvas = backCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    const backCtx = backCanvas ? backCanvas.getContext('2d') : null;
 
     const dpr = window.devicePixelRatio || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (backCanvas && backCtx) {
+      backCtx.clearRect(0, 0, backCanvas.width, backCanvas.height);
+    }
 
     const visibleStrokes = previewStrokesRef.current ?? strokesRef.current;
     for (const stroke of visibleStrokes) {
-      renderStroke(ctx, stroke, dpr);
+      if ((stroke.layer ?? 'front') === 'back' && backCtx) {
+        renderStroke(backCtx, stroke, dpr);
+      } else {
+        renderStroke(ctx, stroke, dpr);
+      }
     }
 
     // Render current active stroke live
@@ -627,23 +730,35 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       bgCanvas.style.height = `${rect.height}px`;
     }
 
+    const backCanvas = backCanvasRef.current;
+    if (backCanvas) {
+      backCanvas.width = canvas.width;
+      backCanvas.height = canvas.height;
+      backCanvas.style.width = `${rect.width}px`;
+      backCanvas.style.height = `${rect.height}px`;
+    }
+
     drawBackground();
     redraw();
   }, [drawBackground, redraw]);
 
-  // Attach ResizeObserver to container
+  // Keep the page canvases matched to the sheet as the note grows.
   useEffect(() => {
     resizeCanvas();
     if (!containerRef.current) return;
 
-    const ro = new ResizeObserver(() => {
-      resizeCanvas();
-    });
+    const ro = new ResizeObserver(() => resizeCanvas());
     ro.observe(containerRef.current);
+
+    // The page grows with the typed text, which is a DOM mutation rather than a
+    // resize every browser reports, so watch the sheet as well and repaint.
+    const mo = new MutationObserver(() => resizeCanvas());
+    mo.observe(containerRef.current, { childList: true, subtree: true, characterData: true });
 
     window.addEventListener('resize', resizeCanvas);
     return () => {
       ro.disconnect();
+      mo.disconnect();
       window.removeEventListener('resize', resizeCanvas);
     };
   }, [resizeCanvas]);
@@ -1128,6 +1243,196 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
   };
 
+  // ---- Select tool: marquee, transforms and layering ---------------------
+
+  const getPagePoint = useCallback((clientX: number, clientY: number): Point => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }, []);
+
+  const deleteSelection = useCallback(() => {
+    const ids = new Set(selectedIdsRef.current);
+    if (ids.size === 0) return;
+    setSelection([]);
+    commitStrokes(strokesRef.current.filter((stroke) => !ids.has(stroke.id)));
+  }, [commitStrokes, setSelection]);
+
+  const bringSelectionToFront = useCallback(() => {
+    const ids = new Set(selectedIdsRef.current);
+    if (ids.size === 0) return;
+    commitStrokes(reorderSelection(strokesRef.current, ids, 'front'));
+  }, [commitStrokes]);
+
+  const sendSelectionToBack = useCallback(() => {
+    const ids = new Set(selectedIdsRef.current);
+    if (ids.size === 0) return;
+    commitStrokes(reorderSelection(strokesRef.current, ids, 'back'));
+  }, [commitStrokes]);
+
+  /**
+   * Starts a move, resize or rotate of the selected objects. The strokes are
+   * previewed locally while the drag runs and committed as one undo step on
+   * release, exactly like an eraser drag.
+   */
+  const beginTransform = useCallback(
+    (kind: TransformDrag['kind'], corner: ResizeCorner | null, e: React.PointerEvent) => {
+      const bounds = selectionBoundsRef.current;
+      if (!bounds || selectedIdsRef.current.length === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const start = getPagePoint(e.clientX, e.clientY);
+      const drag: TransformDrag = {
+        kind,
+        corner,
+        start,
+        bounds,
+        baseStrokes: strokesRef.current
+      };
+      transformDragRef.current = drag;
+
+      const center: Point = {
+        x: bounds.x + bounds.width / 2,
+        y: bounds.y + bounds.height / 2
+      };
+      // Resizing scales about the corner opposite the one being dragged.
+      const anchor: Point = {
+        x: corner === 'nw' || corner === 'sw' ? bounds.x + bounds.width : bounds.x,
+        y: corner === 'nw' || corner === 'ne' ? bounds.y + bounds.height : bounds.y
+      };
+      const startDistance = Math.hypot(start.x - anchor.x, start.y - anchor.y);
+
+      const computeTransform = (point: Point): InkTransform => {
+        if (kind === 'move') {
+          return {
+            ...IDENTITY_INK_TRANSFORM,
+            originX: center.x,
+            originY: center.y,
+            translateX: point.x - start.x,
+            translateY: point.y - start.y
+          };
+        }
+        if (kind === 'rotate') {
+          const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+          const angle = Math.atan2(point.y - center.y, point.x - center.x);
+          return {
+            ...IDENTITY_INK_TRANSFORM,
+            originX: center.x,
+            originY: center.y,
+            rotation: angle - startAngle
+          };
+        }
+        const distance = Math.hypot(point.x - anchor.x, point.y - anchor.y);
+        const scale = startDistance < 1 ? 1 : Math.min(20, Math.max(0.05, distance / startDistance));
+        return { ...IDENTITY_INK_TRANSFORM, originX: anchor.x, originY: anchor.y, scale };
+      };
+
+      const onMove = (event: PointerEvent) => {
+        const transform = computeTransform(getPagePoint(event.clientX, event.clientY));
+        previewStrokesRef.current = applyInkTransform(
+          drag.baseStrokes,
+          new Set(selectedIdsRef.current),
+          transform
+        );
+        liveTransformRef.current = transform;
+        setLiveTransform(transform);
+        redraw();
+      };
+
+      const finish = (commit: boolean) => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onCancel);
+        transformCleanupRef.current = null;
+        transformDragRef.current = null;
+
+        const transform = liveTransformRef.current;
+        const preview = previewStrokesRef.current;
+        liveTransformRef.current = null;
+        setLiveTransform(null);
+
+        if (commit && preview && transform && !isIdentityTransform(transform)) {
+          commitStrokes(preview);
+        } else {
+          previewStrokesRef.current = null;
+          redraw();
+        }
+      };
+
+      const onUp = () => finish(true);
+      const onCancel = () => finish(false);
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onCancel);
+      transformCleanupRef.current = () => finish(false);
+    },
+    [commitStrokes, getPagePoint, redraw]
+  );
+
+  /** Select mode touch-down: drag the frame, or start a new marquee. */
+  const handleSelectPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const point = getPagePoint(e.clientX, e.clientY);
+    const bounds = selectionBoundsRef.current;
+    const insideFrame =
+      !!bounds &&
+      point.x >= bounds.x - 4 &&
+      point.x <= bounds.x + bounds.width + 4 &&
+      point.y >= bounds.y - 4 &&
+      point.y <= bounds.y + bounds.height + 4;
+
+    if (insideFrame) {
+      beginTransform('move', null, e);
+      return;
+    }
+
+    const geometry: MarqueeGeometry = {
+      mode: selectModeRef.current,
+      start: point,
+      end: point,
+      points: [point]
+    };
+    marqueeRef.current = geometry;
+    setMarquee(geometry);
+  };
+
+  const updateMarquee = (point: Point) => {
+    const current = marqueeRef.current;
+    if (!current) return;
+
+    const next: MarqueeGeometry = { ...current, end: point };
+    if (current.mode === 'lasso') {
+      const points = current.points ?? [current.start];
+      const last = points[points.length - 1];
+      next.points =
+        Math.hypot(point.x - last.x, point.y - last.y) >= 2 ? [...points, point] : points;
+    }
+    marqueeRef.current = next;
+    setMarquee(next);
+  };
+
+  /** Turns the finished rubber band into a selection (a tap picks one object). */
+  const finalizeSelection = () => {
+    const geometry = marqueeRef.current;
+    marqueeRef.current = null;
+    setMarquee(null);
+    if (!geometry) return;
+
+    const width = Math.abs(geometry.end.x - geometry.start.x);
+    const height = Math.abs(geometry.end.y - geometry.start.y);
+    const isTap = geometry.mode !== 'lasso' && width < 4 && height < 4;
+
+    if (isTap) {
+      const hit = hitTestStroke(strokesRef.current, geometry.end, 10);
+      setSelection(hit ? [hit.id] : []);
+      return;
+    }
+
+    setSelection(selectStrokeIds(strokesRef.current, geometry));
+  };
+
   // Pointer Down (stylus touches screen)
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     eraserReleasePendingSinceRef.current = null;
@@ -1156,7 +1461,19 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     // Press-on-touchdown is handled by the global capture pointerdown listener,
     // which always runs before this canvas handler.
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // The pointer can already be gone (or be a synthetic event); the drag
+      // still works through the canvas' own move/up handlers.
+    }
+
+    // Select tool: rubber-band over drawn objects instead of inking.
+    if (activeTool === 'select') {
+      fingerTapRef.current = null;
+      handleSelectPointerDown(e);
+      return;
+    }
 
     // Finger contact is ambiguous until it moves: remember the touchdown so a
     // stationary tap can hand the caret to the note sheet on lift.
@@ -1196,6 +1513,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (isStylusOnly && e.pointerType !== 'pen') return;
     if (isStylusActiveRef.current && e.pointerType === 'touch') return;
+
+    if (activeTool === 'select') {
+      if (marqueeRef.current) updateMarquee(getPagePoint(e.clientX, e.clientY));
+      return;
+    }
 
     // A finger that travels is swiping (insert drawing), not tapping.
     const fingerTap = fingerTapRef.current;
@@ -1328,6 +1650,19 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Up (stylus leaves screen - auto returns to pen if S Pen button is released!)
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activeTool === 'select') {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        try {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {}
+      }
+      if (e.pointerType === 'pen') {
+        isStylusActiveRef.current = false;
+      }
+      finalizeSelection();
+      return;
+    }
+
     eraserReleasePendingSinceRef.current = null;
     eraserDragButtonSamplesRef.current = 0;
     dragSawPressureRef.current = false;
@@ -1358,6 +1693,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       fingerTap.drawsInk &&
       Date.now() - fingerTap.time <= FINGER_TAP_MAX_MS
     ) {
+      // The tap asks for the caret, so the sheet becomes the active tool.
+      setSelectedTool('text');
+      selectedToolRef.current = 'text';
       onFingerTap?.();
     }
   };
@@ -1388,8 +1726,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handleManualToolSelect = (tool: PenTool) => {
     cancelScheduledSpenDeactivation();
     setSelectedTool(tool);
+    selectedToolRef.current = tool;
     setIsSpenEraserArmed(false);
     isSpenEraserArmedRef.current = false;
+
+    if (tool === 'text') {
+      onRequestTextFocus?.();
+    } else if (tool !== 'select') {
+      setSelection([]);
+      marqueeRef.current = null;
+      setMarquee(null);
+    }
   };
 
   // spenLogVersion is bumped (throttled) by logSpenSample while the panel is
@@ -1397,6 +1744,48 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // header count in sync, since other state changes repaint this component too.
   void spenLogVersion;
   const spenLogEntries = spenLogRef.current.slice(-SPEN_LOG_RENDER_LIMIT).reverse();
+
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectionBounds = useMemo(
+    () => getStrokesBounds(strokes.filter((stroke) => selectedIdSet.has(stroke.id))),
+    [strokes, selectedIdSet]
+  );
+  selectionBoundsRef.current = selectionBounds;
+
+  /** Outline for the rubber band currently being dragged. */
+  const renderMarquee = (geometry: MarqueeGeometry) => {
+    const x = Math.min(geometry.start.x, geometry.end.x);
+    const y = Math.min(geometry.start.y, geometry.end.y);
+    const width = Math.abs(geometry.end.x - geometry.start.x);
+    const height = Math.abs(geometry.end.y - geometry.start.y);
+    const common = {
+      fill: 'rgba(124, 58, 237, 0.10)',
+      stroke: '#7c3aed',
+      strokeWidth: 1.5,
+      strokeDasharray: '5 4'
+    };
+
+    if (geometry.mode === 'lasso') {
+      return (
+        <polygon
+          points={(geometry.points ?? []).map((point) => `${point.x},${point.y}`).join(' ')}
+          {...common}
+        />
+      );
+    }
+    if (geometry.mode === 'ellipse') {
+      return (
+        <ellipse
+          cx={x + width / 2}
+          cy={y + height / 2}
+          rx={Math.max(1, width / 2)}
+          ry={Math.max(1, height / 2)}
+          {...common}
+        />
+      );
+    }
+    return <rect x={x} y={y} width={width} height={height} {...common} />;
+  };
 
   return (
     <div className="flex flex-col w-full h-full relative select-none">
@@ -1426,44 +1815,80 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           lastWritingTool={lastWritingToolRef.current}
           background={background}
           onChangeBackground={onChangeBackground}
+          selectMode={selectMode}
+          onChangeSelectMode={setSelectMode}
+          extra={toolbarExtra}
         />
       </div>
 
-      {/* Drawing Canvas Container */}
-      <div 
-        ref={containerRef} 
-        onContextMenu={suppressCanvasMenu}
-        onAuxClick={suppressCanvasMenu}
-        className="flex-1 w-full h-full relative cursor-crosshair overflow-hidden touch-none"
-      >
-        <canvas
-          ref={backgroundCanvasRef}
-          aria-hidden="true"
-          className="absolute inset-0 block w-full h-full pointer-events-none"
-        />
-        <canvas
-          ref={canvasRef}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerCancel}
-          onPointerLeave={handlePointerCancel}
-          onContextMenu={suppressCanvasMenu}
-          onAuxClick={suppressCanvasMenu}
-          className="ink-canvas absolute inset-0 block w-full h-full"
-        />
+      {/* The note page: ruling, back ink, typed text, front ink. One surface. */}
+      <div className="relative flex-1 min-h-0">
+        <div ref={scrollRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden">
+          <div
+            ref={containerRef}
+            onContextMenu={suppressCanvasMenu}
+            onAuxClick={suppressCanvasMenu}
+            className="relative w-full"
+            style={{ minHeight: '100%' }}
+          >
+            <canvas
+              ref={backgroundCanvasRef}
+              aria-hidden="true"
+              className="absolute inset-0 z-0 block pointer-events-none"
+            />
+            <canvas
+              ref={backCanvasRef}
+              aria-hidden="true"
+              className="absolute inset-0 z-10 block pointer-events-none"
+            />
 
-        {strokes.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-ink-muted-light/60 dark:text-ink-muted-dark/60 text-sm">
-            <p className="font-medium">Write with S Pen or Apple Pencil</p>
-            <p className="text-xs mt-1">
-              Hold S Pen button to Erase{spenDoublePressOpensMenu ? ' • Double-press it in the air for the quick palette' : ''} • Choose size & mode in toolbar
-            </p>
+            {/* Typed text lives between the back and front ink layers. */}
+            <div className={`relative z-20 ${activeTool === 'text' ? '' : 'pointer-events-none'}`}>
+              {textLayer}
+            </div>
+
+            <canvas
+              ref={canvasRef}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerCancel}
+              onPointerLeave={handlePointerCancel}
+              onContextMenu={suppressCanvasMenu}
+              onAuxClick={suppressCanvasMenu}
+              className={`ink-canvas absolute inset-0 z-30 block ${activeTool === 'text' ? 'pointer-events-none' : ''}`}
+              style={{
+                cursor: activeTool === 'select' ? 'default' : 'crosshair',
+                touchAction: 'none'
+              }}
+            />
+
+            {activeTool === 'select' && marquee && (
+              <svg className="absolute inset-0 z-40 w-full h-full pointer-events-none" aria-hidden="true">
+                {renderMarquee(marquee)}
+              </svg>
+            )}
+
+            {activeTool === 'select' && selectionBounds && (
+              <SelectionOverlay
+                bounds={selectionBounds}
+                transform={liveTransform}
+                count={selectedIdSet.size}
+                onStartMove={(e) => beginTransform('move', null, e)}
+                onStartResize={(corner, e) => beginTransform('resize', corner, e)}
+                onStartRotate={(e) => beginTransform('rotate', null, e)}
+                onBringToFront={bringSelectionToFront}
+                onSendToBack={sendSelectionToBack}
+                onDelete={deleteSelection}
+              />
+            )}
           </div>
-        )}
+        </div>
 
+        {/* Overlays that stay put while the page scrolls. */}
+        <div className="pointer-events-none absolute inset-0 z-20">
         {/* Bottom Left: S Pen Live Telemetry / Diagnostic Badge */}
-        <div className="absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1" data-ink-ui="stylus-status">
+        <div className="pointer-events-auto absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1" data-ink-ui="stylus-status">
           <button
             type="button"
             onClick={() => setDiagnosticHUD(!diagnosticHUD)}
@@ -1568,7 +1993,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         </div>
 
         {/* Bottom Right: Quick S Pen Floating Trigger Badge */}
-        <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2" data-ink-ui="floating-tools">
+        <div className="pointer-events-auto absolute bottom-4 right-4 z-10 flex items-center gap-2" data-ink-ui="floating-tools">
           {/* 1-Tap Quick Tool Flip Pill */}
           <button
             type="button"
@@ -1606,6 +2031,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           >
             <Sparkles className="w-4 h-4" />
           </button>
+        </div>
         </div>
       </div>
 

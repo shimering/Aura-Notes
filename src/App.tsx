@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Note, Stroke, InkBackground } from './types/note';
+import { Note, Stroke, InkBackground, PenTool } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
@@ -18,9 +18,10 @@ import {
 import { fetchAuthConfig, fetchAuthSession, AuthUser } from './services/authService';
 import { AccountSyncError, syncAccountNotes } from './services/accountSyncService';
 import { watchAccountChanges, watchVaultChanges } from './services/liveSyncService';
-import { Header, ViewMode } from './components/Header';
+import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
-import { TextEditor } from './components/TextEditor';
+import { TextEditor, TextEditorRef } from './components/TextEditor';
+import { FormatToolbar } from './components/FormatToolbar';
 import { InkCanvas, InkCanvasRef } from './components/InkCanvas';
 import { ScribbleRecognitionModal } from './components/ScribbleRecognitionModal';
 import { InstallModal } from './components/InstallModal';
@@ -28,24 +29,17 @@ import { SyncModal } from './components/SyncModal';
 import { SettingsModal } from './components/SettingsModal';
 import { getNoteTemplate } from './utils/templates';
 
-/**
- * The workspace is a single surface. Older builds could save a 'both' (split)
- * layout; anything that is not the note sheet collapses to the Draw surface.
- */
-function normalizeViewMode(mode?: string | null): ViewMode {
-  return mode === 'text' ? 'text' : 'ink';
-}
-
 export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNoteId, setActiveNoteIdState] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    // One surface per device: touch hardware opens on the Draw canvas so the
-    // pen is live immediately, a keyboard/mouse desktop on the note sheet.
-    return navigator.maxTouchPoints > 0 ? 'ink' : 'text';
-  });
+  // The note page is one surface. This mirrors its active tool so the typed
+  // text only accepts the caret while the Text tool is selected; touch hardware
+  // starts on the pen, a keyboard/mouse desktop on the text sheet.
+  const [surfaceTool, setSurfaceTool] = useState<PenTool>(
+    navigator.maxTouchPoints > 0 ? 'fountain' : 'text'
+  );
   // Bumped when the Draw surface hands the caret back to the note sheet.
   const [textFocusRequest, setTextFocusRequest] = useState(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 1024);
@@ -66,6 +60,7 @@ export default function App() {
   const [googleEnabled, setGoogleEnabled] = useState(false);
 
   const inkCanvasRef = useRef<InkCanvasRef>(null);
+  const textEditorRef = useRef<TextEditorRef>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const saveTimeoutRef = useRef<any>(null);
   const syncTimeoutRef = useRef<any>(null);
@@ -166,7 +161,6 @@ export default function App() {
         } else {
           document.documentElement.classList.remove('dark');
         }
-        setViewMode(normalizeViewMode(res.settings.viewMode));
       }
       return res;
     } catch (err: any) {
@@ -270,9 +264,6 @@ export default function App() {
         } else {
           document.documentElement.classList.remove('dark');
         }
-
-        // A split ('both') layout saved by an older build collapses to Draw.
-        setViewMode(normalizeViewMode(loadedSettings.viewMode));
 
         // 2. Check URL for 1-click sync link (?sync=KEY)
         let activeVaultKey = loadedSettings.syncVaultKey;
@@ -571,37 +562,16 @@ export default function App() {
   };
 
   /**
-   * Touching the note sheet with the pen hands the workspace to the Draw
-   * surface, where the pen tools and the eraser are already in the toolbar.
-   */
-  useEffect(() => {
-    const handlePenContact = (e: PointerEvent) => {
-      if (e.pointerType !== 'pen') return;
-      const target = e.target as Element | null;
-      if (!target || typeof target.closest !== 'function') return;
-      if (!target.closest('[data-note-surface="text"]')) return;
-      setViewMode('ink');
-    };
-    window.addEventListener('pointerdown', handlePenContact, { capture: true });
-    return () => window.removeEventListener('pointerdown', handlePenContact, { capture: true });
-  }, []);
-
-  /**
-   * A single finger tap on the Draw surface shows the writing cursor: the note
-   * sheet takes over with a blinking caret waiting for the keyboard.
+   * A single finger tap on the page shows the writing cursor: the text sheet
+   * takes over with a blinking caret waiting for the keyboard.
    */
   const handleFingerTap = useCallback(() => {
-    setViewMode('text');
     setTextFocusRequest((request) => request + 1);
   }, []);
 
-  // Update View Mode with settings persistence
-  const handleChangeViewMode = async (mode: ViewMode) => {
-    setViewMode(mode);
-    const updated = await saveSettings({ viewMode: mode });
-    setSettings(updated);
-    settingsRef.current = updated;
-  };
+  const handleRequestTextFocus = useCallback(() => {
+    setTextFocusRequest((request) => request + 1);
+  }, []);
 
   // Update Settings
   const handleUpdateSettings = async (updates: Partial<AppSettings>) => {
@@ -615,9 +585,6 @@ export default function App() {
       } else {
         document.documentElement.classList.remove('dark');
       }
-    }
-    if (updates.viewMode) {
-      setViewMode(normalizeViewMode(updates.viewMode));
     }
     if (typeof updates.isSidebarOpen === 'boolean') {
       setIsSidebarOpen(updates.isSidebarOpen);
@@ -849,8 +816,6 @@ export default function App() {
             saveSettings({ isSidebarOpen: next });
           }}
           isSidebarOpen={isSidebarOpen}
-          viewMode={viewMode}
-          onChangeViewMode={handleChangeViewMode}
           isSaving={isSaving}
           onExport={handleExport}
           onOpenInstall={() => setIsInstallModalOpen(true)}
@@ -863,40 +828,46 @@ export default function App() {
 
         {activeNote ? (
           <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden relative transition-all duration-300">
-            {/* Keyboard Rich Text Editor View */}
-            {viewMode === 'text' && (
-              <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col transition-all duration-300">
+            {/* One page: typed text with ink above and behind it. */}
+            <InkCanvas
+              ref={inkCanvasRef}
+              noteId={activeNote.id}
+              strokes={activeNote.inkStrokes || []}
+              onChangeStrokes={handleUpdateStrokes}
+              onScribbleToText={() => setIsScribbleModalOpen(true)}
+              onFingerTap={handleFingerTap}
+              onRequestTextFocus={handleRequestTextFocus}
+              onToolChange={setSurfaceTool}
+              textLayer={
                 <TextEditor
+                  ref={textEditorRef}
                   note={activeNote}
                   onChangeContent={handleUpdateContent}
                   focusRequest={textFocusRequest}
+                  embedded
+                  editable={surfaceTool === 'text'}
                 />
-              </div>
-            )}
-
-            {/* Stylus Ink Drawing Canvas (S Pen & Apple Pencil) */}
-            {viewMode === 'ink' && (
-              <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col relative transition-all duration-300">
-                <InkCanvas
-                  ref={inkCanvasRef}
-                  noteId={activeNote.id}
-                  strokes={activeNote.inkStrokes || []}
-                  onChangeStrokes={handleUpdateStrokes}
-                  onScribbleToText={() => setIsScribbleModalOpen(true)}
-                  onFingerTap={handleFingerTap}
-                  defaultTool={settings.defaultPenTool}
-                  defaultColor={settings.defaultPenColor}
-                  defaultWidth={settings.defaultPenWidth}
-                  defaultEraserWidth={settings.defaultEraserWidth}
-                  defaultEraserMode={settings.defaultEraserMode}
-                  defaultStylusOnly={settings.stylusOnly}
-                  spenHoldEraseMs={settings.spenHoldEraseMs}
-                  spenDoublePressOpensMenu={settings.spenDoublePressOpensMenu}
-                  background={activeNote.inkBackground}
-                  onChangeBackground={handleUpdateBackground}
-                />
-              </div>
-            )}
+              }
+              toolbarExtra={
+                surfaceTool === 'text' ? (
+                  <FormatToolbar
+                    onApplyFormat={(command, value) =>
+                      textEditorRef.current?.applyFormat(command, value)
+                    }
+                  />
+                ) : null
+              }
+              defaultTool={settings.defaultPenTool}
+              defaultColor={settings.defaultPenColor}
+              defaultWidth={settings.defaultPenWidth}
+              defaultEraserWidth={settings.defaultEraserWidth}
+              defaultEraserMode={settings.defaultEraserMode}
+              defaultStylusOnly={settings.stylusOnly}
+              spenHoldEraseMs={settings.spenHoldEraseMs}
+              spenDoublePressOpensMenu={settings.spenDoublePressOpensMenu}
+              background={activeNote.inkBackground}
+              onChangeBackground={handleUpdateBackground}
+            />
           </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-ink-muted-light dark:text-ink-muted-dark">

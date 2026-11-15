@@ -5,7 +5,19 @@ export interface StrokePoint {
   time: number;
 }
 
-export type PenTool = 'pen' | 'fountain' | 'highlighter' | 'eraser' | 'lasso';
+export type PenTool = 'pen' | 'fountain' | 'highlighter' | 'eraser' | 'text' | 'select';
+
+/** Tools that paint ink; the others act on the page or on existing objects. */
+export type WritingTool = 'pen' | 'fountain' | 'highlighter';
+
+/** How the Select tool gathers objects: a rectangle, a circle, or a freehand lasso. */
+export type SelectMode = 'rect' | 'ellipse' | 'lasso';
+
+/**
+ * Ink can sit above the note's text (default) or behind it. Strokes are drawn
+ * on two layers so a drawing can pass behind typed text, like OneNote.
+ */
+export type StrokeLayer = 'front' | 'back';
 
 /**
  * Object erasing removes whole vector strokes.
@@ -22,6 +34,8 @@ export interface Stroke {
   width: number;
   tool: PenTool;
   opacity?: number;
+  /** Which side of the note text this stroke is drawn on. Defaults to 'front'. */
+  layer?: StrokeLayer;
 }
 
 export interface Note {

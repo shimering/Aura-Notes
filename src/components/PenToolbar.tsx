@@ -16,9 +16,12 @@ import {
   AlignJustify,
   Grid3x3,
   Circle,
-  Square
+  Square,
+  Type,
+  MousePointer2,
+  Lasso
 } from 'lucide-react';
-import { PenTool, InkBackground, EraserMode } from '../types/note';
+import { PenTool, InkBackground, EraserMode, SelectMode } from '../types/note';
 import { INK_BACKGROUNDS } from '../utils/inkBackground';
 
 export const INK_PALETTE = [
@@ -67,7 +70,32 @@ interface PenToolbarProps {
   lastWritingTool?: PenTool;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
+  selectMode?: SelectMode;
+  onChangeSelectMode?: (mode: SelectMode) => void;
+  /** Toolbar content for the active tool, e.g. text formatting while typing. */
+  extra?: React.ReactNode;
 }
+
+const SELECT_MODES: { id: SelectMode; label: string; description: string; icon: React.ReactNode }[] = [
+  {
+    id: 'rect',
+    label: 'Rectangle',
+    description: 'Select objects inside a rectangle',
+    icon: <Square className="w-3.5 h-3.5" />
+  },
+  {
+    id: 'ellipse',
+    label: 'Circle',
+    description: 'Select objects inside a circle',
+    icon: <Circle className="w-3.5 h-3.5" />
+  },
+  {
+    id: 'lasso',
+    label: 'Lasso',
+    description: 'Select objects with a freehand lasso',
+    icon: <Lasso className="w-3.5 h-3.5" />
+  }
+];
 
 const BACKGROUND_ICONS: Record<InkBackground, React.ReactNode> = {
   none: <Square className="w-3.5 h-3.5" />,
@@ -119,10 +147,17 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   onOpenSPenMenu,
   lastWritingTool,
   background = 'none',
-  onChangeBackground
+  onChangeBackground,
+  selectMode = 'rect',
+  onChangeSelectMode,
+  extra
 }) => {
   const [isEraserMenuOpen, setIsEraserMenuOpen] = useState<boolean>(false);
   const [isBackgroundMenuOpen, setIsBackgroundMenuOpen] = useState<boolean>(false);
+  const [isSelectMenuOpen, setIsSelectMenuOpen] = useState<boolean>(false);
+  const isWritingTool =
+    activeTool === 'fountain' || activeTool === 'pen' || activeTool === 'highlighter';
+  const activeSelectMode = SELECT_MODES.find((mode) => mode.id === selectMode) ?? SELECT_MODES[0];
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
 
   return (
@@ -132,6 +167,79 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
     >
       {/* Tool Selection */}
       <div className="flex items-center gap-1 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
+        <button
+          type="button"
+          onClick={() => onSelectTool('text')}
+          title="Text — type directly on the page"
+          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
+            activeTool === 'text'
+              ? 'bg-violet-600 text-white shadow-md'
+              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+          }`}
+        >
+          <Type className="w-4 h-4" />
+        </button>
+
+        {/* Select Tool + Selection Shape Popover */}
+        <div className="relative flex items-center">
+          <button
+            type="button"
+            onClick={() => onSelectTool('select')}
+            title={`Select — ${activeSelectMode.label.toLowerCase()} selection`}
+            className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
+              activeTool === 'select'
+                ? 'bg-violet-600 text-white shadow-md'
+                : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+            }`}
+          >
+            <MousePointer2 className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsSelectMenuOpen(!isSelectMenuOpen)}
+            title="Choose the selection shape"
+            className={`ml-0.5 p-1 rounded-lg transition active:scale-95 ${
+              activeTool === 'select'
+                ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300'
+                : 'text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light dark:hover:text-ink-dark'
+            }`}
+          >
+            {activeSelectMode.icon}
+            <ChevronDown className="w-2.5 h-2.5 inline opacity-60" />
+          </button>
+
+          {isSelectMenuOpen && (
+            <div className="absolute top-full mt-2 left-0 z-50 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark flex flex-col gap-1 min-w-[190px] animate-in fade-in slide-in-from-top-1">
+              <div className="px-1 text-[11px] font-bold text-ink-light dark:text-ink-dark">
+                Selection shape
+              </div>
+              {SELECT_MODES.map((mode) => {
+                const isSelected = selectMode === mode.id;
+                return (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => {
+                      onChangeSelectMode?.(mode.id);
+                      onSelectTool('select');
+                      setIsSelectMenuOpen(false);
+                    }}
+                    title={mode.description}
+                    className={`px-2 py-1.5 rounded-xl flex items-center gap-2 text-[11px] transition active:scale-95 ${
+                      isSelected
+                        ? 'bg-violet-600 text-white shadow-md font-semibold'
+                        : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+                    }`}
+                  >
+                    {mode.icon}
+                    <span>{mode.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         <button
           type="button"
           onClick={() => onSelectTool('fountain')}
@@ -303,8 +411,14 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
         )}
       </div>
 
-      {/* Colors (only show if not eraser) */}
-      {activeTool !== 'eraser' && (
+      {extra && (
+        <div className="flex items-center gap-1 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
+          {extra}
+        </div>
+      )}
+
+      {/* Colors (only show for the writing tools) */}
+      {isWritingTool && (
         <div className="flex items-center gap-1.5 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
           {currentPalette.map((item) => (
             <button
@@ -332,6 +446,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
       )}
 
       {/* Width / Size Selector (Adapts to Pen vs Eraser) */}
+      {activeTool !== 'text' && activeTool !== 'select' && (
       <div className="flex items-center gap-1.5 px-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
         {activeTool === 'eraser' ? (
           <div className="flex items-center gap-1.5">
@@ -414,6 +529,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           ))
         )}
       </div>
+      )}
 
       {/* Page Background Picker */}
       {onChangeBackground && (

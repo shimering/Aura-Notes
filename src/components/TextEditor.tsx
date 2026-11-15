@@ -1,12 +1,21 @@
-import React, { useRef, useEffect, useMemo } from 'react';
+import React, { forwardRef, useImperativeHandle, useRef, useEffect, useMemo } from 'react';
 import { Note } from '../types/note';
 import { FormatToolbar } from './FormatToolbar';
+
+export interface TextEditorRef {
+  focusEditor: () => void;
+  applyFormat: (command: string, value?: string) => void;
+}
 
 interface TextEditorProps {
   note: Note;
   onChangeContent: (content: string) => void;
-  /** Bumped when the Draw surface hands the caret back after a finger tap. */
+  /** Bumped when the Text tool (or a finger tap) hands the caret to the sheet. */
   focusRequest?: number;
+  /** Renders only the editable sheet: the unified note page supplies the toolbar. */
+  embedded?: boolean;
+  /** Whether the sheet accepts typing; false while a pen or select tool is active. */
+  editable?: boolean;
 }
 
 /**
@@ -69,7 +78,10 @@ function cleanListMarkup(root: HTMLElement) {
   });
 }
 
-export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent, focusRequest = 0 }) => {
+export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
+  { note, onChangeContent, focusRequest = 0, embedded = false, editable = true },
+  ref
+) => {
   const editorRef = useRef<HTMLDivElement>(null);
   const isInternalUpdateRef = useRef(false);
 
@@ -123,6 +135,12 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent, f
     }
   };
 
+  // The unified page's toolbar drives formatting through this handle.
+  useImperativeHandle(ref, () => ({
+    focusEditor: () => editorRef.current?.focus(),
+    applyFormat: (command: string, value: string = '') => handleFormat(command, value)
+  }));
+
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
     const text = e.clipboardData.getData('text/plain');
@@ -160,6 +178,33 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent, f
     };
   }, [note.content]);
 
+  const sheet = (
+    <div
+      ref={editorRef}
+      contentEditable={embedded ? editable : true}
+      suppressContentEditableWarning
+      onInput={handleInput}
+      onPaste={handlePaste}
+      onKeyDown={handleKeyDown}
+      data-note-editor="true"
+      data-placeholder="Start typing on the page, or draw anywhere with the pen..."
+      className="editable-note-content min-h-[400px] text-base md:text-lg text-ink-light dark:text-ink-dark leading-relaxed outline-none focus:outline-none font-sans"
+      style={{
+        wordBreak: 'break-word',
+        overflowWrap: 'break-word'
+      }}
+    />
+  );
+
+  // Editor chrome sits outside the sheet so the unified page owns the layout.
+  if (embedded) {
+    return (
+      <div className="relative" data-note-surface="text">
+        <div className="w-full max-w-4xl mx-auto px-6 py-8 md:px-10 md:py-10">{sheet}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-surface-light dark:bg-surface-dark relative">
       {/* Floating / Sticky Formatting Toolbar */}
@@ -170,20 +215,7 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent, f
       {/* Main editable note sheet */}
       <div className="flex-1 overflow-y-auto px-6 py-8 md:px-12 lg:px-16 md:py-12 flex justify-center" data-note-surface="text">
         <div className="w-full max-w-4xl xl:max-w-5xl min-h-[500px] transition-all duration-300">
-          <div
-            ref={editorRef}
-            contentEditable
-            suppressContentEditableWarning
-            onInput={handleInput}
-            onPaste={handlePaste}
-            onKeyDown={handleKeyDown}
-            data-placeholder="Start typing your thoughts here, or use the stylus canvas to write by hand..."
-            className="editable-note-content min-h-[400px] text-base md:text-lg text-ink-light dark:text-ink-dark leading-relaxed outline-none focus:outline-none font-sans"
-            style={{
-              wordBreak: 'break-word',
-              overflowWrap: 'break-word'
-            }}
-          />
+          {sheet}
         </div>
       </div>
 
@@ -197,4 +229,6 @@ export const TextEditor: React.FC<TextEditorProps> = ({ note, onChangeContent, f
       </div>
     </div>
   );
-};
+});
+
+TextEditor.displayName = 'TextEditor';

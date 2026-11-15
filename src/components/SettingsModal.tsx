@@ -4,8 +4,6 @@ import {
   Settings as SettingsIcon,
   Sun,
   Moon,
-  Type,
-  PenTool,
   Cloud,
   Feather,
   Pen,
@@ -114,28 +112,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             </div>
 
-            <div className="p-3 rounded-2xl bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60">
-              <p className="text-xs font-semibold text-ink-light dark:text-ink-dark mb-2">Default Layout</p>
-              <div className="grid grid-cols-2 gap-1.5">
-                {[
-                  { id: 'text' as const, label: 'Text', icon: <Type className="w-3.5 h-3.5" /> },
-                  { id: 'ink' as const, label: 'Canvas', icon: <PenTool className="w-3.5 h-3.5" /> }
-                ].map((mode) => (
-                  <button
-                    key={mode.id}
-                    onClick={() => onUpdateSettings({ viewMode: mode.id })}
-                    className={`flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium transition ${
-                      settings.viewMode === mode.id
-                        ? 'bg-violet-600 text-white shadow-sm'
-                        : 'bg-surface-light dark:bg-surface-dark text-ink-light dark:text-ink-dark hover:bg-violet-50 dark:hover:bg-violet-950/30'
-                    }`}
-                  >
-                    {mode.icon}
-                    {mode.label}
-                  </button>
-                ))}
-              </div>
-            </div>
           </section>
 
           {/* Stylus defaults */}

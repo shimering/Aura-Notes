@@ -7,8 +7,6 @@ import {
   FileDown,
   Check, 
   Sparkles,
-  Type, 
-  PenTool, 
   Share2,
   Cloud,
   RefreshCw,
@@ -27,8 +25,6 @@ interface HeaderProps {
   allTags?: string[];
   onToggleSidebar: () => void;
   isSidebarOpen?: boolean;
-  viewMode: ViewMode;
-  onChangeViewMode: (mode: ViewMode) => void;
   isSaving: boolean;
   onExport: () => void;
   onOpenInstall?: () => void;
@@ -46,8 +42,6 @@ export const Header: React.FC<HeaderProps> = ({
   allTags = [],
   onToggleSidebar,
   isSidebarOpen = true,
-  viewMode,
-  onChangeViewMode,
   isSaving,
   onExport,
   onOpenInstall,
@@ -167,34 +161,6 @@ export const Header: React.FC<HeaderProps> = ({
             </span>
           )}
         </span>
-      </div>
-
-      {/* Middle: Surface Switcher (note sheet vs. stylus Draw surface) */}
-      <div className="flex items-center bg-surface-subtle-light dark:bg-surface-subtle-dark p-1 rounded-xl gap-1">
-        <button
-          onClick={() => onChangeViewMode('text')}
-          title="Text mode — a finger tap shows the writing cursor"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-            viewMode === 'text'
-              ? 'bg-surface-light dark:bg-surface-dark text-violet-600 dark:text-violet-400 shadow-sm'
-              : 'text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light'
-          }`}
-        >
-          <Type className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">Text</span>
-        </button>
-        <button
-          onClick={() => onChangeViewMode('ink')}
-          title="Draw mode — pen tools & eraser; a pen touch switches here automatically"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-            viewMode === 'ink'
-              ? 'bg-surface-light dark:bg-surface-dark text-violet-600 dark:text-violet-400 shadow-sm'
-              : 'text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light'
-          }`}
-        >
-          <PenTool className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">Draw</span>
-        </button>
       </div>
 
       {/* Right controls */}
