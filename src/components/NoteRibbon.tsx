@@ -24,6 +24,7 @@ interface NoteRibbonProps {
   onInsertTable: (box: HTMLElement) => void;
   textActive: boolean;
   drawingTools: ReactNode;
+  touchModeControl: ReactNode;
   orientation: PageLayout;
   background: InkBackground;
   onOrientationChange: (layout: PageLayout) => void;
@@ -31,7 +32,7 @@ interface NoteRibbonProps {
 }
 
 export function NoteRibbon({
-  editor, enableText, onInsertTextBox, onInsertTable, textActive, drawingTools, orientation, background, onOrientationChange, onBackgroundChange,
+  editor, enableText, onInsertTextBox, onInsertTable, textActive, drawingTools, touchModeControl, orientation, background, onOrientationChange, onBackgroundChange,
 }: NoteRibbonProps) {
   const id = useId();
   const [tab, setTab] = useState<RibbonTab>('Insert');
@@ -88,6 +89,7 @@ export function NoteRibbon({
           ))}
         </div>
         <div className="ribbon-header-tools">
+          {touchModeControl}
           <button type="button" className="ribbon-command"
             aria-label="Text tool" title="Text tool" aria-pressed={textActive}
             onMouseDown={(event) => event.preventDefault()} onClick={() => {

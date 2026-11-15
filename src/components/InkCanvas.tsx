@@ -53,7 +53,9 @@ import {
   Trash2,
   ZoomIn,
   ZoomOut,
-  Maximize2
+  Maximize2,
+  Hand,
+  MousePointer2
 } from 'lucide-react';
 
 export interface InkCanvasRef {
@@ -267,6 +269,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const isPinchingRef = useRef<boolean>(false);
   /** Number of fingers currently touching the page viewport. */
   const touchCountRef = useRef<number>(0);
+  const [touchPan, setTouchPan] = useState(false);
+  const touchPanRef = useRef(false);
 
   // Detect dark mode for initial ink color
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
@@ -1024,7 +1028,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     let single: { id: number; start: Point; last: Point; scrolling: boolean } | null = null;
 
     const touchesInViewport = (event: TouchEvent) =>
-      Array.from(event.touches).filter((touch) => node.contains(touch.target as Node));
+      Array.from(event.touches).filter((touch) =>
+        (touch as Touch & { touchType?: string }).touchType !== 'stylus' && node.contains(touch.target as Node));
 
     const geometry = (first: Touch, second: Touch) => ({
       focal: { x: (first.clientX + second.clientX) / 2, y: (first.clientY + second.clientY) / 2 },
@@ -1058,8 +1063,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (isPinchingRef.current) {
         event.preventDefault();
       } else if (touches.length === 1 && selectionPointerRef.current === null && !transformDragRef.current &&
-        !(event.target as Element).closest('.ink-canvas, [data-note-editor], [data-ink-ui=selection]')) {
-        // The desk outside the sheet can still scroll with one finger.
+        !isStylusActiveRef.current && !spenTipDownRef.current &&
+        (touchPanRef.current || !(event.target as Element).closest('.ink-canvas, [data-note-editor], [data-ink-ui=selection]'))) {
+        // Pan mode lets a finger scroll starting anywhere on the sheet.
+        if (touchPanRef.current) event.preventDefault();
         const [touch] = touches;
         const point = { x: touch.clientX, y: touch.clientY };
         single = { id: touch.identifier, start: point, last: point, scrolling: false };
@@ -1416,7 +1423,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const layer = textLayerRef.current;
     const baseLayout = textBlockLayoutRef.current;
     const bounds = editing && layer ? measureBox(editing.box, layer, baseLayout) : selectionBoundsRef.current;
-    if (!bounds || transformDragRef.current || e.button !== 0) return;
+    if (!bounds || transformDragRef.current || e.button !== 0 ||
+      (e.pointerType === 'touch' && touchPanRef.current)) return;
     if (!editing) {
       e.preventDefault();
       e.stopPropagation();
@@ -1778,6 +1786,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch' && touchPanRef.current) {
+      e.preventDefault();
+      return;
+    }
     if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
     if (e.pointerType === 'pen' && !spenTipDownRef.current) return;
     dragSawPressureRef.current = false;
@@ -2118,6 +2130,29 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         transform: `translate(${textBlockLayout.x}px, ${textBlockLayout.y}px) rotate(${textBlockLayout.rotation}rad) scale(${textBlockLayout.scale})`
       };
 
+  const toggleTouchPan = () => {
+    const next = !touchPanRef.current;
+    touchPanRef.current = next;
+    setTouchPan(next);
+    if (!next) return;
+    if (!isStylusActiveRef.current && !spenTipDownRef.current) abortActiveCanvasDrag();
+    if (getEditor()?.querySelector('[contenteditable="true"]')) {
+      textEditor?.current?.finishEditing();
+      textEditor?.current?.savePageObjects();
+    }
+    setSelection([]);
+    lastPick.current = null;
+  };
+
+  const touchModeControl = (
+    <button type="button" className="ribbon-command" aria-label="Pan with touch" aria-pressed={touchPan}
+      title={touchPan ? 'Touch pans the page. Switch to touch editing.' : 'Touch selects and edits. Switch to touch panning.'}
+      onClick={toggleTouchPan}>
+      {touchPan ? <Hand size={16} /> : <MousePointer2 size={16} />}
+      <span className="hidden sm:inline">{touchPan ? 'Touch pan' : 'Touch edit'}</span>
+    </button>
+  );
+
   const drawingTools = (
     <PenToolbar
       activeTool={activeTool}
@@ -2173,13 +2208,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
               setTableCell(box.querySelector<HTMLTableCellElement>('td, th'));
             }}
             drawingTools={drawingTools}
+            touchModeControl={touchModeControl}
             orientation={pageLayout}
             background={background}
             onOrientationChange={changePageLayout}
             onBackgroundChange={onChangeBackground}
           />
         ) : (
-          <div className="flex justify-center px-4 py-2">{drawingTools}</div>
+          <div className="flex justify-center items-center gap-2 px-4 py-2">{touchModeControl}{drawingTools}</div>
         )}
         {tableCell && <TableToolbar cell={tableCell} onChangeCell={(cell) => {
           setTableCell(cell);

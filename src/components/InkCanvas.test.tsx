@@ -56,6 +56,51 @@ it('pans the sheet with two fingers even with a little drift in finger spacing',
   expect(onChangeStrokes).not.toHaveBeenCalled();
 });
 
+it('pans from the paper with one finger and restores canvas taps in edit mode', () => {
+  const onFingerTap = vi.fn();
+  act(() => root.render(<InkCanvas noteId="scratch" defaultTool="pen" strokes={[]}
+    onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} onFingerTap={onFingerTap} />));
+  const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Pan with touch"]')!;
+  const viewport = container.querySelector<HTMLElement>('.note-desk')!;
+  const canvas = container.querySelector<HTMLElement>('.ink-canvas')!;
+  viewport.scrollLeft = viewport.scrollTop = 100;
+
+  const touchEvent = (type: string, clientX = 0, clientY = 0) => {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    const touches = type === 'touchend' ? [] : [{ clientX, clientY, identifier: 1, target: canvas }];
+    Object.defineProperty(event, 'touches', { value: touches });
+    act(() => canvas.dispatchEvent(event));
+    return event;
+  };
+  const pointer = (type: string, clientX: number, clientY: number) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
+    Object.assign(event, { pointerId: 1, pointerType: 'touch', isPrimary: true });
+    act(() => canvas.dispatchEvent(event));
+  };
+
+  expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  act(() => toggle.click());
+  expect(toggle.getAttribute('aria-pressed')).toBe('true');
+  pointer('pointerdown', 150, 150);
+  expect(touchEvent('touchstart', 150, 150).defaultPrevented).toBe(true);
+  touchEvent('touchmove', 113, 101);
+  pointer('pointerup', 113, 101);
+  touchEvent('touchend');
+  expect([viewport.scrollLeft, viewport.scrollTop]).toEqual([137, 149]);
+
+  pointer('pointerdown', 140, 140);
+  touchEvent('touchstart', 140, 140);
+  pointer('pointerup', 140, 140);
+  touchEvent('touchend');
+  expect(onFingerTap).not.toHaveBeenCalled();
+  expect(onChangeStrokes).not.toHaveBeenCalled();
+
+  act(() => toggle.click());
+  pointer('pointerdown', 140, 140);
+  pointer('pointerup', 140, 140);
+  expect(onFingerTap).toHaveBeenCalledOnce();
+});
+
 it('dismisses the quick palette by tapping outside, closing it, or choosing a tool', () => {
   const findButton = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"], button[title="${label}"]`)!;
   const dialog = () => container.querySelector('[role="dialog"]');
