@@ -176,6 +176,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const selectedToolRef = useRef<PenTool>(defaultTool);
   const lastWritingToolRef = useRef<PenTool>(defaultTool === 'eraser' ? 'fountain' : defaultTool);
   const isEraserDrawingRef = useRef<boolean>(false);
+  // A drag that has produced real pressure proves this device reports pressure,
+  // so a run of zero-pressure samples afterwards means the tip is in the air
+  // even if the browser never delivered pointerup (it can drop stylus events
+  // while the side button is held). Pressure-less pens never set this.
+  const dragSawPressureRef = useRef<boolean>(false);
+  const zeroPressureSamplesRef = useRef<number>(0);
+  /** Sticky proof that this pen reports real pressure at all. */
+  const penReportsPressureRef = useRef<boolean>(false);
   // Mid-stroke button release tracking: when the barrel bit first went missing
   // during the current eraser drag, and how many contact samples proved this
   // device actually reports the bit while touching (see handlePointerMove).
@@ -519,6 +527,30 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   }, [commitStrokes, redraw]);
 
+  /**
+   * Commits whichever drag is open — an eraser preview or an ink stroke — as a
+   * single undoable step and clears the drag state. No-op when nothing is open.
+   */
+  const commitActiveDrag = useCallback(() => {
+    dragSawPressureRef.current = false;
+    zeroPressureSamplesRef.current = 0;
+
+    if (isEraserDrawingRef.current) {
+      finishEraserDragPreview();
+      return;
+    }
+
+    const stroke = currentStrokeRef.current;
+    if (!stroke) return;
+    currentStrokeRef.current = null;
+    // Discard single-point dots produced by palm brushes
+    if (stroke.points.length > 1) {
+      commitStrokes([...strokesRef.current, stroke]);
+    } else {
+      redraw();
+    }
+  }, [commitStrokes, finishEraserDragPreview, redraw]);
+
   const handleUndo = useCallback(() => {
     if (currentStrokeRef.current || isEraserDrawingRef.current) return;
     const previous = historyRef.current.undo(strokesRef.current);
@@ -789,8 +821,18 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         lastStylusActiveTimeRef.current = Date.now();
         lastPenClientPosRef.current = { x: e.clientX, y: e.clientY };
 
-        // While the tip is in contact, low/zero pressure samples are not hover.
-        const isHovering = !isPenDownRef.current && e.pressure <= 0.05;
+        if (e.pressure > 0.05) {
+          penReportsPressureRef.current = true;
+        }
+        // Zero pressure from a pen that is known to report pressure means the
+        // tip is off the glass — even when pointerup never arrived (Chromium
+        // can drop stylus events while the side button is held). Self-healing
+        // this keeps the eraser arming again on the next button press.
+        const pressureProvesHover = e.pressure <= 0.05 && penReportsPressureRef.current;
+        if (pressureProvesHover) {
+          isPenDownRef.current = false;
+        }
+        const isHovering = pressureProvesHover || (!isPenDownRef.current && e.pressure <= 0.05);
         const hasBarrelButton = isSpenBarrelOrEraser(e.buttons, e.button);
         // Samsung/Chromium send the side button as buttons = 1 while the pen is
         // in the air; the spec's barrel bits are accepted as well.
@@ -1030,6 +1072,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     eraserReleasePendingSinceRef.current = null;
     eraserDragButtonSamplesRef.current = 0;
+    dragSawPressureRef.current = false;
+    zeroPressureSamplesRef.current = 0;
 
     // 1. Stylus-Only Mode: Completely ignore any non-pen touch
     if (isStylusOnly && e.pointerType !== 'pen') {
@@ -1088,6 +1132,26 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const rect = canvas.getBoundingClientRect();
 
     const nativeEvent = e.nativeEvent as PointerEvent;
+
+    // A pen that has reported pressure and now reports none is off the glass.
+    // Such a sample must never extend a stroke or erase: if the browser dropped
+    // the pointerup (Chromium does while the side button is held), the drag is
+    // still open and hovering used to keep carving ink away. Close it after a
+    // second sample so one odd reading cannot split a stroke; pens that never
+    // report pressure keep the old behaviour.
+    if (nativeEvent.pressure <= 0.05 && dragSawPressureRef.current) {
+      zeroPressureSamplesRef.current += 1;
+      if (zeroPressureSamplesRef.current >= 2) {
+        commitActiveDrag();
+      }
+      return;
+    }
+    if (nativeEvent.pressure > 0.05) {
+      dragSawPressureRef.current = true;
+      penReportsPressureRef.current = true;
+      zeroPressureSamplesRef.current = 0;
+    }
+
     const rawEvents = nativeEvent.getCoalescedEvents?.() ?? [];
     const coalescedEvents = rawEvents.length > 0 ? rawEvents : [nativeEvent];
 
@@ -1186,6 +1250,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     eraserReleasePendingSinceRef.current = null;
     eraserDragButtonSamplesRef.current = 0;
+    dragSawPressureRef.current = false;
+    zeroPressureSamplesRef.current = 0;
 
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       try {
@@ -1193,37 +1259,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       } catch {}
     }
 
-    // Capture the drag state BEFORE deactivating the S Pen eraser: deactivation
-    // clears isEraserDrawingRef, and if that happened first the eraser drag was
-    // never committed. The un-erased strokes then came back on the next stroke.
-    const wasErasing = isEraserDrawingRef.current;
-    isEraserDrawingRef.current = false;
-
     if (e.pointerType === 'pen') {
       isStylusActiveRef.current = false;
     }
 
-    // Commit the eraser drag as a single undoable step
-    if (wasErasing) {
-      const preview = previewStrokesRef.current;
-      if (preview && preview !== strokesRef.current) {
-        commitStrokes(preview);
-      } else {
-        previewStrokesRef.current = null;
-        redraw();
-      }
-      return;
-    }
-
-    if (!currentStrokeRef.current) return;
-
-    // Discard single-point dots produced by palm brushes
-    if (currentStrokeRef.current.points.length > 1) {
-      commitStrokes([...strokesRef.current, currentStrokeRef.current]);
-    }
-
-    currentStrokeRef.current = null;
-    redraw();
+    // Commit the eraser drag or ink stroke as a single undoable step
+    commitActiveDrag();
   };
 
   const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
