@@ -18,9 +18,11 @@ import { ColorPalette } from './ColorPalette';
 
 interface FormatToolbarProps {
   onApplyFormat: (command: string, value?: string) => void;
+  /** Drops the panel chrome so the bar can live inside a toolbar dropdown. */
+  embedded?: boolean;
 }
 
-export const FormatToolbar: React.FC<FormatToolbarProps> = ({ onApplyFormat }) => {
+export const FormatToolbar: React.FC<FormatToolbarProps> = ({ onApplyFormat, embedded = false }) => {
   const [showColorPopover, setShowColorPopover] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -44,7 +46,13 @@ export const FormatToolbar: React.FC<FormatToolbarProps> = ({ onApplyFormat }) =
   };
 
   return (
-    <div className="relative flex items-center flex-wrap gap-1 p-1.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark transition-all select-none">
+    <div
+      className={
+        embedded
+          ? 'relative flex items-center flex-wrap gap-1 select-none'
+          : 'relative flex items-center flex-wrap gap-1 p-1.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark transition-all select-none'
+      }
+    >
       {/* Text Style Section */}
       <div className="flex items-center gap-0.5 pr-1.5 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
         <button

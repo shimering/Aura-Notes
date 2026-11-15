@@ -1,25 +1,25 @@
-import React, { useState } from 'react';
-import { 
-  Pen, 
-  Feather, 
-  Highlighter, 
-  Eraser, 
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  Pen,
+  Feather,
+  Highlighter,
+  Eraser,
   ChevronDown,
-  Undo2, 
-  Redo2, 
-  Trash2, 
+  Undo2,
+  Redo2,
+  Trash2,
   Wand2,
   ShieldCheck,
   ShieldAlert,
   Sparkles,
-  LayoutTemplate,
   AlignJustify,
   Grid3x3,
   Circle,
   Square,
   Type,
   MousePointer2,
-  Lasso
+  Lasso,
+  Bold
 } from 'lucide-react';
 import { PenTool, InkBackground, EraserMode, SelectMode } from '../types/note';
 import { INK_BACKGROUNDS } from '../utils/inkBackground';
@@ -76,6 +76,60 @@ interface PenToolbarProps {
   extra?: React.ReactNode;
 }
 
+/** Which dropdown is currently open. Only one panel is ever visible at a time. */
+type ToolbarMenu = 'tool' | 'format' | 'color' | 'size' | 'page' | null;
+
+const TOOL_OPTIONS: {
+  id: PenTool;
+  label: string;
+  hint: string;
+  icon: React.ReactNode;
+  accent: string;
+}[] = [
+  {
+    id: 'text',
+    label: 'Text',
+    hint: 'Type directly on the page',
+    icon: <Type className="w-4 h-4" />,
+    accent: 'bg-violet-600 text-white shadow-md'
+  },
+  {
+    id: 'select',
+    label: 'Select',
+    hint: 'Tap or drag to pick up objects',
+    icon: <MousePointer2 className="w-4 h-4" />,
+    accent: 'bg-violet-600 text-white shadow-md'
+  },
+  {
+    id: 'fountain',
+    label: 'Fountain pen',
+    hint: 'Calligraphic, pressure sensitive',
+    icon: <Feather className="w-4 h-4" />,
+    accent: 'bg-violet-600 text-white shadow-md'
+  },
+  {
+    id: 'pen',
+    label: 'Ballpoint pen',
+    hint: 'Smooth, consistent line',
+    icon: <Pen className="w-4 h-4" />,
+    accent: 'bg-violet-600 text-white shadow-md'
+  },
+  {
+    id: 'highlighter',
+    label: 'Highlighter',
+    hint: 'Translucent marker',
+    icon: <Highlighter className="w-4 h-4" />,
+    accent: 'bg-amber-500 text-white shadow-md'
+  },
+  {
+    id: 'eraser',
+    label: 'Eraser',
+    hint: 'Object or pixel erase',
+    icon: <Eraser className="w-4 h-4" />,
+    accent: 'bg-rose-500 text-white shadow-md'
+  }
+];
+
 const SELECT_MODES: { id: SelectMode; label: string; description: string; icon: React.ReactNode }[] = [
   {
     id: 'rect',
@@ -98,10 +152,10 @@ const SELECT_MODES: { id: SelectMode; label: string; description: string; icon: 
 ];
 
 const BACKGROUND_ICONS: Record<InkBackground, React.ReactNode> = {
-  none: <Square className="w-3.5 h-3.5" />,
-  ruled: <AlignJustify className="w-3.5 h-3.5" />,
-  grid: <Grid3x3 className="w-3.5 h-3.5" />,
-  dotted: <Circle className="w-3.5 h-3.5" />
+  none: <Square className="w-4 h-4" />,
+  ruled: <AlignJustify className="w-4 h-4" />,
+  grid: <Grid3x3 className="w-4 h-4" />,
+  dotted: <Circle className="w-4 h-4" />
 };
 
 const ERASER_MODES: {
@@ -123,6 +177,29 @@ const ERASER_MODES: {
     icon: <Eraser className="w-3.5 h-3.5" />
   }
 ];
+
+const PEN_SIZES = [
+  { size: 2, label: 'Fine' },
+  { size: 4, label: 'Regular' },
+  { size: 7, label: 'Medium' },
+  { size: 12, label: 'Bold' }
+];
+
+const ERASER_SIZES = [12, 24, 36, 56];
+
+/** Shared look for the icon-only dropdown triggers. */
+const TRIGGER =
+  'relative flex h-10 shrink-0 items-center justify-center rounded-xl transition active:scale-95 text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark';
+const TRIGGER_OPEN = 'bg-surface-subtle-light dark:bg-surface-subtle-dark';
+const PANEL =
+  'absolute top-full left-1/2 -translate-x-1/2 mt-2 z-50 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark animate-in fade-in duration-150';
+const DIVIDER = 'h-6 w-px shrink-0 bg-surface-subtle-light dark:bg-surface-subtle-dark';
+
+const MenuHeading: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted-light dark:text-ink-muted-dark">
+    {children}
+  </div>
+);
 
 export const PenToolbar: React.FC<PenToolbarProps> = ({
   activeTool,
@@ -152,186 +229,262 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   onChangeSelectMode,
   extra
 }) => {
-  const [isEraserMenuOpen, setIsEraserMenuOpen] = useState<boolean>(false);
-  const [isBackgroundMenuOpen, setIsBackgroundMenuOpen] = useState<boolean>(false);
-  const [isSelectMenuOpen, setIsSelectMenuOpen] = useState<boolean>(false);
-  const isWritingTool =
-    activeTool === 'fountain' || activeTool === 'pen' || activeTool === 'highlighter';
-  const activeSelectMode = SELECT_MODES.find((mode) => mode.id === selectMode) ?? SELECT_MODES[0];
+  const [openMenu, setOpenMenu] = useState<ToolbarMenu>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const activeToolOption = TOOL_OPTIONS.find((tool) => tool.id === activeTool) ?? TOOL_OPTIONS[2];
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
+  const isEraser = activeTool === 'eraser';
+  const currentEraserWidth = eraserWidth ?? 24;
+
+  // A single panel at a time, dismissed by tapping elsewhere or pressing Escape.
+  useEffect(() => {
+    if (!openMenu) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!toolbarRef.current?.contains(event.target as Node)) setOpenMenu(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenMenu(null);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [openMenu]);
+
+  const toggleMenu = (menu: Exclude<ToolbarMenu, null>) =>
+    setOpenMenu((current) => (current === menu ? null : menu));
+  const closeMenu = () => setOpenMenu(null);
+
+  const pickTool = (tool: PenTool) => {
+    onSelectTool(tool);
+    closeMenu();
+  };
+
+  const triggerClass = (menu: Exclude<ToolbarMenu, null>, extraClasses = '') =>
+    `${TRIGGER} ${openMenu === menu ? TRIGGER_OPEN : ''} ${extraClasses}`;
+
+  const dotSize = isEraser
+    ? Math.min(16, Math.max(6, Math.round(currentEraserWidth / 3.5)))
+    : Math.min(14, Math.max(5, Math.round(width) + 2));
 
   return (
     <div
+      ref={toolbarRef}
       data-ink-ui="pen-toolbar"
-      className="flex items-center flex-wrap gap-1.5 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark select-none"
+      className="relative flex flex-wrap items-center justify-center gap-1 p-1.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark select-none"
     >
-      {/* Tool Selection */}
-      <div className="flex items-center gap-1 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
+      {/* Active tool — the menu holds every tool and its options. */}
+      <button
+        type="button"
+        onClick={() => toggleMenu('tool')}
+        title={`Tool: ${activeToolOption.label}`}
+        aria-haspopup="menu"
+        aria-expanded={openMenu === 'tool'}
+        className={`flex h-10 w-12 shrink-0 items-center justify-center gap-1 rounded-xl px-2 transition active:scale-95 sm:w-36 sm:justify-start ${
+          openMenu === 'tool' ? 'ring-2 ring-violet-400/70' : ''
+        } ${activeToolOption.accent}`}
+      >
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+          {activeToolOption.icon}
+        </span>
+        <span className="hidden min-w-0 flex-1 truncate text-left text-xs font-semibold sm:inline">
+          {activeToolOption.label}
+        </span>
+        <ChevronDown className={`w-3 h-3 shrink-0 opacity-80 transition ${openMenu === 'tool' ? 'rotate-180' : ''}`} />
+      </button>
+
+      <span className={DIVIDER} aria-hidden="true" />
+
+      {/* Text formatting, only meaningful while typing. */}
+      <button
+        type="button"
+        onClick={() => toggleMenu('format')}
+        disabled={!extra}
+        title="Text formatting"
+        aria-haspopup="menu"
+        aria-expanded={openMenu === 'format'}
+        className={triggerClass('format', 'w-12 gap-1 disabled:opacity-30 disabled:cursor-not-allowed')}
+      >
+        <Bold className="w-4 h-4" />
+        <ChevronDown className="w-3 h-3 opacity-60" />
+      </button>
+
+      {/* Ink color */}
+      <button
+        type="button"
+        onClick={() => toggleMenu('color')}
+        title={`Ink color ${color}`}
+        aria-haspopup="menu"
+        aria-expanded={openMenu === 'color'}
+        className={triggerClass('color', 'w-12 gap-1')}
+      >
+        <span
+          className="w-4 h-4 rounded-full border border-black/20 dark:border-white/25"
+          style={{ backgroundColor: color }}
+        />
+        <ChevronDown className="w-3 h-3 opacity-60" />
+      </button>
+
+      {/* Pen / eraser size */}
+      <button
+        type="button"
+        onClick={() => toggleMenu('size')}
+        title={isEraser ? `Eraser size: ${currentEraserWidth}px` : `Pen width: ${width}px`}
+        aria-haspopup="menu"
+        aria-expanded={openMenu === 'size'}
+        className={triggerClass('size', 'w-12 gap-1')}
+      >
+        <span
+          className="rounded-full bg-current"
+          style={{ width: `${dotSize}px`, height: `${dotSize}px` }}
+        />
+        <ChevronDown className="w-3 h-3 opacity-60" />
+      </button>
+
+      {/* Page background */}
+      {onChangeBackground && (
         <button
           type="button"
-          onClick={() => onSelectTool('text')}
-          title="Text — type directly on the page"
-          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
-            activeTool === 'text'
-              ? 'bg-violet-600 text-white shadow-md'
-              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-          }`}
-        >
-          <Type className="w-4 h-4" />
-        </button>
-
-        {/* Select Tool + Selection Shape Popover */}
-        <div className="relative flex items-center">
-          <button
-            type="button"
-            onClick={() => onSelectTool('select')}
-            title={`Select — ${activeSelectMode.label.toLowerCase()} selection`}
-            className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
-              activeTool === 'select'
-                ? 'bg-violet-600 text-white shadow-md'
-                : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-            }`}
-          >
-            <MousePointer2 className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsSelectMenuOpen(!isSelectMenuOpen)}
-            title="Choose the selection shape"
-            className={`ml-0.5 p-1 rounded-lg transition active:scale-95 ${
-              activeTool === 'select'
-                ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300'
-                : 'text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light dark:hover:text-ink-dark'
-            }`}
-          >
-            {activeSelectMode.icon}
-            <ChevronDown className="w-2.5 h-2.5 inline opacity-60" />
-          </button>
-
-          {isSelectMenuOpen && (
-            <div className="absolute top-full mt-2 left-0 z-50 p-2 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark flex flex-col gap-1 min-w-[190px] animate-in fade-in slide-in-from-top-1">
-              <div className="px-1 text-[11px] font-bold text-ink-light dark:text-ink-dark">
-                Selection shape
-              </div>
-              {SELECT_MODES.map((mode) => {
-                const isSelected = selectMode === mode.id;
-                return (
-                  <button
-                    key={mode.id}
-                    type="button"
-                    onClick={() => {
-                      onChangeSelectMode?.(mode.id);
-                      onSelectTool('select');
-                      setIsSelectMenuOpen(false);
-                    }}
-                    title={mode.description}
-                    className={`px-2 py-1.5 rounded-xl flex items-center gap-2 text-[11px] transition active:scale-95 ${
-                      isSelected
-                        ? 'bg-violet-600 text-white shadow-md font-semibold'
-                        : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-                    }`}
-                  >
-                    {mode.icon}
-                    <span>{mode.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+          onClick={() => toggleMenu('page')}
+          title={`Page background: ${INK_BACKGROUNDS.find((item) => item.id === background)?.label ?? 'Blank'}`}
+          aria-haspopup="menu"
+          aria-expanded={openMenu === 'page'}
+          className={triggerClass(
+            'page',
+            `w-12 gap-1 ${
+              background !== 'none'
+                ? 'text-violet-700 dark:text-violet-300 bg-violet-100/80 dark:bg-violet-950/50 hover:bg-violet-100 dark:hover:bg-violet-950/60'
+                : ''
+            }`
           )}
-        </div>
+        >
+          {BACKGROUND_ICONS[background]}
+          <ChevronDown className="w-3 h-3 opacity-60" />
+        </button>
+      )}
 
+      <span className={DIVIDER} aria-hidden="true" />
+
+      {/* Stylus-only palm shield */}
+      <button
+        type="button"
+        onClick={onToggleStylusOnly}
+        title={
+          isStylusOnly
+            ? 'Stylus-Only Active (Palms & fingers completely ignored)'
+            : 'All Inputs Active (Click to lock to S Pen / Apple Pencil only)'
+        }
+        aria-pressed={isStylusOnly}
+        className={`${TRIGGER} w-10 ${
+          isStylusOnly
+            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
+            : 'text-ink-muted-light dark:text-ink-muted-dark'
+        }`}
+      >
+        {isStylusOnly ? <ShieldCheck className="w-4 h-4" /> : <ShieldAlert className="w-4 h-4 opacity-70" />}
+      </button>
+
+      {/* Scribble to text */}
+      <button
+        type="button"
+        onClick={onScribbleToText}
+        disabled={!hasStrokes}
+        title="Convert handwritten scribbles to text"
+        className={`${TRIGGER} w-10 ${
+          hasStrokes
+            ? 'bg-gradient-to-r from-violet-600 via-indigo-600 to-pink-600 text-white hover:opacity-90'
+            : 'disabled:opacity-30 disabled:cursor-not-allowed'
+        }`}
+      >
+        <Wand2 className="w-4 h-4" />
+      </button>
+
+      {onOpenSPenMenu && (
         <button
           type="button"
-          onClick={() => onSelectTool('fountain')}
-          title="Fountain Pen (Calligraphic, Pressure Sensitive)"
-          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
-            activeTool === 'fountain'
-              ? 'bg-violet-600 text-white shadow-md'
-              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-          }`}
+          onClick={onOpenSPenMenu}
+          title="S Pen Quick Menu"
+          className={`${TRIGGER} w-10 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40`}
         >
-          <Feather className="w-4 h-4" />
+          <Sparkles className="w-4 h-4" />
         </button>
+      )}
 
+      <span className={DIVIDER} aria-hidden="true" />
+
+      {/* Undo, redo, clear */}
+      <div className="flex items-center gap-0.5 shrink-0">
         <button
           type="button"
-          onClick={() => onSelectTool('pen')}
-          title="Ballpoint Pen (Smooth, Consistent)"
-          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
-            activeTool === 'pen'
-              ? 'bg-violet-600 text-white shadow-md'
-              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-          }`}
+          onClick={onUndo}
+          disabled={!canUndo}
+          title="Undo stroke"
+          className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
         >
-          <Pen className="w-4 h-4" />
+          <Undo2 className="w-4 h-4" />
         </button>
-
         <button
           type="button"
-          onClick={() => onSelectTool('highlighter')}
-          title="Highlighter (Semi-transparent)"
-          className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
-            activeTool === 'highlighter'
-              ? 'bg-amber-500 text-white shadow-md'
-              : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-          }`}
+          onClick={onRedo}
+          disabled={!canRedo}
+          title="Redo stroke"
+          className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
         >
-          <Highlighter className="w-4 h-4" />
+          <Redo2 className="w-4 h-4" />
         </button>
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={!hasStrokes}
+          title="Clear all inking"
+          className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-muted-light transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
 
-        {/* Eraser Tool + Quick Size Popover Trigger */}
-        <div className="relative flex items-center">
-          <button
-            type="button"
-            onClick={() => {
-              if (activeTool === 'eraser') {
-                onSelectTool(lastWritingTool || 'fountain');
-              } else {
-                onSelectTool('eraser');
-              }
-            }}
-            title={activeTool === 'eraser' ? `Eraser Active — ${eraserMode === 'pixel' ? 'Pixel' : 'Object'} mode (Click to return to pen)` : "Eraser (or hold S Pen side button to erase momentarily)"}
-            className={`p-2 rounded-xl transition active:scale-95 flex items-center justify-center ${
-              activeTool === 'eraser'
-                ? 'bg-rose-500 text-white shadow-md ring-2 ring-rose-400'
-                : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-            }`}
-          >
-            <Eraser className="w-4 h-4" />
-          </button>
+      {/* ---------- Dropdown panels ---------- */}
 
-          {/* Dedicated Eraser Size Button (Always accessible without changing active pen!) */}
-          <button
-            type="button"
-            onClick={() => setIsEraserMenuOpen(!isEraserMenuOpen)}
-            title="Choose Eraser Size & Mode (also used by S Pen button)"
-            className={`ml-1 text-[11px] font-semibold px-1.5 py-1 rounded-lg flex items-center gap-1 whitespace-nowrap transition active:scale-95 ${
-              activeTool === 'eraser'
-                ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-200'
-                : 'bg-surface-subtle-light dark:bg-surface-subtle-dark text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light dark:hover:text-ink-dark'
-            }`}
-          >
-            <span>{eraserMode === 'pixel' ? 'Pixel' : 'Object'}</span>
-            <span className="opacity-50">·</span>
-            <span>{eraserWidth ?? 24}px</span>
-            <ChevronDown className="w-3 h-3 opacity-60" />
-          </button>
+      {openMenu === 'tool' && (
+        <div className={`${PANEL} w-[248px] max-h-[70vh] overflow-y-auto`} role="menu" aria-label="Tools">
+          <MenuHeading>Tool</MenuHeading>
+          <div className="flex flex-col gap-0.5">
+            {TOOL_OPTIONS.map((tool) => {
+              const isActive = activeTool === tool.id;
+              return (
+                <button
+                  key={tool.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={isActive}
+                  onClick={() => pickTool(tool.id)}
+                  className={`flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition active:scale-[0.99] ${
+                    isActive
+                      ? 'bg-violet-600 text-white shadow-md'
+                      : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+                  }`}
+                >
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center">{tool.icon}</span>
+                  <span className="flex min-w-0 flex-col leading-tight">
+                    <span className="text-xs font-semibold">{tool.label}</span>
+                    <span className={`truncate text-[10px] ${isActive ? 'text-white/75' : 'text-ink-muted-light dark:text-ink-muted-dark'}`}>
+                      {tool.hint}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
 
-          {/* Eraser Size Popover */}
-          {isEraserMenuOpen && (
-            <div className="absolute top-full mt-2 left-0 z-50 p-2.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark flex flex-col gap-1.5 min-w-[240px] animate-in fade-in slide-in-from-top-1">
-              <div className="flex items-center justify-between px-1 text-[11px] font-bold text-ink-light dark:text-ink-dark">
-                <span className="flex items-center gap-1.5">
-                  <Eraser className="w-3.5 h-3.5 text-rose-500" />
-                  Eraser Settings
-                </span>
-                <span className="text-[10px] text-ink-muted-light dark:text-ink-muted-dark font-normal">
-                  S Pen Button
-                </span>
-              </div>
-
-              {/* Eraser Mode */}
-              <div className="grid grid-cols-2 gap-1 pt-1">
+          {activeTool === 'eraser' && (
+            <>
+              <div className="my-2 h-px bg-surface-subtle-light dark:bg-surface-subtle-dark" />
+              <MenuHeading>Eraser mode</MenuHeading>
+              <div className="grid grid-cols-2 gap-1">
                 {ERASER_MODES.map((mode) => {
                   const isSelected = eraserMode === mode.id;
                   return (
@@ -340,10 +493,11 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
                       type="button"
                       onClick={() => onChangeEraserMode?.(mode.id)}
                       title={mode.description}
-                      className={`px-2 py-1.5 rounded-xl flex items-center justify-center gap-1.5 text-[11px] transition active:scale-95 ${
+                      aria-pressed={isSelected}
+                      className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-1.5 text-[11px] transition active:scale-95 ${
                         isSelected
-                          ? 'bg-rose-500 text-white shadow-md font-semibold'
-                          : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+                          ? 'bg-rose-500 font-semibold text-white shadow-md'
+                          : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
                       }`}
                     >
                       {mode.icon}
@@ -352,300 +506,206 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
                   );
                 })}
               </div>
-              <p className="px-1 text-[10px] leading-snug text-ink-muted-light dark:text-ink-muted-dark">
+              <p className="px-1 pt-1.5 text-[10px] leading-snug text-ink-muted-light dark:text-ink-muted-dark">
                 {eraserMode === 'pixel'
                   ? 'Erases only the covered part of a stroke.'
                   : 'Removes each touched stroke completely.'}
               </p>
-
-              {/* Eraser Size */}
-              <div className="mt-1 pt-2 border-t border-surface-subtle-light dark:border-surface-subtle-dark">
-                <div className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted-light dark:text-ink-muted-dark">
-                  Size
-                </div>
-                <div className="grid grid-cols-4 gap-1">
-                  {[
-                    { size: 12, label: '12px' },
-                    { size: 24, label: '24px' },
-                    { size: 36, label: '36px' },
-                    { size: 56, label: '56px' }
-                  ].map((item) => {
-                    const isSel = (eraserWidth ?? 24) === item.size;
-                    return (
-                      <button
-                        key={item.size}
-                        type="button"
-                        onClick={() => {
-                          onChangeEraserWidth?.(item.size);
-                          setIsEraserMenuOpen(false);
-                        }}
-                        className={`py-2 px-1 rounded-xl flex flex-col items-center justify-center gap-1 transition active:scale-95 ${
-                          isSel
-                            ? 'bg-rose-500 text-white shadow-md font-bold'
-                            : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
-                        }`}
-                      >
-                        <div 
-                          className="rounded-full bg-current" 
-                          style={{ width: `${Math.min(16, Math.max(6, Math.round(item.size / 3.5)))}px`, height: `${Math.min(16, Math.max(6, Math.round(item.size / 3.5)))}px` }} 
-                        />
-                        <span className="text-[10px]">{item.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
+              <button
+                type="button"
+                onClick={() => pickTool(lastWritingTool || 'fountain')}
+                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl bg-violet-600 px-2 py-1.5 text-[11px] font-medium text-white shadow-sm transition hover:bg-violet-700 active:scale-95"
+              >
+                <Feather className="w-3.5 h-3.5" />
+                Back to pen
+              </button>
+            </>
           )}
-        </div>
 
-        {onOpenSPenMenu && (
-          <button
-            type="button"
-            onClick={onOpenSPenMenu}
-            title="S Pen Quick Menu"
-            className="p-2 rounded-xl transition active:scale-95 flex items-center justify-center text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40"
-          >
-            <Sparkles className="w-4 h-4" />
-          </button>
-        )}
-      </div>
-
-      {extra && (
-        <div className="flex items-center gap-1 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
-          {extra}
-        </div>
-      )}
-
-      {/* Colors (only show for the writing tools) */}
-      {isWritingTool && (
-        <div className="flex items-center gap-1.5 pr-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
-          {currentPalette.map((item) => (
-            <button
-              key={item.hex}
-              type="button"
-              onClick={() => onChangeColor(item.hex)}
-              title={item.name}
-              className={`w-6 h-6 rounded-full border transition active:scale-90 ${
-                color === item.hex
-                  ? 'ring-2 ring-violet-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900 scale-110'
-                  : 'border-black/10 dark:border-white/10 opacity-80 hover:opacity-100'
-              }`}
-              style={{ backgroundColor: item.hex }}
-            />
-          ))}
-          {/* Custom color picker */}
-          <input
-            type="color"
-            value={color}
-            onChange={(e) => onChangeColor(e.target.value)}
-            title="Custom Color"
-            className="w-6 h-6 rounded-full border-0 cursor-pointer bg-transparent"
-          />
-        </div>
-      )}
-
-      {/* Width / Size Selector (Adapts to Pen vs Eraser) */}
-      {activeTool !== 'text' && activeTool !== 'select' && (
-      <div className="flex items-center gap-1.5 px-2 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
-        {activeTool === 'eraser' ? (
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-semibold text-rose-600 dark:text-rose-400 mr-0.5">
-              Eraser:
-            </span>
-            <div className="flex items-center p-0.5 rounded-lg bg-surface-subtle-light dark:bg-surface-subtle-dark">
-              {ERASER_MODES.map((mode) => {
-                const isSelected = eraserMode === mode.id;
-                return (
-                  <button
-                    key={mode.id}
-                    type="button"
-                    onClick={() => onChangeEraserMode?.(mode.id)}
-                    title={mode.description}
-                    aria-pressed={isSelected}
-                    className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold transition active:scale-95 ${
-                      isSelected
-                        ? 'bg-rose-500 text-white shadow-sm'
-                        : 'text-ink-muted-light dark:text-ink-muted-dark hover:text-ink-light dark:hover:text-ink-dark'
-                    }`}
-                  >
-                    {mode.label}
-                  </button>
-                );
-              })}
-            </div>
-            {[12, 24, 36, 56].map((size) => {
-              const currentEraserSize = eraserWidth ?? 24;
-              const isSelected = currentEraserSize === size;
-              return (
-                <button
-                  key={size}
-                  type="button"
-                  onClick={() => (onChangeEraserWidth ? onChangeEraserWidth(size) : onChangeWidth(size))}
-                  title={`Eraser size: ${size}px`}
-                  className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
-                    isSelected
-                      ? 'bg-rose-500 text-white ring-2 ring-rose-400 font-bold shadow-sm'
-                      : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
-                  }`}
-                >
-                  <div
-                    className="rounded-full bg-current"
-                    style={{ width: `${Math.min(16, Math.max(6, Math.round(size / 3)))}px`, height: `${Math.min(16, Math.max(6, Math.round(size / 3)))}px` }}
-                  />
-                </button>
-              );
-            })}
-            {/* Direct Back to Pen Button when Eraser is active */}
-            <button
-              type="button"
-              onClick={() => onSelectTool(lastWritingTool || 'fountain')}
-              title="Return to writing pen"
-              className="ml-1 flex items-center gap-1 px-2.5 py-1 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-medium shadow-sm transition active:scale-95"
-            >
-              <Feather className="w-3.5 h-3.5" />
-              <span>Back to Pen</span>
-            </button>
-          </div>
-        ) : (
-          // Pen Sizes: Fine (2px), Regular (4px), Medium (7px), Bold (12px)
-          [2, 4, 7, 12].map((size) => (
-            <button
-              key={size}
-              type="button"
-              onClick={() => onChangeWidth(size)}
-              title={`Pen width: ${size}px`}
-              className={`w-7 h-7 rounded-xl flex items-center justify-center transition active:scale-95 ${
-                width === size
-                  ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-bold ring-2 ring-violet-500'
-                  : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light'
-              }`}
-            >
-              <div
-                className="rounded-full bg-current"
-                style={{ width: `${Math.min(14, size + 2)}px`, height: `${Math.min(14, size + 2)}px` }}
-              />
-            </button>
-          ))
-        )}
-      </div>
-      )}
-
-      {/* Page Background Picker */}
-      {onChangeBackground && (
-        <div className="relative flex items-center pr-1 border-r border-surface-subtle-light dark:border-surface-subtle-dark">
-          <button
-            type="button"
-            onClick={() => setIsBackgroundMenuOpen(!isBackgroundMenuOpen)}
-            title="Page background style"
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-medium transition active:scale-95 ${
-              background !== 'none'
-                ? 'bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-300 font-semibold'
-                : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light dark:text-ink-muted-dark'
-            }`}
-          >
-            <LayoutTemplate className="w-4 h-4" />
-            <span className="hidden sm:inline">Page</span>
-            <ChevronDown className="w-3 h-3 opacity-60" />
-          </button>
-
-          {isBackgroundMenuOpen && (
-            <div className="absolute top-full mt-2 right-0 z-50 p-2.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark bg-surface-light dark:bg-surface-dark flex flex-col gap-1.5 min-w-[190px] animate-in fade-in slide-in-from-top-1">
-              <div className="px-1 text-[11px] font-bold text-ink-light dark:text-ink-dark flex items-center gap-1.5">
-                <LayoutTemplate className="w-3.5 h-3.5 text-violet-500" />
-                Page Background
-              </div>
-              <div className="grid grid-cols-2 gap-1 pt-1">
-                {INK_BACKGROUNDS.map((item) => {
-                  const isSelected = background === item.id;
+          {activeTool === 'select' && (
+            <>
+              <div className="my-2 h-px bg-surface-subtle-light dark:bg-surface-subtle-dark" />
+              <MenuHeading>Selection shape</MenuHeading>
+              <div className="grid grid-cols-3 gap-1">
+                {SELECT_MODES.map((mode) => {
+                  const isSelected = selectMode === mode.id;
                   return (
                     <button
-                      key={item.id}
+                      key={mode.id}
                       type="button"
                       onClick={() => {
-                        onChangeBackground(item.id);
-                        setIsBackgroundMenuOpen(false);
+                        onChangeSelectMode?.(mode.id);
+                        closeMenu();
                       }}
-                      className={`px-2 py-2 rounded-xl flex items-center gap-2 text-xs transition active:scale-95 ${
+                      title={mode.description}
+                      aria-pressed={isSelected}
+                      className={`flex flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[10px] transition active:scale-95 ${
                         isSelected
-                          ? 'bg-violet-600 text-white shadow-md font-semibold'
-                          : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark'
+                          ? 'bg-violet-600 font-semibold text-white shadow-md'
+                          : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
                       }`}
                     >
-                      {BACKGROUND_ICONS[item.id]}
-                      <span>{item.label}</span>
+                      {mode.icon}
+                      <span>{mode.label}</span>
                     </button>
                   );
                 })}
               </div>
-            </div>
+            </>
           )}
         </div>
       )}
 
-      {/* Stylus-Only Palm Shield Toggle */}
-      <button
-        type="button"
-        onClick={onToggleStylusOnly}
-        title={isStylusOnly ? "Stylus-Only Active (Palms & fingers completely ignored)" : "All Inputs Active (Click to lock to S Pen / Apple Pencil only)"}
-        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition active:scale-95 ${
-          isStylusOnly
-            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300 font-semibold'
-            : 'hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-muted-light dark:text-ink-muted-dark'
-        }`}
-      >
-        {isStylusOnly ? <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <ShieldAlert className="w-3.5 h-3.5 opacity-60" />}
-        <span className="hidden sm:inline">{isStylusOnly ? 'Stylus Shield' : 'Touch/Pen'}</span>
-      </button>
+      {openMenu === 'format' && extra && (
+        <div className={`${PANEL} w-max max-w-[calc(100vw-2rem)] p-1`} role="menu" aria-label="Text formatting">
+          {extra}
+        </div>
+      )}
 
-      {/* Scribble to Text Feature Button */}
-      <button
-        type="button"
-        onClick={onScribbleToText}
-        disabled={!hasStrokes}
-        title="Convert handwritten scribbles to text"
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-sm transition active:scale-95 ${
-          hasStrokes
-            ? 'bg-gradient-to-r from-violet-600 via-indigo-600 to-pink-600 text-white hover:opacity-90'
-            : 'bg-surface-subtle-light dark:bg-surface-subtle-dark text-ink-muted-light/50 dark:text-ink-muted-dark/50 cursor-not-allowed'
-        }`}
-      >
-        <Wand2 className="w-3.5 h-3.5" />
-        <span>Scribble to Text</span>
-      </button>
+      {openMenu === 'color' && (
+        <div className={`${PANEL} w-[232px]`} role="menu" aria-label="Ink color">
+          <MenuHeading>{activeTool === 'highlighter' ? 'Highlighter color' : 'Ink color'}</MenuHeading>
+          <div className="grid grid-cols-5 gap-1.5">
+            {currentPalette.map((item) => {
+              const isSelected = color.toLowerCase() === item.hex.toLowerCase();
+              return (
+                <button
+                  key={item.hex}
+                  type="button"
+                  onClick={() => {
+                    onChangeColor(item.hex);
+                    closeMenu();
+                  }}
+                  title={item.name}
+                  className={`flex h-8 w-8 items-center justify-center rounded-full border transition active:scale-90 ${
+                    isSelected
+                      ? 'border-violet-500 ring-2 ring-violet-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900'
+                      : 'border-black/10 opacity-90 hover:scale-105 hover:opacity-100 dark:border-white/15'
+                  }`}
+                  style={{ backgroundColor: item.hex }}
+                />
+              );
+            })}
+          </div>
+          <div className="mt-2 flex items-center gap-2 border-t border-surface-subtle-light pt-2 dark:border-surface-subtle-dark">
+            <span className="text-[11px] text-ink-muted-light dark:text-ink-muted-dark">Custom</span>
+            <input
+              type="color"
+              value={color}
+              onChange={(event) => onChangeColor(event.target.value)}
+              title="Custom ink color"
+              className="h-8 w-10 cursor-pointer rounded-lg border-0 bg-transparent"
+            />
+            <span className="font-mono text-[11px] uppercase text-ink-muted-light dark:text-ink-muted-dark">
+              {color}
+            </span>
+          </div>
+        </div>
+      )}
 
-      {/* Undo, Redo, Clear */}
-      <div className="flex items-center gap-0.5 pl-1">
-        <button
-          type="button"
-          onClick={onUndo}
-          disabled={!canUndo}
-          title="Undo Stroke"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark disabled:opacity-30 disabled:cursor-not-allowed transition"
-        >
-          <Undo2 className="w-4 h-4" />
-        </button>
+      {openMenu === 'size' && (
+        <div className={`${PANEL} w-[236px]`} role="menu" aria-label={isEraser ? 'Eraser size' : 'Pen size'}>
+          <MenuHeading>{isEraser ? 'Eraser size' : 'Pen size'}</MenuHeading>
+          <div className="grid grid-cols-4 gap-1">
+            {(isEraser ? ERASER_SIZES : PEN_SIZES.map((item) => item.size)).map((size) => {
+              const isSelected = isEraser ? currentEraserWidth === size : width === size;
+              const label = isEraser
+                ? `${size}px`
+                : PEN_SIZES.find((item) => item.size === size)?.label ?? `${size}px`;
+              const preview = isEraser
+                ? Math.min(16, Math.max(6, Math.round(size / 3.5)))
+                : Math.min(14, Math.max(5, size + 2));
+              return (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => {
+                    if (isEraser) onChangeEraserWidth?.(size);
+                    else onChangeWidth(size);
+                    closeMenu();
+                  }}
+                  title={isEraser ? `Eraser size: ${size}px` : `Pen width: ${size}px`}
+                  className={`flex flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[10px] transition active:scale-95 ${
+                    isSelected
+                      ? isEraser
+                        ? 'bg-rose-500 font-bold text-white shadow-md'
+                        : 'bg-violet-600 font-bold text-white shadow-md'
+                      : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+                  }`}
+                >
+                  <span
+                    className="rounded-full bg-current"
+                    style={{ width: `${preview}px`, height: `${preview}px` }}
+                  />
+                  <span className="whitespace-nowrap">{label}</span>
+                </button>
+              );
+            })}
+          </div>
 
-        <button
-          type="button"
-          onClick={onRedo}
-          disabled={!canRedo}
-          title="Redo Stroke"
-          className="p-1.5 rounded-xl hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark text-ink-light dark:text-ink-dark disabled:opacity-30 disabled:cursor-not-allowed transition"
-        >
-          <Redo2 className="w-4 h-4" />
-        </button>
+          {isEraser && (
+            <>
+              <div className="my-2 h-px bg-surface-subtle-light dark:bg-surface-subtle-dark" />
+              <MenuHeading>Eraser mode</MenuHeading>
+              <div className="grid grid-cols-2 gap-1">
+                {ERASER_MODES.map((mode) => {
+                  const isSelected = eraserMode === mode.id;
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => onChangeEraserMode?.(mode.id)}
+                      title={mode.description}
+                      aria-pressed={isSelected}
+                      className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-1.5 text-[11px] transition active:scale-95 ${
+                        isSelected
+                          ? 'bg-rose-500 font-semibold text-white shadow-md'
+                          : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+                      }`}
+                    >
+                      {mode.icon}
+                      <span>{mode.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="px-1 pt-1.5 text-[10px] leading-snug text-ink-muted-light dark:text-ink-muted-dark">
+                S Pen side button erases with these settings.
+              </p>
+            </>
+          )}
+        </div>
+      )}
 
-        <button
-          type="button"
-          onClick={onClear}
-          disabled={!hasStrokes}
-          title="Clear all inking"
-          className="p-1.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/30 text-ink-muted-light hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
+      {openMenu === 'page' && onChangeBackground && (
+        <div className={`${PANEL} w-[196px]`} role="menu" aria-label="Page background">
+          <MenuHeading>Page background</MenuHeading>
+          <div className="grid grid-cols-2 gap-1">
+            {INK_BACKGROUNDS.map((item) => {
+              const isSelected = background === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    onChangeBackground(item.id);
+                    closeMenu();
+                  }}
+                  aria-pressed={isSelected}
+                  className={`flex items-center gap-2 rounded-xl px-2 py-2 text-xs transition active:scale-95 ${
+                    isSelected
+                      ? 'bg-violet-600 font-semibold text-white shadow-md'
+                      : 'text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark'
+                  }`}
+                >
+                  {BACKGROUND_ICONS[item.id]}
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -836,6 +836,7 @@ export default function App() {
               toolbarExtra={
                 surfaceTool === 'text' ? (
                   <FormatToolbar
+                    embedded
                     onApplyFormat={(command, value) =>
                       textEditorRef.current?.applyFormat(command, value)
                     }
