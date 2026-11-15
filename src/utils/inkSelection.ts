@@ -1,4 +1,4 @@
-import { SelectMode, Stroke } from '../types/note';
+import { SelectMode, Stroke, TextBlockLayout } from '../types/note';
 
 /**
  * Geometry for the Select tool: which strokes a rectangle, circle or lasso
@@ -147,6 +147,160 @@ export function applyInkTransform(
       })
     };
   });
+}
+
+// ---- Typed text block -----------------------------------------------------
+//
+// The note's typed text is one block. Its placement is stored as a similarity
+// transform (translate, then rotate, then scale about the block's top-left),
+// which composes cleanly with the same move / resize / rotate gestures used for
+// ink. All of this works in page coordinates.
+
+export const IDENTITY_TEXT_BLOCK_LAYOUT: TextBlockLayout = {
+  x: 0,
+  y: 0,
+  scale: 1,
+  rotation: 0
+};
+
+export function isIdentityTextBlockLayout(layout: TextBlockLayout): boolean {
+  return (
+    Math.abs(layout.x) < 0.5 &&
+    Math.abs(layout.y) < 0.5 &&
+    Math.abs(layout.scale - 1) < 0.001 &&
+    Math.abs(layout.rotation) < 0.001
+  );
+}
+
+/** Maps a point in the text block's untransformed space to the page. */
+export function transformTextBlockPoint(point: Point, layout: TextBlockLayout): Point {
+  const cos = Math.cos(layout.rotation);
+  const sin = Math.sin(layout.rotation);
+  const x = point.x * layout.scale;
+  const y = point.y * layout.scale;
+  return {
+    x: layout.x + x * cos - y * sin,
+    y: layout.y + x * sin + y * cos
+  };
+}
+
+/** Axis-aligned page box around the transformed text block. */
+export function transformTextBlockBounds(local: Bounds, layout: TextBlockLayout): Bounds {
+  const corners = [
+    { x: local.x, y: local.y },
+    { x: local.x + local.width, y: local.y },
+    { x: local.x, y: local.y + local.height },
+    { x: local.x + local.width, y: local.y + local.height }
+  ].map((corner) => transformTextBlockPoint(corner, layout));
+
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, Math.max(...xs) - minX),
+    height: Math.max(1, Math.max(...ys) - minY)
+  };
+}
+
+/**
+ * Applies a live move / resize / rotate to the block's saved placement. The
+ * text block uses `transform: translate(x, y) rotate(r) scale(s)` about its
+ * top-left, so composing two such transforms stays in the same representation.
+ */
+export function composeTextBlockLayout(
+  base: TextBlockLayout,
+  live: InkTransform
+): TextBlockLayout {
+  const cos = Math.cos(live.rotation);
+  const sin = Math.sin(live.rotation);
+  const dx = base.x - live.originX;
+  const dy = base.y - live.originY;
+  const scaledX = dx * live.scale;
+  const scaledY = dy * live.scale;
+
+  return {
+    x: live.originX + scaledX * cos - scaledY * sin + live.translateX,
+    y: live.originY + scaledX * sin + scaledY * cos + live.translateY,
+    scale: Math.max(0.05, base.scale * live.scale),
+    rotation: base.rotation + live.rotation
+  };
+}
+
+export function unionBounds(a: Bounds | null, b: Bounds | null): Bounds | null {
+  if (!a) return b;
+  if (!b) return a;
+  const minX = Math.min(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxX = Math.max(a.x + a.width, b.x + b.width);
+  const maxY = Math.max(a.y + a.height, b.y + b.height);
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+export function pointInBounds(point: Point, bounds: Bounds): boolean {
+  return pointInRect(point, bounds);
+}
+
+function boundsCorners(bounds: Bounds): Point[] {
+  return [
+    { x: bounds.x, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y },
+    { x: bounds.x, y: bounds.y + bounds.height },
+    { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
+  ];
+}
+
+function pointInEllipse(point: Point, cx: number, cy: number, rx: number, ry: number): boolean {
+  const dx = (point.x - cx) / Math.max(1, rx);
+  const dy = (point.y - cy) / Math.max(1, ry);
+  return dx * dx + dy * dy <= 1;
+}
+
+/**
+ * Whether a finished marquee should grab the text block. The block is only
+ * taken when the marquee surrounds it completely, so dragging a rubber band
+ * across part of the text does not unexpectedly move the text along with the
+ * ink underneath it. A lasso must enclose every corner of the block.
+ */
+export function marqueeSelectsTextBlock(
+  marquee: MarqueeGeometry,
+  bounds: Bounds
+): boolean {
+  const corners = boundsCorners(bounds);
+
+  if (marquee.mode === 'lasso') {
+    const polygon = marquee.points && marquee.points.length >= 3 ? marquee.points : null;
+    if (!polygon) return false;
+    return corners.every((corner) => pointInPolygon(corner, polygon));
+  }
+
+  const minX = Math.min(marquee.start.x, marquee.end.x);
+  const minY = Math.min(marquee.start.y, marquee.end.y);
+  const maxX = Math.max(marquee.start.x, marquee.end.x);
+  const maxY = Math.max(marquee.start.y, marquee.end.y);
+  const rect: Bounds = {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY)
+  };
+
+  if (marquee.mode === 'ellipse') {
+    const cx = rect.x + rect.width / 2;
+    const cy = rect.y + rect.height / 2;
+    return corners.every((corner) =>
+      pointInEllipse(corner, cx, cy, rect.width / 2, rect.height / 2)
+    );
+  }
+
+  return (
+    bounds.x >= rect.x &&
+    bounds.y >= rect.y &&
+    bounds.x + bounds.width <= rect.x + rect.width &&
+    bounds.y + bounds.height <= rect.y + rect.height
+  );
 }
 
 function pointInRect(point: Point, rect: Bounds): boolean {
@@ -333,22 +487,51 @@ export function selectStrokeIds(strokes: Stroke[], marquee: MarqueeGeometry): st
   return strokes.filter(hit).map((stroke) => stroke.id);
 }
 
-/** Topmost stroke under a point, used for a tap-selection in Select mode. */
+/** Squared distance from `point` to the segment a→b. */
+function distanceToSegmentSquared(point: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSquared = dx * dx + dy * dy;
+
+  let t = 0;
+  if (lengthSquared > 0) {
+    t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared;
+    t = Math.max(0, Math.min(1, t));
+  }
+
+  const x = a.x + t * dx;
+  const y = a.y + t * dy;
+  return (point.x - x) ** 2 + (point.y - y) ** 2;
+}
+
+/**
+ * Topmost stroke under a point, used for a tap-selection in Select mode. The
+ * hit test follows each stroke's segments rather than its sampled points, so
+ * quick strokes with sparse samples still pick up reliably.
+ */
 export function hitTestStroke(
   strokes: Stroke[],
   point: Point,
   tolerance: number = 10
 ): Stroke | null {
-  const limit = tolerance * tolerance;
   for (let i = strokes.length - 1; i >= 0; i--) {
     const stroke = strokes[i];
     if (stroke.tool === 'eraser') continue;
-    const radius = Math.max(tolerance, stroke.width);
-    const r2 = Math.max(limit, radius * radius);
-    for (const p of stroke.points) {
+
+    const radius = Math.max(tolerance, stroke.width / 2 + tolerance);
+    const r2 = radius * radius;
+    const points = stroke.points;
+
+    for (const p of points) {
       const dx = p.x - point.x;
       const dy = p.y - point.y;
       if (dx * dx + dy * dy <= r2) return stroke;
+    }
+
+    for (let j = 1; j < points.length; j++) {
+      if (distanceToSegmentSquared(point, points[j - 1], points[j]) <= r2) {
+        return stroke;
+      }
     }
   }
   return null;

@@ -38,6 +38,18 @@ export interface Stroke {
   layer?: StrokeLayer;
 }
 
+/**
+ * Page placement of the note's typed text block. The block starts at the
+ * page's top-left and can be moved, scaled and rotated like a drawn object.
+ * `rotation` is in radians.
+ */
+export interface TextBlockLayout {
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+}
+
 export interface Note {
   id: string;
   title: string;
@@ -45,6 +57,8 @@ export interface Note {
   inkStrokes: Stroke[]; // vector ink strokes for S Pen / Apple Pencil
   inkPreviewUrl?: string; // cached low-res thumbnail
   inkBackground?: InkBackground; // ruled / grid / dotted page style
+  /** Move / resize / rotate applied to the typed text block. */
+  textLayout?: TextBlockLayout;
   recognizedText?: string; // OCR'd handwriting, included in search
   tags: string[];
   color: string; // card accent color

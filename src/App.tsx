@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Note, Stroke, InkBackground, PenTool } from './types/note';
+import { Note, Stroke, InkBackground, PenTool, TextBlockLayout } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
@@ -409,50 +409,53 @@ export default function App() {
     }
   }, [executeSync, executeAccountSync]);
 
-  // Update Note Title with timestamp
-  const handleUpdateTitle = (title: string) => {
-    if (!activeNote) return;
+  /**
+   * Applies one edit to the active note from the latest committed state. Two
+   * rapid edits (transforming ink and text together) must not each spread a
+   * stale `activeNote`, or the second would drop the first one's change.
+   */
+  const updateActiveNote = useCallback((updater: (note: Note) => Note) => {
+    const id = activeNoteIdRef.current;
+    if (!id) return;
+    const current = notesRef.current.find((note) => note.id === id);
+    if (!current) return;
+
     const now = Date.now();
     lastLocalEditTimeRef.current = now;
-    const updated = { ...activeNote, title, updatedAt: now };
-    setNotes((prev) => {
-      const next = prev.map((n) => (n.id === updated.id ? updated : n));
-      notesRef.current = next;
-      return next;
-    });
+    const updated = { ...updater(current), updatedAt: now };
+    const next = notesRef.current.map((note) =>
+      note.id === updated.id ? updated : note
+    );
+    // Update the ref before React renders so a second edit in the same event
+    // (for example ink + text in one selection transform) reads this change.
+    notesRef.current = next;
+    setNotes(next);
     scheduleSave(updated);
+  }, [scheduleSave]);
+
+  // Update Note Title with timestamp
+  const handleUpdateTitle = (title: string) => {
+    updateActiveNote((current) => ({ ...current, title }));
   };
 
   // Update Note Text Content with timestamp
   const handleUpdateContent = (content: string) => {
-    if (!activeNote) return;
-    const now = Date.now();
-    lastLocalEditTimeRef.current = now;
-    const updated = { ...activeNote, content, updatedAt: now };
-    setNotes((prev) => {
-      const next = prev.map((n) => (n.id === updated.id ? updated : n));
-      notesRef.current = next;
-      return next;
-    });
-    scheduleSave(updated);
+    updateActiveNote((current) => ({ ...current, content }));
   };
 
   // Update Stylus Ink Strokes with timestamp
   const handleUpdateStrokes = (strokes: Stroke[]) => {
-    if (!activeNote) return;
-    const now = Date.now();
-    lastLocalEditTimeRef.current = now;
-    const updated: Note = { 
-      ...activeNote, 
-      inkStrokes: strokes, 
-      updatedAt: now 
-    };
-    setNotes((prev) => {
-      const next = prev.map((n) => (n.id === updated.id ? updated : n));
-      notesRef.current = next;
-      return next;
-    });
-    scheduleSave(updated);
+    updateActiveNote((current) => ({ ...current, inkStrokes: strokes }));
+  };
+
+  // Move / resize / rotate of the typed text block
+  const handleUpdateTextLayout = (layout: TextBlockLayout) => {
+    updateActiveNote((current) => ({ ...current, textLayout: layout }));
+  };
+
+  // Deleting the text object clears its text and its placement
+  const handleDeleteText = () => {
+    updateActiveNote((current) => ({ ...current, content: '', textLayout: undefined }));
   };
 
   // Create New Note (optionally from a template)
@@ -535,30 +538,12 @@ export default function App() {
 
   // Update Note Tags
   const handleUpdateTags = (tags: string[]) => {
-    if (!activeNote) return;
-    const now = Date.now();
-    lastLocalEditTimeRef.current = now;
-    const updated = { ...activeNote, tags, updatedAt: now };
-    setNotes((prev) => {
-      const next = prev.map((n) => (n.id === updated.id ? updated : n));
-      notesRef.current = next;
-      return next;
-    });
-    scheduleSave(updated);
+    updateActiveNote((current) => ({ ...current, tags }));
   };
 
   // Update Ink Page Background
   const handleUpdateBackground = (background: InkBackground) => {
-    if (!activeNote) return;
-    const now = Date.now();
-    lastLocalEditTimeRef.current = now;
-    const updated: Note = { ...activeNote, inkBackground: background, updatedAt: now };
-    setNotes((prev) => {
-      const next = prev.map((n) => (n.id === updated.id ? updated : n));
-      notesRef.current = next;
-      return next;
-    });
-    scheduleSave(updated);
+    updateActiveNote((current) => ({ ...current, inkBackground: background }));
   };
 
   /**
@@ -867,6 +852,9 @@ export default function App() {
               spenDoublePressOpensMenu={settings.spenDoublePressOpensMenu}
               background={activeNote.inkBackground}
               onChangeBackground={handleUpdateBackground}
+              textLayout={activeNote.textLayout}
+              onChangeTextLayout={handleUpdateTextLayout}
+              onDeleteText={handleDeleteText}
             />
           </div>
         ) : (
