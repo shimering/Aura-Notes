@@ -108,7 +108,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       <aside
-        className={`fixed md:relative inset-y-0 left-0 z-40 flex-shrink-0 flex flex-col bg-surface-light dark:bg-surface-dark border-surface-subtle-light dark:border-surface-subtle-dark transition-all duration-300 ease-in-out overflow-hidden ${
+        className={`fixed md:relative bottom-0 top-[var(--app-safe-top)] md:top-auto left-0 z-40 flex-shrink-0 flex flex-col bg-surface-light dark:bg-surface-dark border-surface-subtle-light dark:border-surface-subtle-dark transition-all duration-300 ease-in-out overflow-hidden ${
           isOpen 
             ? 'w-80 border-r translate-x-0 opacity-100' 
             : 'w-0 border-r-0 -translate-x-full md:translate-x-0 opacity-0 pointer-events-none'

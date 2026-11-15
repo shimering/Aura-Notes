@@ -11,7 +11,7 @@ export interface TextEditorRef {
   focusAt: (point: Point) => void;
   insertTextBox: () => void;
   editBox: (box: HTMLElement, cell?: HTMLTableCellElement) => void;
-  finishEditing: () => void;
+  finishEditing: (keepEmpty?: boolean) => void;
   appendTextBox: (markup: string) => void;
   replacePicture: (image: HTMLImageElement, file: File) => Promise<void>;
   savePageObjects: () => void;
@@ -270,14 +270,14 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     };
   }, []);
 
-  const finishEditing = () => {
+  const finishEditing = (keepEmpty = false) => {
     const box = activeBox.current;
     if (!box) return;
     const host = activeHost.current;
     activeBox.current = activeHost.current = null;
     host?.blur();
     host?.removeAttribute('contenteditable');
-    if (!boxHasContent(box)) box.remove();
+    if (!keepEmpty && !boxHasContent(box)) box.remove();
     savedRange.current = null;
   };
 

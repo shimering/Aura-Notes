@@ -5,6 +5,20 @@
 @layer base {
   :root {
     --app-height: 100%;
+    --app-safe-top: env(safe-area-inset-top, 0px);
+  }
+
+  /* An installed iPad app draws underneath its translucent status bar. */
+  @supports (-webkit-touch-callout: none) {
+    @media (display-mode: standalone) {
+      :root {
+        --app-safe-top: max(24px, env(safe-area-inset-top, 0px));
+      }
+    }
+  }
+
+  #root {
+    padding-top: var(--app-safe-top);
   }
 
   html, body {

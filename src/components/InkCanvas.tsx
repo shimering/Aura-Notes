@@ -314,6 +314,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const selectPointerTypeRef = useRef<string>('mouse');
   const replacementInput = useRef<HTMLInputElement>(null);
   const lastPick = useRef<{ point: Point; keys: (string | HTMLElement)[] } | null>(null);
+  const editingTap = useRef<{ box: HTMLElement; point: Point; time: number } | null>(null);
 
   const getEditor = useCallback(() =>
     textLayerRef.current?.querySelector<HTMLElement>('[data-note-editor]') ?? null, []);
@@ -399,6 +400,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
     selectionNoteId.current = noteId;
     lastPick.current = null;
+    editingTap.current = null;
     transformCleanupRef.current?.();
     setSelection([]);
     selectionPointerRef.current = null;
@@ -1660,7 +1662,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
 
     if (!dismissText && (hit || insideFrame)) {
-      if (hit && !selectedHit) selectHit(hit);
+      // A drag started on a box moves that box. Drag the empty area inside
+      // a multi-object selection frame to move the entire selection.
+      if (hit && (!selectedHit || hit.box)) selectHit(hit);
       beginTransform('move', null, e, {
         tap: () => {
           if (!hits.length) {
@@ -1763,8 +1767,32 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (activeTool === 'text') {
       const target = e.target instanceof Element ? e.target : null;
       if (target?.closest('a[download]')) return;
+      const box = target?.closest<HTMLElement>(boxSelector);
       const cell = target?.closest<HTMLTableCellElement>('td, th');
       const editingTable = cell?.closest<HTMLElement>(tableBoxSelector);
+      const editingBox = box && (box.hasAttribute('contenteditable') ||
+        editingTable?.querySelector('[contenteditable="true"]'));
+      if (editingBox && box) {
+        const previous = editingTap.current;
+        const time = performance.now();
+        const point = { x: e.clientX, y: e.clientY };
+        if (previous?.box === box && time - previous.time <= 350 &&
+          Math.hypot(point.x - previous.point.x, point.y - previous.point.y) <= 24) {
+          e.preventDefault();
+          editingTap.current = null;
+          lastPick.current = null;
+          textEditor?.current?.finishEditing(true);
+          if (getEditor()?.contains(box)) {
+            textEditor?.current?.savePageObjects();
+            setSelection([], [box]);
+            if (cell) setTableCell(cell);
+          }
+          return;
+        }
+        editingTap.current = { box, point, time };
+      } else {
+        editingTap.current = null;
+      }
       if (cell && editingTable?.querySelector('[contenteditable="true"]')) {
         if (!cell.isContentEditable) textEditor?.current?.editBox(editingTable, cell);
         setTableCell(cell);
@@ -1814,6 +1842,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Move (coalesced 120Hz events loop)
   const handlePointerMove = (e: React.PointerEvent) => {
+    const tap = editingTap.current;
+    if (tap && e.buttons && Math.hypot(e.clientX - tap.point.x, e.clientY - tap.point.y) > 24) {
+      editingTap.current = null;
+    }
     if (isPinchingRef.current || (e.pointerType === 'touch' && !e.isPrimary)) return;
     if (selectionPointerRef.current === e.pointerId) {
       if (selectionTravel(e.clientX, e.clientY) >= SELECTION_TAP_SLOP) selectionDragged.current = true;
@@ -1930,6 +1962,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handlePointerCancel = (e: React.PointerEvent) => {
+    editingTap.current = null;
     if (selectionPointerRef.current === e.pointerId) {
       selectionPointerRef.current = null;
       marqueeRef.current = null;

@@ -130,6 +130,15 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
   expect(inserted.style.left).toBe('132px');
   expect(inserted.style.top).toBe('81px');
 
+  for (let tap = 0; tap < 2; tap++) {
+    const event = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 140, clientY: 130 });
+    Object.assign(event, { pointerId: 2, pointerType: 'touch', isPrimary: true, width: 10, height: 10 });
+    act(() => inserted.dispatchEvent(event));
+  }
+  expect(inserted.hasAttribute('contenteditable')).toBe(false);
+  expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
+  act(() => inserted.remove());
+
   pointer('pointerdown', 45, 55);
   pointer('pointerup', 45, 55);
   expect(inserted.isConnected).toBe(false);
