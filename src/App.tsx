@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
-import { ChevronLeft, Menu } from 'lucide-react';
+import { ChevronLeft, PanelLeft } from 'lucide-react';
 import { Note, NotePageData, Stroke, InkBackground, PenTool, PageLayout, NoteArrow } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
@@ -54,7 +54,9 @@ function mergeSyncResult(
 
 export default function App() {
   const keyboardOpen = useKeyboardViewport();
-  const [isPhone, setIsPhone] = useState(() => window.innerWidth < 640);
+  const [workspaceWidth, setWorkspaceWidth] = useState(() => window.innerWidth);
+  const isPhone = workspaceWidth < 640;
+  const isDockedWorkspace = workspaceWidth >= 1024;
   const [phoneNotesOpen, setPhoneNotesOpen] = useState(true);
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNoteId, setActiveNoteIdState] = useState<string | null>(null);
@@ -64,7 +66,10 @@ export default function App() {
   
   // Mirror the canvas tool so the text sheet can enable the caret in Text mode.
   const [surfaceTool, setSurfaceTool] = useState<PenTool>('text');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 1024);
+  const [isDockedSidebarOpen, setIsDockedSidebarOpen] = useState(true);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const isSidebarOpen = isDockedWorkspace ? isDockedSidebarOpen : isDrawerOpen;
+  const setIsSidebarOpen = isDockedWorkspace ? setIsDockedSidebarOpen : setIsDrawerOpen;
   const [isScribbleModalOpen, setIsScribbleModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
@@ -87,7 +92,8 @@ export default function App() {
   const inkCanvasRef = useRef<InkCanvasRef>(null);
   const textEditorRef = useRef<TextEditorRef>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const phoneTitleRef = useRef<HTMLInputElement>(null);
+  const noteTitleRef = useRef<HTMLInputElement>(null);
+  const notesMenuRef = useRef<HTMLButtonElement>(null);
   const pendingSaves = useRef(new Map<string, Promise<void>>());
   const failedSaves = useRef(new Map<string, Note>());
   const deletingNotes = useRef(new Set<string>());
@@ -103,7 +109,7 @@ export default function App() {
   activeNoteIdRef.current = activeNoteId;
 
   useEffect(() => {
-    const update = () => setIsPhone(window.innerWidth < 640);
+    const update = () => setWorkspaceWidth(window.innerWidth);
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
   }, []);
@@ -269,6 +275,7 @@ export default function App() {
     activeNoteIdRef.current = nextId;
     accountRef.current = user;
     setSettings(prefs);
+    setIsDockedSidebarOpen(prefs.isSidebarOpen);
     setNotes(loadedNotes);
     setActiveNoteIdState(nextId);
     setAccount(user);
@@ -531,12 +538,13 @@ export default function App() {
       activeNoteIdRef.current = newNote.id;
       setActiveNoteIdState(newNote.id);
       if (isPhone) setPhoneNotesOpen(false);
+      else if (!isDockedWorkspace) setIsDrawerOpen(false);
     };
-    if (isPhone && !templateId) {
-      // Phone browsers require focus during the tap to open the keyboard.
+    if (!templateId) {
+      // Touch browsers require focus during the tap to open the keyboard.
       flushSync(openNewNote);
-      phoneTitleRef.current?.focus();
-      phoneTitleRef.current?.select();
+      noteTitleRef.current?.focus();
+      noteTitleRef.current?.select();
     } else {
       openNewNote();
     }
@@ -552,8 +560,9 @@ export default function App() {
     setActiveNoteIdState(id);
     if (isPhone) {
       setPhoneNotesOpen(false);
-    } else if (window.innerWidth < 768) {
-      setIsSidebarOpen(false);
+    } else if (!isDockedWorkspace) {
+      setIsDrawerOpen(false);
+      window.requestAnimationFrame(() => notesMenuRef.current?.focus({ preventScroll: true }));
     }
     await setActiveNoteId(id);
   };
@@ -637,7 +646,7 @@ export default function App() {
       }
     }
     if (typeof updates.isSidebarOpen === 'boolean') {
-      setIsSidebarOpen(updates.isSidebarOpen);
+      setIsDockedSidebarOpen(updates.isSidebarOpen);
     }
   };
 
@@ -723,8 +732,10 @@ export default function App() {
         textEditorRef.current?.finishEditing();
         setPhoneNotesOpen(true);
       } else {
-        setIsSidebarOpen(true);
-        saveSettings({ isSidebarOpen: true });
+        if (isDockedWorkspace) {
+          setIsDockedSidebarOpen(true);
+          void saveSettings({ isSidebarOpen: true });
+        } else setIsDrawerOpen(true);
       }
       window.setTimeout(() => {
         searchInputRef.current?.focus();
@@ -801,7 +812,7 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, offlineChoice, scheduleSave, isPhone]);
+  }, [isLoading, offlineChoice, scheduleSave, isPhone, isDockedWorkspace]);
 
   const chooseNotebook = async (cachedId?: string) => {
     setIsLoading(true);
@@ -844,17 +855,19 @@ export default function App() {
   const toggleSidebar = () => {
     const next = !isSidebarOpen;
     setIsSidebarOpen(next);
-    void saveSettings({ isSidebarOpen: next });
+    if (isDockedWorkspace) void saveSettings({ isSidebarOpen: next });
+    else if (!next) window.requestAnimationFrame(() => notesMenuRef.current?.focus({ preventScroll: true }));
   };
   const notesMenuButton = (
-    <button type="button" className="ribbon-command shrink-0"
+    <button ref={notesMenuRef} type="button" className="workspace-notes-toggle"
       title={isSidebarOpen ? 'Hide notes list' : 'Show notes list'}
       aria-label="Notes list" aria-controls="notes-sidebar" aria-expanded={isSidebarOpen}
       onMouseDown={(event) => event.preventDefault()} onClick={toggleSidebar}>
-      <Menu size={17} />
+      <PanelLeft size={18} aria-hidden="true" /> Notes
     </button>
   );
   const showPhoneNotes = isPhone && (phoneNotesOpen || !activeNote);
+  const showTabletDrawer = !isPhone && !isDockedWorkspace && isSidebarOpen;
   const pageControls = { pages, pageIndex, onSelect: openPage, onAdd: addPage, onDelete: deletePage };
 
   return (
@@ -885,9 +898,9 @@ export default function App() {
           onDeleteNote={handleDeleteNote}
           onTogglePin={handleTogglePin}
           isPhone={isPhone}
+          isDrawer={!isPhone && !isDockedWorkspace}
           isOpen={isPhone ? showPhoneNotes : isSidebarOpen}
           onToggleOpen={toggleSidebar}
-          onUpdateTitle={handleUpdateTitle}
           onUpdateTags={handleUpdateTags}
           onExport={handleExport}
           isSaving={isSaving}
@@ -900,23 +913,21 @@ export default function App() {
           searchInputRef={searchInputRef}
         />
 
-        <main inert={showPhoneNotes} className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+        <main inert={showPhoneNotes || showTabletDrawer} className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
         {activeNote && activePage ? (
           <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden relative transition-all duration-300">
-            {isPhone && (
-              <div className="phone-editor-header">
-                <button type="button" className="phone-editor-action" aria-controls="notes-sidebar" onClick={() => {
+              <header className={isPhone ? 'phone-editor-header' : 'workspace-editor-header'}>
+                {isPhone ? <button type="button" className="phone-editor-action" aria-controls="notes-sidebar" onClick={() => {
                   textEditorRef.current?.finishEditing();
                   setPhoneNotesOpen(true);
-                }}><ChevronLeft size={19} /> Notes</button>
-                <input ref={phoneTitleRef} type="text" aria-label="Note title" value={activeNote.title}
+                }}><ChevronLeft size={19} /> Notes</button> : notesMenuButton}
+                <input ref={noteTitleRef} type="text" aria-label="Note title" value={activeNote.title}
                   placeholder="Untitled Note" enterKeyHint="done" onChange={(event) => handleUpdateTitle(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.currentTarget.blur();
                   }} />
-                <PhonePagePicker key={activeNote.id} {...pageControls} />
-              </div>
-            )}
+                {isPhone ? <PhonePagePicker key={activeNote.id} {...pageControls} /> : <NotePageBar {...pageControls} />}
+              </header>
             {/* One page: typed text with ink above and behind it. */}
             <InkCanvas
               ref={inkCanvasRef}
@@ -931,9 +942,6 @@ export default function App() {
               onScribbleToText={() => setIsScribbleModalOpen(true)}
               onRequestTextFocus={() => textEditorRef.current?.focusEditor()}
               onToolChange={setSurfaceTool}
-              notesMenuButton={notesMenuButton}
-              onCanvasInteraction={!isPhone && isSidebarOpen ? () => setIsSidebarOpen(false) : undefined}
-              pageControls={isPhone ? undefined : <NotePageBar {...pageControls} />}
               textLayer={
                 <TextEditor
                   ref={textEditorRef}

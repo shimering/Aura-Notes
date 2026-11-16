@@ -27,7 +27,6 @@ const PAGE_LAYOUTS = [
 interface NoteRibbonProps {
   editor: RefObject<TextEditorRef | null>;
   isPhone?: boolean;
-  notesMenuButton?: ReactNode;
   enableText: () => void;
   onFocusText: () => void;
   onFinishText: () => void;
@@ -58,7 +57,7 @@ interface NoteRibbonProps {
 }
 
 export function NoteRibbon({
-  editor, isPhone = false, notesMenuButton, enableText, onFocusText, onFinishText, onStartDrawing, onFitWidth, onZoom,
+  editor, isPhone = false, enableText, onFocusText, onFinishText, onStartDrawing, onFitWidth, onZoom,
   onInsertTextBox, onInsertTable, onInsertPicture, arrowMode, onArrowMode, textActive, drawRequest, drawingTools,
   orientation, background, pageColor, onOrientationChange, onBackgroundChange, onPageColorChange,
   selection, keyboardOpen = false, textEditing = false, phoneCanvasMode, onPhoneCanvasMode,
@@ -173,10 +172,9 @@ export function NoteRibbon({
   );
 
   return (
-    <section className={`note-ribbon ${isPhone ? 'phone-ribbon' : ''}`} data-compact={compact}
+    <section className={`note-ribbon ${isPhone ? 'phone-ribbon' : 'workspace-ribbon'}`} data-compact={compact}
       data-keyboard-open={keyboardOpen} aria-label="Note ribbon">
       {showHeader && <div className="ribbon-header">
-        {!isPhone && notesMenuButton}
         <div className="ribbon-tabs" role="tablist" aria-label="Ribbon tabs">
           {tabs.map((name, index) => (
             <button key={name} type="button" role="tab" id={`${id}-tab-${index}`}

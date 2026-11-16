@@ -14,6 +14,7 @@ it('restores the document after WebKit reports a keyboard dismissal before updat
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('navigator', { maxTouchPoints: 5 });
   vi.stubGlobal('CSS', { supports: () => true });
+  vi.stubGlobal('matchMedia', () => ({ matches: false }));
   const viewport = Object.assign(new EventTarget(), {
     height: window.innerHeight,
     scale: 1,
@@ -57,6 +58,53 @@ it('restores the document after WebKit reports a keyboard dismissal before updat
     act(() => root.unmount());
     container.remove();
     Reflect.deleteProperty(document, 'scrollingElement');
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  }
+});
+
+it.each([true, false])('adjusts the toolbar only for the Home Screen viewport gap (standalone: %s)', (standalone) => {
+  vi.useFakeTimers();
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('navigator', { maxTouchPoints: 5 });
+  vi.stubGlobal('CSS', { supports: () => true });
+  vi.stubGlobal('matchMedia', () => ({ matches: standalone }));
+  vi.stubGlobal('innerWidth', 402);
+  vi.stubGlobal('innerHeight', 812);
+  vi.stubGlobal('screen', { width: 402, height: 874 });
+  const viewport = Object.assign(new EventTarget(), { height: 812, scale: 1, offsetTop: 0 });
+  vi.stubGlobal('visualViewport', viewport);
+  const container = document.createElement('div');
+  container.id = 'root';
+  container.style.paddingTop = '62px';
+  document.body.append(container);
+  const root = createRoot(container);
+  const getReservedBottom = () => container.style.getPropertyValue('--phone-toolbar-reserved-bottom');
+
+  try {
+    act(() => root.render(<Editor />));
+    expect(getReservedBottom()).toBe(standalone ? '62px' : '');
+
+    act(() => {
+      viewport.height = 530;
+      container.querySelector('input')!.focus();
+      viewport.dispatchEvent(new Event('resize'));
+      vi.advanceTimersByTime(32);
+    });
+    expect(container.dataset.keyboardOpen).toBe('true');
+    expect(getReservedBottom()).toBe('');
+
+    act(() => {
+      window.innerHeight = 874;
+      viewport.height = 874;
+      viewport.dispatchEvent(new Event('resize'));
+      vi.advanceTimersByTime(48);
+    });
+    expect(container.dataset.keyboardOpen).toBeUndefined();
+    expect(getReservedBottom()).toBe('');
+  } finally {
+    act(() => root.unmount());
+    container.remove();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   }

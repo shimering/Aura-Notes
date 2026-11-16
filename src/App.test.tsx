@@ -110,6 +110,22 @@ describe('note persistence in the workspace', () => {
     expect((await getNoteById('second'))?.pinned).toBe(true);
   });
 
+  it('closes the tablet drawer when creating a note and focuses its title', async () => {
+    vi.stubGlobal('innerWidth', 820);
+    await saveNote(note('existing'));
+    await mount();
+
+    const notesToggle = container.querySelector<HTMLButtonElement>('main [aria-controls="notes-sidebar"]')!;
+    const main = container.querySelector('main')!;
+    expect(notesToggle.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => notesToggle.click());
+    expect(main.hasAttribute('inert')).toBe(true);
+    await act(async () => button('New note').click());
+    expect(notesToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(main.hasAttribute('inert')).toBe(false);
+    expect(document.activeElement).toBe(main.querySelector('[aria-label="Note title"]'));
+  });
+
   it('persists a remote vault deletion and keeps an unrelated edit made during sync', async () => {
     await saveNote(note('vault-deleted'));
     await saveNote(note('keep-edit'));

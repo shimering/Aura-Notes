@@ -92,12 +92,9 @@ interface InkCanvasProps {
   onRequestTextFocus?: () => void;
   /** Reports the active tool so the host can reflect it in the text sheet. */
   onToolChange?: (tool: PenTool) => void;
-  onCanvasInteraction?: () => void;
-  notesMenuButton?: React.ReactNode;
   isPhone?: boolean;
   /** The note's typed text, drawn between the back and front ink layers. */
   textLayer?: React.ReactNode;
-  pageControls?: React.ReactNode;
   textEditor?: React.RefObject<TextEditorRef | null>;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
@@ -261,11 +258,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   onScribbleToText,
   onRequestTextFocus,
   onToolChange,
-  onCanvasInteraction,
-  notesMenuButton,
   isPhone = false,
   textLayer,
-  pageControls,
   textEditor,
   background = 'none',
   onChangeBackground,
@@ -3008,7 +3002,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             key={isPhone ? noteId : undefined}
             editor={textEditor}
             isPhone={isPhone}
-            notesMenuButton={notesMenuButton}
             textActive={activeTool === 'text'}
             enableText={enableText}
             onFocusText={() => {
@@ -3064,14 +3057,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           ref={scrollRef}
           className="note-desk absolute inset-0 overflow-auto"
           data-ink-ui="page-viewport"
-          onPointerUpCapture={onCanvasInteraction && ((event) => {
-            if (event.isPrimary && event.button === 0 && !isInkUiTarget(event.target)) onCanvasInteraction();
-          })}
-          onInputCapture={onCanvasInteraction && ((event) => {
-            if (event.target instanceof Element && event.target.closest('[data-note-editor] [contenteditable="true"]')) {
-              onCanvasInteraction();
-            }
-          })}
           onScroll={() => {
             if (!transformDragRef.current) setHover(null);
             extendCanvasAtEdge();
@@ -3240,7 +3225,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                 </div>
               </div>
             </div>
-            {pageControls && !isCanvas && <div className="note-page-footer">{pageControls}</div>}
           </div>
         </div>
 
@@ -3284,12 +3268,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
         {/* Overlays that stay put while the page scrolls. */}
         <div className="pointer-events-none absolute inset-0 z-40">
-        {/* The endless canvas has no sheet footer, so its page bar floats. */}
-        {isCanvas && pageControls && (
-          <div className="pointer-events-auto absolute left-1/2 top-3 z-20 -translate-x-1/2">
-            {pageControls}
-          </div>
-        )}
         {(!isPhone || isSpenLogOpen) && <div className="pointer-events-auto absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1" data-ink-ui="stylus-status">
           <button
             type="button"
@@ -3370,7 +3348,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
         {/* Bottom Center: page zoom. Pinch and trackpad pinch do the same. */}
         <div
-          className="pointer-events-auto absolute bottom-4 left-1/2 z-10 hidden -translate-x-1/2 items-center gap-0.5 rounded-2xl border border-surface-subtle-light bg-surface-light/90 px-1 py-1 shadow-floating backdrop-blur-md dark:border-surface-subtle-dark dark:bg-surface-dark/90 md:flex"
+          className={`pointer-events-auto absolute bottom-4 left-1/2 z-10 ${isPhone ? 'hidden' : 'flex'} -translate-x-1/2 items-center gap-0.5 rounded-2xl border border-surface-subtle-light bg-surface-light/90 px-1 py-1 shadow-floating backdrop-blur-md dark:border-surface-subtle-dark dark:bg-surface-dark/90`}
           data-ink-ui="zoom-controls"
         >
           <button

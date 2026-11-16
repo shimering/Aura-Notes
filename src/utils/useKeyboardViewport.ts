@@ -8,6 +8,7 @@ export function useKeyboardViewport() {
     const viewport = window.visualViewport;
     if (!root || !viewport) return;
     const touchWebKit = navigator.maxTouchPoints > 0 && window.CSS?.supports('-webkit-touch-callout', 'none');
+    const standaloneWebKit = touchWebKit && window.matchMedia('(display-mode: standalone)').matches;
     let width = window.innerWidth;
     let fullHeight = Math.max(window.innerHeight, viewport.height);
     let open = false;
@@ -25,7 +26,23 @@ export function useKeyboardViewport() {
       }
       if (!acceptsText && !open) fullHeight = Math.max(window.innerHeight, viewport.height);
       else fullHeight = Math.max(fullHeight, window.innerHeight, viewport.height);
-      const next = Math.abs(viewport.scale - 1) < 0.05 && (open || acceptsText) && fullHeight - viewport.height > 100;
+      const unzoomed = Math.abs(viewport.scale - 1) < 0.05;
+      const next = unzoomed && (open || acceptsText) && fullHeight - viewport.height > 100;
+      if (standaloneWebKit) {
+        let reservedBottom = 0;
+        if (!next && unzoomed && width < 640 && screen.height > screen.width &&
+          Math.abs(viewport.offsetTop) < 1 && Math.abs(window.innerHeight - viewport.height) < 2) {
+          const missingHeight = screen.height - viewport.height;
+          // Some portrait Home Screen apps lose exactly the status bar height
+          // below the viewport but still report the full bottom safe area.
+          // https://bugs.webkit.org/show_bug.cgi?id=313800
+          if (missingHeight >= 44 && Math.abs(missingHeight - parseFloat(getComputedStyle(root).paddingTop)) < 2) {
+            reservedBottom = missingHeight;
+          }
+        }
+        if (reservedBottom) root.style.setProperty('--phone-toolbar-reserved-bottom', `${reservedBottom}px`);
+        else root.style.removeProperty('--phone-toolbar-reserved-bottom');
+      }
       if (next) {
         root.style.setProperty('--app-height', `${viewport.height}px`);
         root.style.setProperty('--app-top', `${viewport.offsetTop}px`);
@@ -93,6 +110,7 @@ export function useKeyboardViewport() {
       root.style.removeProperty('--app-height');
       root.style.removeProperty('--app-top');
       root.style.removeProperty('--app-bottom');
+      root.style.removeProperty('--phone-toolbar-reserved-bottom');
     };
   }, []);
 

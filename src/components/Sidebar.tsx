@@ -28,13 +28,13 @@ interface SidebarProps {
   onCreateNote: (templateId?: string) => void;
   onDeleteNote: (id: string) => void;
   onTogglePin: (id: string) => void;
-  onUpdateTitle: (title: string) => void;
   onUpdateTags: (tags: string[], noteId?: string) => void;
   onExport: (noteId?: string) => void;
   onOpenSettings: () => void;
   isSaving: boolean;
   isSyncing: boolean;
   isPhone: boolean;
+  isDrawer: boolean;
   isOpen: boolean;
   onToggleOpen: () => void;
   onDownloadApp?: () => void;
@@ -51,13 +51,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCreateNote,
   onDeleteNote,
   onTogglePin,
-  onUpdateTitle,
   onUpdateTags,
   onExport,
   onOpenSettings,
   isSaving,
   isSyncing,
   isPhone,
+  isDrawer,
   isOpen,
   onToggleOpen,
   onDownloadApp,
@@ -74,6 +74,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const listRef = useRef<HTMLDivElement>(null);
   const listPosition = useRef(0);
   const returnToNote = useRef<HTMLButtonElement>(null);
+  const closeDrawerRef = useRef<HTMLButtonElement>(null);
   const actionsDialog = useRef<HTMLDialogElement>(null);
   const actionsTitle = useId();
   const [actionsNoteId, setActionsNoteId] = useState<string>();
@@ -86,6 +87,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       returnToNote.current?.focus({ preventScroll: true });
     }
   }, [isPhone, isOpen]);
+
+  useLayoutEffect(() => {
+    if (isDrawer && isOpen) closeDrawerRef.current?.focus({ preventScroll: true });
+  }, [isDrawer, isOpen]);
 
   useEffect(() => {
     if ((!actionsNote || !isPhone || !isOpen) && actionsDialog.current?.open) actionsDialog.current.close();
@@ -139,11 +144,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <>
-      {/* Mobile Backdrop */}
-      {isOpen && !isPhone && (
-        <div 
+      {isOpen && isDrawer && (
+        <button type="button" aria-label="Close notes list" tabIndex={-1}
           onClick={onToggleOpen}
-          className="fixed inset-0 bg-black/40 backdrop-blur-sm z-30 md:hidden transition-opacity"
+          className="fixed inset-0 bg-black/25 backdrop-blur-sm z-30"
         />
       )}
 
@@ -152,17 +156,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
         aria-label="Notes list"
         inert={!isOpen}
         hidden={isPhone && !isOpen}
-        className={`fixed md:relative bottom-0 top-[var(--app-safe-top)] md:top-auto left-0 z-40 flex-shrink-0 flex flex-col bg-surface-light dark:bg-surface-dark border-surface-subtle-light dark:border-surface-subtle-dark transition-all duration-300 ease-in-out overflow-hidden ${isPhone ? 'phone-notes' : ''} ${
+        onKeyDown={(event) => {
+          if (isDrawer && event.key === 'Escape' && !event.defaultPrevented) onToggleOpen();
+        }}
+        className={`fixed lg:relative bottom-0 top-[var(--app-safe-top)] lg:top-auto left-0 z-40 flex-shrink-0 flex flex-col bg-surface-light dark:bg-surface-dark border-surface-subtle-light dark:border-surface-subtle-dark transition-[width,transform,opacity] duration-200 ease-out motion-reduce:transition-none overflow-hidden ${isPhone ? 'phone-notes' : 'workspace-notes'} ${
           isOpen 
             ? 'w-80 border-r translate-x-0 opacity-100' 
-            : 'w-0 border-r-0 -translate-x-full md:translate-x-0 opacity-0 pointer-events-none'
+            : `${isDrawer ? 'w-80' : 'w-0'} border-r-0 -translate-x-full lg:translate-x-0 opacity-0 pointer-events-none`
         }`}
       >
         <div className="w-80 h-full min-h-0 flex flex-col flex-shrink-0 notes-list-frame">
           {/* Sidebar Header */}
         <div className="notes-list-heading p-4 border-b border-surface-subtle-light dark:border-surface-subtle-dark flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-violet-600 via-indigo-600 to-pink-500 flex items-center justify-center text-white shadow-sm">
+            <div className={`w-8 h-8 rounded-xl bg-gradient-to-tr from-violet-600 via-indigo-600 to-pink-500 ${isDrawer ? 'hidden' : 'flex'} items-center justify-center text-white shadow-sm`}>
               <PenIcon className="w-4 h-4" />
             </div>
             <div>
@@ -187,7 +194,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 className="p-2 pl-2.5 rounded-l-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition active:scale-95 flex items-center gap-1.5"
               >
                 <Plus className="w-4 h-4" />
-                {isPhone && <span>New note</span>}
+                <span>New note</span>
               </button>
               <button
                 onClick={() => setIsTemplateMenuOpen((open) => !open)}
@@ -206,6 +213,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   aria-label="Note templates"
                   onKeyDown={(event) => {
                     if (event.key !== 'Escape') return;
+                    event.preventDefault();
                     setIsTemplateMenuOpen(false);
                     templateMenuRef.current?.querySelector<HTMLButtonElement>('.notes-template-trigger')?.focus();
                   }}
@@ -238,10 +246,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
               )}
             </div>
-            {!isPhone && <button
+            {isDrawer && <button ref={closeDrawerRef} type="button"
               onClick={onToggleOpen}
               aria-label="Close notes list"
-              className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark md:hidden"
+              className="workspace-notes-toggle workspace-close-notes"
             >
               <X className="w-4 h-4" />
             </button>}
@@ -259,9 +267,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {isSaving && <span className="float-right font-normal" role="status">Saving…</span>}
             </summary>
             <div className="space-y-2 px-3 pb-3">
-              {!isPhone && <input aria-label="Note title" type="text" value={activeNote.title} placeholder="Untitled Note"
-                onChange={(event) => onUpdateTitle(event.target.value)}
-                className="w-full rounded-lg border border-surface-subtle-light bg-surface-light px-2 py-1.5 text-sm dark:border-surface-subtle-dark dark:bg-surface-dark" />}
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="ribbon-command" aria-expanded={tagEditorNoteId === activeNote.id}
                   onMouseDown={(event) => event.stopPropagation()}
@@ -288,7 +293,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               ref={searchInputRef}
               type="search"
               aria-label="Search notes"
-              placeholder={isPhone ? 'Search notes or scribbles…' : 'Search notes or scribbles... (Ctrl+K)'}
+              placeholder="Search notes or scribbles…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-surface-subtle-light dark:bg-surface-subtle-dark border-none outline-none focus:ring-2 focus:ring-violet-500 text-ink-light dark:text-ink-dark placeholder-ink-muted-light dark:placeholder-ink-muted-dark transition"
