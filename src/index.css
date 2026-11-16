@@ -274,11 +274,15 @@ canvas.ink-canvas {
 /* Page ruling is painted by CSS so the pattern stays sharp at every zoom. */
 .note-paper[data-page-color] { background-color: var(--page-color); }
 
-/* Dark mode inks are light, so a pastel sheet is deepened to keep them readable. */
-.dark .note-paper[data-page-color] {
+/* Light ink needs a deep version of the chosen tint to stay readable. */
+.note-paper[data-page-color][data-page-tone="dark"] {
   background-color: #26282c;
   background-color: color-mix(in srgb, var(--page-color) 30%, #121214);
 }
+
+/* Paper text follows the tint tone, not the app theme. */
+.note-paper[data-page-color][data-page-tone="light"] .editable-note-content { color: #1f2430; }
+.note-paper[data-page-color][data-page-tone="dark"] .editable-note-content { color: #f2f3f5; }
 
 .note-paper[data-background="ruled"] {
   background-image: linear-gradient(to bottom, rgba(100, 116, 139, 0.22) 1px, transparent 1px);

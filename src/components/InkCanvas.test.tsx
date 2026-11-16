@@ -449,12 +449,24 @@ it('tints the page surface on every page layout', () => {
     // The tint feeds CSS so dark mode can deepen it for light ink and text.
     expect(paper.getAttribute('data-page-color')).toBe('');
     expect(paper.style.getPropertyValue('--page-color')).toBe('#e6ecdf');
+    expect(paper.getAttribute('data-page-tone')).toBe('light');
   }
+});
+
+it('deepens the page tint under light ink', () => {
+  act(() => root.render(<InkCanvas noteId="scratch" pageLayout="portrait" defaultTool="pen"
+    defaultColor="#ffffff" strokes={[]} onChangeStrokes={onChangeStrokes}
+    onScribbleToText={() => {}} pageColor="#e6ecdf" />));
+
+  const paper = container.querySelector<HTMLElement>('.note-paper')!;
+  expect(paper.getAttribute('data-page-tone')).toBe('dark');
+  expect(paper.style.getPropertyValue('--page-color')).toBe('#e6ecdf');
 });
 
 it('leaves the surface untinted without a page colour', () => {
   const paper = container.querySelector<HTMLElement>('.note-paper')!;
   expect(paper.hasAttribute('data-page-color')).toBe(false);
+  expect(paper.hasAttribute('data-page-tone')).toBe(false);
   expect(paper.style.getPropertyValue('--page-color')).toBe('');
 });
 

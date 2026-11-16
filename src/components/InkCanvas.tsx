@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode, TextBlockLayout, PageLayout, NoteArrow, ArrowKind } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint, eraseStrokesPartial } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
+import { isLightInk } from '../utils/inkBackground';
 import {
   applyInkTransform,
   Bounds,
@@ -324,6 +325,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [selectedTool, setSelectedTool] = useState<PenTool>('text');
   const [drawRequest, setDrawRequest] = useState(0);
   const [penColor, setPenColor] = useState<string>(defaultColor || (isDarkMode ? '#ffffff' : '#1e293b'));
+  /** A tinted sheet stays pastel for dark ink and deepens for light ink. */
+  const tintTone: 'light' | 'dark' | undefined = pageColor ? (isLightInk(penColor) ? 'dark' : 'light') : undefined;
   const [penWidth, setPenWidth] = useState<number>(defaultWidth);
   const [eraserWidth, setEraserWidth] = useState<number>(defaultEraserWidth);
   const [eraserMode, setEraserMode] = useState<EraserMode>(defaultEraserMode);
@@ -3074,6 +3077,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                   data-layout={pageLayout}
                   data-background={background}
                   data-page-color={pageColor ? '' : undefined}
+                  data-page-tone={tintTone}
                   style={{
                     width: `${sheetWidth}px`,
                     minHeight: `${sheetMinHeight}px`,
