@@ -100,6 +100,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
           onPointerDown={onStartWidth}
           title="Resize text box width"
           aria-label="Resize text box width"
+          tabIndex={-1}
           style={{ left: widthHandle.x, top: widthHandle.y }}
           className="absolute w-7 h-9 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-auto cursor-ew-resize touch-none"
         >
@@ -113,6 +114,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
         onPointerDown={onStartRotate}
         title="Rotate selection"
         aria-label="Rotate selection"
+        tabIndex={-1}
         className={`absolute left-1/2 -top-11 -translate-x-1/2 pointer-events-auto p-2 rounded-full bg-surface-light dark:bg-surface-dark border border-violet-500 text-violet-600 dark:text-violet-400 shadow-floating cursor-grab active:cursor-grabbing touch-none ${hovering ? 'before:absolute before:inset-x-0 before:top-full before:h-3' : ''}`}
       >
         <RotateCw className="w-4 h-4" />
@@ -127,6 +129,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
           onPointerDown={(e) => onStartResize(item.corner, e)}
           title="Resize selection"
           aria-label="Resize selection"
+          tabIndex={-1}
           className={`absolute ${item.className} w-6 h-6 pointer-events-auto rounded-md bg-surface-light dark:bg-surface-dark border-2 border-violet-500 shadow-sm touch-none flex items-center justify-center ${item.cursor}`}
         >
           <span className="w-1.5 h-1.5 rounded-[1px] bg-violet-500/70" />

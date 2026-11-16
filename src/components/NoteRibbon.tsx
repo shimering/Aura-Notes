@@ -313,6 +313,11 @@ export function NoteRibbon({
               {!compact && <span className="ribbon-group-label">Page layout</span>}
             </div>
             <div className="ribbon-group">
+              {compact && (
+                <span className="ribbon-group-label ribbon-group-label-inline" aria-hidden="true">
+                  {orientation === 'canvas' ? 'Canvas' : 'Page'}
+                </span>
+              )}
               <div className="ribbon-row">
                 {PAGE_COLORS.map(({ value, label: colorLabel }) => {
                   const label = !value && orientation !== 'canvas' ? 'Paper (default)' : colorLabel;

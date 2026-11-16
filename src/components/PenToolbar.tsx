@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import {
   Pen,
   Feather,
@@ -220,6 +220,9 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   const [openMenu, setOpenMenu] = useState<ToolbarMenu>(null);
   const [showDrawingOptions, setShowDrawingOptions] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
+  const triggerRefs = useRef<Partial<Record<Exclude<ToolbarMenu, null>, HTMLButtonElement | null>>>({});
   const activeToolOption = TOOL_OPTIONS.find((tool) => tool.id === activeTool) ?? TOOL_OPTIONS[2];
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
   const isEraser = activeTool === 'eraser';
@@ -233,7 +236,10 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
       if (!toolbarRef.current?.contains(event.target as Node)) setOpenMenu(null);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpenMenu(null);
+      if (event.key !== 'Escape') return;
+      const trigger = triggerRefs.current[openMenu];
+      setOpenMenu(null);
+      trigger?.focus({ preventScroll: true });
     };
 
     document.addEventListener('pointerdown', handlePointerDown);
@@ -244,9 +250,20 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
     };
   }, [openMenu]);
 
+  // Land focus on the panel's first control, so a keyboard user reaching the
+  // trigger does not have to tab through the rest of the toolbar to get in.
+  useEffect(() => {
+    if (!openMenu) return;
+    panelRef.current?.querySelector<HTMLElement>('button, input')?.focus({ preventScroll: true });
+  }, [openMenu]);
+
   const toggleMenu = (menu: Exclude<ToolbarMenu, null>) =>
     setOpenMenu((current) => (current === menu ? null : menu));
-  const closeMenu = () => setOpenMenu(null);
+  const closeMenu = () => {
+    const trigger = openMenu ? triggerRefs.current[openMenu] : null;
+    setOpenMenu(null);
+    trigger?.focus({ preventScroll: true });
+  };
 
   const pickTool = (tool: PenTool) => {
     onSelectTool(tool);
@@ -282,7 +299,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           onClick={() => toggleMenu('tool')}
           title={`Tool: ${activeToolOption.label}`}
           aria-label={`Drawing tool: ${activeToolOption.label}`}
-          aria-haspopup="menu"
+          ref={(node) => { triggerRefs.current.tool = node; }}
+          aria-controls={openMenu === 'tool' ? panelId : undefined}
           aria-expanded={openMenu === 'tool'}
           className={`flex h-10 w-12 shrink-0 items-center justify-center gap-1 rounded-xl px-2 transition active:scale-95 sm:w-36 sm:justify-start ${
             openMenu === 'tool' ? 'ring-2 ring-violet-400/70' : ''
@@ -305,7 +323,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           onClick={() => toggleMenu('color')}
           title={`Ink color ${color}`}
           aria-label="Ink color"
-          aria-haspopup="menu"
+          ref={(node) => { triggerRefs.current.color = node; }}
+          aria-controls={openMenu === 'color' ? panelId : undefined}
           aria-expanded={openMenu === 'color'}
           className={triggerClass('color', 'w-12 gap-1')}
         >
@@ -321,7 +340,9 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           type="button"
           onClick={() => toggleMenu('size')}
           title={isEraser ? `Eraser size: ${currentEraserWidth}px` : `Pen width: ${width}px`}
-          aria-haspopup="menu"
+          ref={(node) => { triggerRefs.current.size = node; }}
+          aria-controls={openMenu === 'size' ? panelId : undefined}
+          aria-label={isEraser ? 'Eraser size' : 'Pen size'}
           aria-expanded={openMenu === 'size'}
           className={triggerClass('size', 'w-12 gap-1 pen-secondary')}
         >
@@ -344,6 +365,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
               : 'Limit ink input to the stylus'
           }
           aria-pressed={isStylusOnly}
+          aria-label="Limit ink input to the stylus"
           className={`${TRIGGER} w-10 pen-secondary ${
             isStylusOnly
               ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
@@ -359,6 +381,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           onClick={onScribbleToText}
           disabled={!hasStrokes}
           title="Convert handwritten scribbles to text"
+          aria-label="Convert handwriting to text"
           className={`${TRIGGER} w-10 pen-secondary ${
             hasStrokes
               ? 'bg-gradient-to-r from-violet-600 via-indigo-600 to-pink-600 text-white hover:opacity-90'
@@ -373,6 +396,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
             type="button"
             onClick={onOpenSPenMenu}
             title="S Pen Quick Menu"
+            aria-label="S Pen quick menu"
             className={`${TRIGGER} w-10 pen-secondary text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40`}
           >
             <Sparkles className="w-4 h-4" />
@@ -402,6 +426,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
             onClick={onRedo}
             disabled={!canRedo}
             title="Redo stroke"
+            aria-label="Redo stroke"
             className="pen-secondary flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Redo2 className="w-4 h-4" />
@@ -411,6 +436,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
             onClick={onClear}
             disabled={!hasStrokes}
             title="Clear all inking"
+            aria-label="Clear all inking"
             className="pen-secondary flex h-9 w-8 items-center justify-center rounded-xl text-ink-muted-light transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30 disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Trash2 className="w-4 h-4" />
@@ -426,7 +452,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
       {/* ---------- Dropdown panels ---------- */}
 
       {openMenu === 'tool' && (
-        <div className={`${PANEL} w-[248px] max-h-[70vh] overflow-y-auto`} role="menu" aria-label="Tools">
+        <div ref={panelRef} id={panelId} className={`${PANEL} w-[248px] max-h-[70vh] overflow-y-auto`} role="group" aria-label="Tools">
           <MenuHeading>Tool</MenuHeading>
           <div className="flex flex-col gap-0.5">
             {TOOL_OPTIONS.map((tool) => {
@@ -435,8 +461,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
                 <button
                   key={tool.id}
                   type="button"
-                  role="menuitemradio"
-                  aria-checked={isActive}
+                  aria-pressed={isActive}
                   onClick={() => pickTool(tool.id)}
                   className={`flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition active:scale-[0.99] ${
                     isActive
@@ -533,7 +558,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
       )}
 
       {openMenu === 'color' && (
-        <div className={`${PANEL} w-[232px]`} role="menu" aria-label="Ink color">
+        <div ref={panelRef} id={panelId} className={`${PANEL} w-[232px]`} role="group" aria-label="Ink color">
           <MenuHeading>{activeTool === 'highlighter' ? 'Highlighter color' : 'Ink color'}</MenuHeading>
           <div className="grid grid-cols-5 gap-1.5">
             {currentPalette.map((item) => {
@@ -547,6 +572,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
                     closeMenu();
                   }}
                   title={item.name}
+                  aria-label={item.name}
+                  aria-pressed={isSelected}
                   className={`flex h-8 w-8 items-center justify-center rounded-full border transition active:scale-90 ${
                     isSelected
                       ? 'border-violet-500 ring-2 ring-violet-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900'
@@ -574,7 +601,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
       )}
 
       {openMenu === 'size' && (
-        <div className={`${PANEL} w-[236px]`} role="menu" aria-label={isEraser ? 'Eraser size' : 'Pen size'}>
+        <div ref={panelRef} id={panelId} className={`${PANEL} w-[236px]`} role="group" aria-label={isEraser ? 'Eraser size' : 'Pen size'}>
           <MenuHeading>{isEraser ? 'Eraser size' : 'Pen size'}</MenuHeading>
           <div className="grid grid-cols-4 gap-1">
             {(isEraser ? ERASER_SIZES : PEN_SIZES.map((item) => item.size)).map((size) => {
@@ -595,6 +622,8 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
                     closeMenu();
                   }}
                   title={isEraser ? `Eraser size: ${size}px` : `Pen width: ${size}px`}
+                  aria-label={label}
+                  aria-pressed={isSelected}
                   className={`flex flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[10px] transition active:scale-95 ${
                     isSelected
                       ? isEraser

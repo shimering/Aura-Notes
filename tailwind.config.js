@@ -24,7 +24,7 @@ export default {
           light: '#191919',
           dark: '#f0f0f2',
           muted: {
-            light: '#787774',
+            light: '#6f6e6b',
             dark: '#9a9a9f'
           }
         },

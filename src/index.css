@@ -487,6 +487,15 @@ canvas.ink-canvas {
   line-height: 15px;
 }
 
+/* In the compact ribbon the group is a row, so a label that has to stay
+   visible (the unlabelled colour swatches) sits inline before its controls. */
+.ribbon-group-label-inline {
+  width: auto;
+  margin-top: 0;
+  padding-inline-end: 3px;
+  white-space: nowrap;
+}
+
 .ribbon-command, .ribbon-select {
   display: inline-flex;
   align-items: center;
