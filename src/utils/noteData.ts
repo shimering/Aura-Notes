@@ -36,7 +36,9 @@ function isArrow(value: unknown): boolean {
     && typeof value.color === 'string'
     && isFiniteNumber(value.width) && value.width > 0
     && [value.startAnchor, value.endAnchor].every((anchor) => anchor === undefined
-      || (isRecord(anchor) && typeof anchor.objectId === 'string' && !!anchor.objectId.trim()));
+      || (isRecord(anchor) && typeof anchor.objectId === 'string' && !!anchor.objectId.trim()
+        && (anchor.side === undefined || anchor.side === 'left' || anchor.side === 'right'
+          || anchor.side === 'top' || anchor.side === 'bottom')));
 }
 
 function isPageData(value: Record<string, unknown>): value is Record<string, unknown> & NotePageData {

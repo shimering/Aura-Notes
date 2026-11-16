@@ -1,4 +1,6 @@
-import type { ArrowKind, NoteArrow } from '../types/note';
+import type { ArrowAnchor, ArrowKind, ArrowSide, NoteArrow, TextBlockLayout } from '../types/note';
+import { transformTextBlockPoint } from './inkSelection';
+import { pointInTextLayer } from './pageObjects';
 import type { Bounds, Point } from './inkSelection';
 
 /** Extra page-space distance an arrow end pulls towards a nearby object edge. */
@@ -7,7 +9,9 @@ export const ARROW_SNAP_DISTANCE = 16;
 /** One snap target on the page: a text box, table or picture. */
 export interface ArrowTarget {
   id: string;
+  /** Local rectangle when a page placement is supplied. */
   bounds: Bounds;
+  placement?: TextBlockLayout;
 }
 
 export interface ArrowGeometry {
@@ -39,42 +43,44 @@ export function arrowControlPoint(start: Point, end: Point): Point {
   };
 }
 
-/**
- * Point where a ray from the object's centre towards `target` leaves its
- * bounds, so the arrow touches the object's surface instead of its middle.
- */
-export function surfacePoint(bounds: Bounds, target: Point): Point {
-  const { x: cx, y: cy } = center(bounds);
-  const dx = target.x - cx;
-  const dy = target.y - cy;
-  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return { x: cx, y: cy };
-  const halfWidth = Math.max(0.5, bounds.width / 2);
-  const halfHeight = Math.max(0.5, bounds.height / 2);
-  const tx = dx === 0 ? Number.POSITIVE_INFINITY : halfWidth / Math.abs(dx);
-  const ty = dy === 0 ? Number.POSITIVE_INFINITY : halfHeight / Math.abs(dy);
-  const t = Math.min(tx, ty);
-  return { x: cx + dx * t, y: cy + dy * t };
-}
-
 function findTarget(targets: readonly ArrowTarget[], id?: string) {
   return id ? targets.find((target) => target.id === id) : undefined;
 }
 
-/**
- * Resolves the arrow ends. A bound end sits on its object's surface and aims
- * at the other end, so arrows keep touching their elements after those move.
- */
-function arrowEndpoints(
-  arrow: NoteArrow,
-  targets: readonly ArrowTarget[],
-): { start: Point; end: Point } {
-  const startRect = findTarget(targets, arrow.startAnchor?.objectId)?.bounds;
-  const endRect = findTarget(targets, arrow.endAnchor?.objectId)?.bounds;
-  const startAim = endRect ? center(endRect) : arrow.end;
-  const endAim = startRect ? center(startRect) : arrow.start;
+function toPage(target: ArrowTarget, point: Point): Point {
+  return target.placement ? transformTextBlockPoint(point, target.placement) : point;
+}
+
+function toObject(target: ArrowTarget, point: Point): Point {
+  return target.placement ? pointInTextLayer(point, target.placement) : point;
+}
+
+/** Older arrows recorded the snap point before they recorded the edge. */
+export function lockArrowSides(arrow: NoteArrow, targets: readonly ArrowTarget[]): NoteArrow {
+  const lock = (anchor: ArrowAnchor | undefined, point: Point) => {
+    if (!anchor || anchor.side) return anchor;
+    const target = findTarget(targets, anchor.objectId);
+    return target ? { ...anchor, side: nearestEdge(target.bounds, toObject(target, point)).side } : anchor;
+  };
+  const startAnchor = lock(arrow.startAnchor, arrow.start);
+  const endAnchor = lock(arrow.endAnchor, arrow.end);
+  return startAnchor === arrow.startAnchor && endAnchor === arrow.endAnchor
+    ? arrow : { ...arrow, startAnchor, endAnchor };
+}
+
+function arrowEndpoints(arrow: NoteArrow, targets: readonly ArrowTarget[]): { start: Point; end: Point } {
+  const locked = lockArrowSides(arrow, targets);
+  const startTarget = findTarget(targets, locked.startAnchor?.objectId);
+  const endTarget = findTarget(targets, locked.endAnchor?.objectId);
+  const startAim = endTarget ? toPage(endTarget, center(endTarget.bounds)) : arrow.end;
+  const endAim = startTarget ? toPage(startTarget, center(startTarget.bounds)) : arrow.start;
   return {
-    start: startRect ? surfacePoint(startRect, startAim) : arrow.start,
-    end: endRect ? surfacePoint(endRect, endAim) : arrow.end,
+    start: startTarget && locked.startAnchor?.side
+      ? toPage(startTarget, pointOnEdge(startTarget.bounds, toObject(startTarget, startAim), locked.startAnchor.side))
+      : arrow.start,
+    end: endTarget && locked.endAnchor?.side
+      ? toPage(endTarget, pointOnEdge(endTarget.bounds, toObject(endTarget, endAim), locked.endAnchor.side))
+      : arrow.end,
   };
 }
 
@@ -121,41 +127,48 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-/** Nearest point on the object's border, inside or outside it. */
-function nearestOnBounds(bounds: Bounds, point: Point): Point {
+const sides: ArrowSide[] = ['left', 'right', 'top', 'bottom'];
+
+function pointOnEdge(bounds: Bounds, point: Point, side: ArrowSide): Point {
   const right = bounds.x + bounds.width;
   const bottom = bounds.y + bounds.height;
-  if (point.x < bounds.x || point.x > right || point.y < bounds.y || point.y > bottom) {
-    return { x: clamp(point.x, bounds.x, right), y: clamp(point.y, bounds.y, bottom) };
-  }
-  const distances = [
-    { value: point.x - bounds.x, edge: { x: bounds.x, y: point.y } },
-    { value: right - point.x, edge: { x: right, y: point.y } },
-    { value: point.y - bounds.y, edge: { x: point.x, y: bounds.y } },
-    { value: bottom - point.y, edge: { x: point.x, y: bottom } },
-  ];
-  return distances.reduce((nearest, candidate) =>
-    candidate.value < nearest.value ? candidate : nearest).edge;
+  return {
+    x: side === 'left' ? bounds.x : side === 'right' ? right : clamp(point.x, bounds.x, right),
+    y: side === 'top' ? bounds.y : side === 'bottom' ? bottom : clamp(point.y, bounds.y, bottom),
+  };
 }
 
-/**
- * Snaps a page point onto the closest object edge within `tolerance`, and
- * reports the object so the arrow can follow it.
- */
-export function snapArrowPoint(
-  point: Point,
-  targets: readonly ArrowTarget[],
-  tolerance: number,
-): { point: Point; objectId?: string } {
-  let best: { point: Point; objectId: string; distance: number } | undefined;
+function nearestEdge(bounds: Bounds, point: Point) {
+  const candidates = sides.map((side) => {
+    const edge = pointOnEdge(bounds, point, side);
+    const distance = Math.hypot(edge.x - point.x, edge.y - point.y);
+    // When two sides meet at a corner, prefer the side the pointer is farther outside.
+    const normal = side === 'left' || side === 'right' ? Math.abs(edge.x - point.x) : Math.abs(edge.y - point.y);
+    return { point: edge, side, distance, normal };
+  });
+  return candidates.reduce((best, candidate) =>
+    candidate.distance < best.distance || (candidate.distance === best.distance && candidate.normal > best.normal)
+      ? candidate : best);
+}
+
+export interface ArrowSnap {
+  point: Point;
+  anchor?: ArrowAnchor;
+}
+
+/** Snaps to the nearest object edge and records the side in object coordinates. */
+export function snapArrowPoint(point: Point, targets: readonly ArrowTarget[], tolerance: number): ArrowSnap {
+  let best: ArrowSnap = { point };
+  let bestDistance = Infinity;
   for (const target of targets) {
     if (!target.bounds.width || !target.bounds.height) continue;
-    const nearest = nearestOnBounds(target.bounds, point);
-    const distance = Math.hypot(nearest.x - point.x, nearest.y - point.y);
-    if (distance > tolerance || (best && distance >= best.distance)) continue;
-    best = { point: nearest, objectId: target.id, distance };
+    const edge = nearestEdge(target.bounds, toObject(target, point));
+    const distance = edge.distance * (target.placement?.scale ?? 1);
+    if (distance > tolerance || distance >= bestDistance) continue;
+    bestDistance = distance;
+    best = { point: toPage(target, edge.point), anchor: { objectId: target.id, side: edge.side } };
   }
-  return best ? { point: best.point, objectId: best.objectId } : { point };
+  return best;
 }
 
 /** Moves an arrow freely, releasing it from the objects it was attached to. */

@@ -349,6 +349,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [liveTransform, setLiveTransform] = useState<InkTransform | null>(null);
   const liveTransformRef = useRef<InkTransform | null>(null);
   const transformDragRef = useRef(false);
+  const transformingObjects = useRef(new Set<HTMLElement>());
+  const transformingHover = useRef(false);
   const transformCleanupRef = useRef<(() => void) | null>(null);
   const selectionBoundsRef = useRef<Bounds | null>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -358,8 +360,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [objectSizeVersion, setObjectSizeVersion] = useState(0);
   const replacementInput = useRef<HTMLInputElement>(null);
   const stopPanMomentum = useRef<(() => void) | null>(null);
-  const [hovering, setHovering] = useState(false);
-  const hoverKey = useRef<ObjectHit['key'] | null>(null);
+  const [hoveredObject, setHoveredObject] = useState<ObjectHit | null>(null);
+  const hoveredObjectRef = useRef<ObjectHit | null>(null);
+  const setHover = useCallback((object: ObjectHit | null) => {
+    if (hoveredObjectRef.current?.key === object?.key) return;
+    hoveredObjectRef.current = object;
+    setHoveredObject(object);
+  }, []);
   const editingTap = useRef<{ box: HTMLElement; point: Point; time: number } | null>(null);
   const touchTap = useRef<TouchTap | null>(null);
   const [insertionPoint, setInsertionPoint] = useState<Point | null>(null);
@@ -407,48 +414,35 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (!id) {
       id = `obj-${crypto.randomUUID()}`;
       element.dataset.noteId = id;
+      arrowObjectIds.current.add(id);
+      setObjectSizeVersion((version) => version + 1);
     }
-    arrowObjectIds.current.add(id);
     return id;
   }, []);
 
-  /**
-   * Measured page bounds of the page's text boxes, tables and pictures.
-   * Reading client rects also sees a box that is mid-move or mid-scale, so
-   * attached arrows follow their element while it is being dragged.
-   * Drawing snapping also hands ids to objects that do not have one yet.
-   */
+  /** Measure in each object's own coordinates so anchors follow even during rotation. */
   const measureArrowTargets = useCallback((assignIds = false): ArrowTarget[] => {
     const editor = getEditor();
-    const sheet = containerRef.current;
-    if (!editor || !sheet) return [];
-    // Page units from client coordinates, so a box mid-drag is measured where
-    // it is drawn rather than at its committed offset.
-    const sheetRect = sheet.getBoundingClientRect();
-    const scale = sheetRect.width ? sheet.offsetWidth / sheetRect.width : 1;
-    const toPage = (x: number, y: number): Point => ({
-      x: (x - sheetRect.left) * scale,
-      y: (y - sheetRect.top) * scale,
-    });
+    const layer = textLayerRef.current;
+    if (!editor || !layer) return [];
     const targets: ArrowTarget[] = [];
+    const add = (element: HTMLElement, placement: TextBlockLayout, offset: Point = { x: 0, y: 0 }) => {
+      const { offsetWidth: width, offsetHeight: height } = element;
+      if (!width || !height) return;
+      const id = element.dataset.noteId || (assignIds ? ensureArrowObjectId(element) : undefined);
+      if (id) targets.push({ id, placement, bounds: { ...offset, width, height } });
+    };
     for (const child of Array.from(editor.children)) {
-      if (!(child instanceof HTMLElement)) continue;
-      if (!(child instanceof HTMLImageElement) && !child.matches(boxSelector)) continue;
-      const rect = child.getBoundingClientRect();
-      if (!child.offsetWidth || !child.offsetHeight || !rect.width || !rect.height) continue;
-      const id = child.dataset.noteId || (assignIds ? ensureArrowObjectId(child) : undefined);
-      if (!id) continue;
-      const topLeft = toPage(rect.left, rect.top);
-      const bottomRight = toPage(rect.right, rect.bottom);
-      targets.push({
-        id,
-        bounds: {
-          x: Math.min(topLeft.x, bottomRight.x),
-          y: Math.min(topLeft.y, bottomRight.y),
-          width: Math.abs(bottomRight.x - topLeft.x),
-          height: Math.abs(bottomRight.y - topLeft.y),
-        },
-      });
+      if (!(child instanceof HTMLElement) ||
+        (!(child instanceof HTMLImageElement) && !child.matches(boxSelector))) continue;
+      const base = pageBoxPlacement(child, layer, textBlockLayoutRef.current);
+      const transform = liveTransformRef.current;
+      const placement = transform && transformingObjects.current.has(child)
+        ? composeTextBlockLayout(base, transform) : base;
+      for (const attachment of child.querySelectorAll<HTMLAnchorElement>('a[download]')) {
+        add(attachment, placement, offsetWithin(attachment, child));
+      }
+      add(child, placement);
     }
     return targets;
   }, [ensureArrowObjectId, getEditor]);
@@ -457,7 +451,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const arrowTargets = useMemo(
     () => measureArrowTargets(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [measureArrowTargets, objectSizeVersion, pageHeight, noteId, textLayout, zoom],
+    [measureArrowTargets, arrows.length, objectSizeVersion, pageHeight, noteId, textLayout, zoom],
   );
 
   const snapArrowObjects = useCallback(
@@ -466,10 +460,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   );
 
   const setSelection = useCallback((
-    ids: string[], boxes: HTMLElement[] = [], pictures: HTMLImageElement[] = [], hover: ObjectHit['key'] | null = null,
+    ids: string[], boxes: HTMLElement[] = [], pictures: HTMLImageElement[] = [],
   ) => {
-    hoverKey.current = hover;
-    setHovering(hover !== null);
+    setHover(null);
     selectedPicturesRef.current = pictures;
     setSelectedPictures(pictures);
     selectedIdsRef.current = ids;
@@ -478,11 +471,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setSelectedBoxes(boxes);
     setEditActions(false);
     setTableCell(null);
-  }, []);
+  }, [setHover]);
 
-  const selectObject = (object: ObjectHit, hover = false) => {
+  const selectObject = (object: ObjectHit) => {
     setSelectedArrowId(null);
-    setSelection(object.ids, object.box ? [object.box] : [], object.picture ? [object.picture] : [], hover ? object.key : null);
+    setSelection(object.ids, object.box ? [object.box] : [], object.picture ? [object.picture] : []);
     selectionBoundsRef.current = object.bounds;
     if (object.cell) setTableCell(object.cell);
   };
@@ -581,7 +574,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   useEffect(() => {
     const editor = getEditor();
-    if (!editor || (!selectedBoxes.length && !selectedPictures.length && !tableCell)) return;
+    if (!editor || (!selectedBoxes.length && !selectedPictures.length && !tableCell && !arrows.length)) return;
     const remeasure = () => {
       const boxes = selectedBoxesRef.current.filter((box) => editor.contains(box));
       const pictures = selectedPicturesRef.current.filter((image) => editor.contains(image));
@@ -595,8 +588,18 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const editingTable = tableCell?.closest(tableBoxSelector);
     const objects = new Set([...selectedBoxes, ...selectedPictures]);
     if (editingTable instanceof HTMLElement) objects.add(editingTable);
-    objects.forEach((object) => observer?.observe(object));
-    const mutations = new MutationObserver(remeasure);
+    const observeObjects = () => {
+      observer?.disconnect();
+      if (arrows.length) {
+        for (const element of editor.querySelectorAll('[data-note-id]')) observer?.observe(element);
+      }
+      objects.forEach((object) => observer?.observe(object));
+    };
+    observeObjects();
+    const mutations = new MutationObserver(() => {
+      observeObjects();
+      remeasure();
+    });
     mutations.observe(editor, { childList: true, subtree: true, characterData: true });
     editor.addEventListener('load', remeasure, true);
     return () => {
@@ -604,7 +607,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       mutations.disconnect();
       editor.removeEventListener('load', remeasure, true);
     };
-  }, [getEditor, selectedBoxes, selectedPictures, setSelection, tableCell]);
+  }, [arrows.length, getEditor, selectedBoxes, selectedPictures, setSelection, tableCell]);
 
   const previousDefaultTool = useRef(defaultTool);
   useEffect(() => {
@@ -1715,12 +1718,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    */
   const beginTransform = useCallback((
     kind: TransformKind, corner: ResizeCorner | null, e: React.PointerEvent,
-    click?: { tap: () => void; hold?: () => void },
+    click?: { tap: () => void; hold?: () => void }, object?: ObjectHit,
   ) => {
     const editor = getEditor();
     const layer = textLayerRef.current;
     const baseLayout = textBlockLayoutRef.current;
-    const bounds = selectionBoundsRef.current;
+    const bounds = object?.bounds ?? selectionBoundsRef.current;
     if (!bounds || transformDragRef.current || e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1729,20 +1732,18 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const start = getPagePoint(startClient.x, startClient.y);
     const startZoom = zoomRef.current;
     const baseStrokes = strokesRef.current;
-    const ids = new Set(selectedIdsRef.current);
+    const ids = new Set(object ? object.ids : selectedIdsRef.current);
     transformDragRef.current = true;
-    const pictures = getPictures(selectedPicturesRef.current);
+    transformingHover.current = !!object;
+    const pictures = getPictures(object ? (object.picture ? [object.picture] : []) : selectedPicturesRef.current);
+    const selectedElements = object ? (object.box ? [object.box] : []) : selectedBoxesRef.current;
+    transformingObjects.current = new Set([...selectedElements, ...pictures.map(({ image }) => image)]);
     const editorOffset = editor && layer ? offsetWithin(editor, layer) : { x: 0, y: 0 };
-    const boxes = layer ? selectedBoxesRef.current.map((box) => ({
+    const boxes = layer ? selectedElements.map((box) => ({
       box, placement: boxPlacement(box, layer), pagePlacement: pageBoxPlacement(box, layer, baseLayout),
-      width: box.offsetWidth, height: box.offsetHeight,
-      previousWidth: box.style.width, previousHeight: box.style.minHeight,
-      previousLeft: box.style.left, previousTop: box.style.top,
+      width: box.offsetWidth, previousWidth: box.style.width,
     })) : [];
-    const resizeBox = kind === 'width' || (kind === 'resize' && boxes.length === 1 && !ids.size && !pictures.length &&
-      !boxes[0].box.matches(tableBoxSelector)) ? boxes[0] : null;
-    const resizeLeft = corner === 'nw' || corner === 'sw';
-    const resizeTop = corner === 'nw' || corner === 'ne';
+    const resizeBox = kind === 'width' ? boxes[0] : null;
     const getNeighbors = () => [
       ...Array.from(inkObjects(baseStrokes).values(), (group) =>
         group.some((stroke) => ids.has(stroke.id)) ? null : getStrokesBounds(group)),
@@ -1757,7 +1758,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       x: corner === 'nw' || corner === 'sw' ? bounds.x + bounds.width : bounds.x,
       y: corner === 'nw' || corner === 'ne' ? bounds.y + bounds.height : bounds.y,
     };
-    const startDistance = Math.hypot(start.x - anchor.x, start.y - anchor.y);
+    const scaleAxis = { x: start.x - anchor.x, y: start.y - anchor.y };
+    const axisLengthSquared = scaleAxis.x ** 2 + scaleAxis.y ** 2;
+    const minScale = Math.max(0.05, ...boxes.map(({ placement }) => 0.05 / placement.scale));
+    const maxScale = Math.min(20, ...boxes.map(({ placement }) => 20 / placement.scale));
     let moved = false;
     let holdTimer: number | undefined;
 
@@ -1772,8 +1776,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         const angle = Math.atan2(point.y - center.y, point.x - center.x);
         return { ...IDENTITY_INK_TRANSFORM, originX: center.x, originY: center.y, rotation: angle - startAngle };
       }
-      const distance = Math.hypot(point.x - anchor.x, point.y - anchor.y);
-      const scale = startDistance < 1 ? 1 : Math.min(20, Math.max(0.05, distance / startDistance));
+      const projected = ((point.x - anchor.x) * scaleAxis.x + (point.y - anchor.y) * scaleAxis.y);
+      const scale = axisLengthSquared < 1 ? 1 : Math.min(maxScale, Math.max(minScale, projected / axisLengthSquared));
       return { ...IDENTITY_INK_TRANSFORM, originX: anchor.x, originY: anchor.y, scale };
     };
 
@@ -1787,23 +1791,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       moved = true;
       window.clearTimeout(holdTimer);
       if (resizeBox) {
-        const { box, placement, pagePlacement, width, height } = resizeBox;
+        const { box, pagePlacement, width } = resizeBox;
         const local = pointInTextLayer(point, pagePlacement);
         const localStart = pointInTextLayer(start, pagePlacement);
-        const dx = local.x - localStart.x;
-        const limit = kind === 'width' ? (editor?.clientWidth ?? 8192) - box.offsetLeft : 8192;
-        const nextWidth = Math.max(48, Math.min(8192, Math.max(width, limit), Math.round(width + (resizeLeft ? -dx : dx))));
+        const limit = (editor?.clientWidth ?? 8192) - box.offsetLeft;
+        const nextWidth = Math.max(48, Math.min(8192, Math.max(width, limit), Math.round(width + local.x - localStart.x)));
         box.style.width = `${nextWidth}px`;
-        if (corner) {
-          const dy = local.y - localStart.y;
-          box.style.minHeight = `${Math.max(24, Math.min(8192, Math.round(height + (resizeTop ? -dy : dy))))}px`;
-          const fixedCorner = transformTextBlockPoint({
-            x: resizeLeft ? width - box.offsetWidth : 0,
-            y: resizeTop ? height - box.offsetHeight : 0,
-          }, placement);
-          box.style.left = `${Math.round(fixedCorner.x - editorOffset.x)}px`;
-          box.style.top = `${Math.round(fixedCorner.y - editorOffset.y)}px`;
-        }
         setObjectSizeVersion((version) => version + 1);
         return;
       }
@@ -1826,16 +1819,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       window.removeEventListener('pointercancel', onCancel);
       transformCleanupRef.current = null;
       transformDragRef.current = false;
+      transformingObjects.current.clear();
+      transformingHover.current = false;
 
       if (resizeBox) {
-        const { box, previousWidth, previousHeight, previousLeft, previousTop } = resizeBox;
+        const { box, previousWidth } = resizeBox;
         if (commit && moved && editor?.contains(box)) textEditor?.current?.savePageObjects();
-        else {
-          box.style.width = previousWidth;
-          box.style.minHeight = previousHeight;
-          box.style.left = previousLeft;
-          box.style.top = previousTop;
-        }
+        else box.style.width = previousWidth;
         setObjectSizeVersion((version) => version + 1);
         return;
       }
@@ -1863,6 +1853,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         if (preview && ids.size && strokesRef.current === baseStrokes) commitStrokes(preview);
         else redraw();
       } else {
+        if (boxes.length || pictures.length) setObjectSizeVersion((version) => version + 1);
         redraw();
       }
       if (commit && !moved) click?.tap();
@@ -1997,7 +1988,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       end: start.point,
       color: penColor,
       width: Math.max(2, penWidth),
-      ...(start.objectId ? { startAnchor: { objectId: start.objectId } } : {}),
+      startAnchor: start.anchor,
       ...(kind === 'curved' ? { bend: arrowControlPoint(start.point, start.point) } : {}),
     };
     arrowDraftRef.current = arrow;
@@ -2014,7 +2005,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const next: NoteArrow = {
       ...draft,
       end: end.point,
-      endAnchor: end.objectId ? { objectId: end.objectId } : undefined,
+      endAnchor: end.anchor,
       ...(draft.kind === 'curved' ? { bend: arrowControlPoint(draft.start, end.point) } : {}),
     };
     arrowDraftRef.current = next;
@@ -2123,47 +2114,43 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const isSelectedObject = ({ box, picture, ids }: ObjectHit) =>
-    !hoverKey.current && (
-      (box && selectedBoxesRef.current.includes(box)) ||
-      (picture && selectedPicturesRef.current.includes(picture)) ||
-      (ids.length > 0 && ids.every((id) => selectedIdsRef.current.includes(id))));
+    (box && selectedBoxesRef.current.includes(box)) ||
+    (picture && selectedPicturesRef.current.includes(picture)) ||
+    (ids.length > 0 && ids.every((id) => selectedIdsRef.current.includes(id)));
 
   const beginObjectMove = (e: React.PointerEvent, hit: ObjectHit | undefined) => {
     setInsertionPoint(null);
     const selected = hit && isSelectedObject(hit);
     const mouse = e.pointerType === 'mouse';
-    // A mouse hover exposes the same handles without pinning a selection.
-    if (hit && !selected) selectObject(hit, mouse);
+    if (hit && !selected) {
+      if (mouse) setHover(hit);
+      else selectObject(hit);
+    }
     beginTransform('move', null, e, {
       tap: () => {
-        if (selected) setSelection([]);
-        else if (mouse && hit && selectedToolRef.current === 'select') selectObject(hit);
+        if (mouse && hit && !selected && !selectedArrowId) selectObject(hit);
+        else if (selected && !mouse) setSelection([]);
       },
       hold: !mouse && hit ? () => {
         selectObject(hit);
         if (hit.box) editSelectedText(hit.box, hit.cell ?? null);
         else setEditActions(true);
       } : undefined,
-    });
+    }, mouse && !selected ? hit : undefined);
   };
 
   const handleHover = (e: React.PointerEvent) => {
-    if (transformDragRef.current || e.buttons || pasteMenu) return;
-    if (!hoverKey.current && (selectedIdsRef.current.length || selectedBoxesRef.current.length || selectedPicturesRef.current.length)) return;
+    if (transformDragRef.current || e.buttons || pasteMenu || arrowModeRef.current) return;
     const target = e.target as Element;
     if (target.closest('[data-ink-ui="selection"], .table-resize-handle')) return;
-    const client = { x: e.clientX, y: e.clientY };
-    const point = getPagePoint(client.x, client.y);
     if (target.closest('[contenteditable="true"]')) {
-      if (hoverKey.current) setSelection([]);
+      setHover(null);
       return;
     }
+    const client = { x: e.clientX, y: e.clientY };
+    const point = getPagePoint(client.x, client.y);
     const hit = pickObjects(point, client, 4 / zoomRef.current)[0];
-    if (hit) {
-      if (hoverKey.current !== hit.key) selectObject(hit, true);
-    } else if (hoverKey.current && (!selectionBoundsRef.current || !pointInBounds(point, selectionBoundsRef.current))) {
-      setSelection([]);
-    }
+    setHover(hit && !isSelectedObject(hit) ? hit : null);
   };
 
   const startMarquee = (e: React.PointerEvent, point: Point, client: Point) => {
@@ -2226,7 +2213,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const openPasteMenu = (point: Point, client: Point) => {
     clearTouchTap();
     setPictureError('');
-    if (hoverKey.current) setSelection([]);
+    setHover(null);
     setPasteMenu({ point, client, noteId });
   };
 
@@ -2367,6 +2354,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           setInsertionPoint(null);
           selectObject(hit);
         } else {
+          setSelectedArrowId(null);
           setSelection([]);
           setInsertionPoint(point);
         }
@@ -2384,7 +2372,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const pen = e.pointerType === 'pen';
     if (pen && !spenTipDownRef.current) return;
     const target = e.target as Element;
-    if (isInkUiTarget(target) || (!pen && target.closest('a[download]'))) return;
+    if (isInkUiTarget(target) || (!pen && !arrowModeRef.current && target.closest('a[download]'))) return;
 
     const client = { x: e.clientX, y: e.clientY };
     const point = getPagePoint(client.x, client.y);
@@ -2392,7 +2380,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       beginArrowDraft(e, point);
       return;
     }
-    if (selectedArrowId) setSelectedArrowId(null);
     if (e.pointerType === 'touch') {
       if (e.isPrimary && touchCountRef.current < 2 && !isStylusActiveRef.current && !spenTipDownRef.current) {
         handleTouchDown(e, point, client, target);
@@ -2424,6 +2411,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const hits = selecting || !pen ? pickObjects(point, client, 6 / zoomRef.current) : [];
     const hit = hits.find(isSelectedObject) ?? hits[0];
     const withinFrame = selectionBoundsRef.current && pointInBounds(point, selectionBoundsRef.current);
+    if (!hit && !withinFrame) setSelectedArrowId(null);
     if (!selecting && !hit && isStylusOnly && !pen) return;
 
     try {
@@ -2662,7 +2650,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     } else {
       textEditor?.current?.finishEditing();
     }
-    if (hoverKey.current) setSelection([]);
+    setHover(null);
     if (tool !== 'select') {
       setSelection([]);
       marqueeRef.current = null;
@@ -2692,15 +2680,20 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const soleTextBox = selectedBoxes.length === 1 && !selectedIds.length && !selectedPictures.length
     && !selectedBoxes[0].matches(tableBoxSelector) ? selectedBoxes[0] : null;
   const canScale = !selectedBoxes.some((box) => box.matches(tableBoxSelector));
-  const selectedTable = tableCell?.closest('table');
+  const selectedTable = (tableCell ?? hoveredObject?.cell)?.closest('table');
   const tableBox = selectedTable?.closest<HTMLElement>(tableBoxSelector);
   const layer = textLayerRef.current;
   const tablePlacement = tableBox && layer ? pageBoxPlacement(tableBox, layer, textBlockLayout) : null;
-  const widthHandle = soleTextBox && textLayerRef.current && selectionBounds ? (() => {
-    const placement = pageBoxPlacement(soleTextBox, textLayerRef.current, textBlockLayout);
-    const edge = transformTextBlockPoint({ x: soleTextBox.offsetWidth, y: soleTextBox.offsetHeight / 2 }, placement);
-    return { x: edge.x - selectionBounds.x, y: edge.y - selectionBounds.y };
-  })() : null;
+  const textWidthHandle = (box: HTMLElement | null, bounds: Bounds | null) => {
+    if (!box || !layer || !bounds || box.matches(tableBoxSelector)) return null;
+    const placement = pageBoxPlacement(box, layer, textBlockLayout);
+    const edge = transformTextBlockPoint({ x: box.offsetWidth, y: box.offsetHeight / 2 }, placement);
+    return { x: edge.x - bounds.x, y: edge.y - bounds.y };
+  };
+  const widthHandle = textWidthHandle(soleTextBox, selectionBounds);
+  const hoverElement = hoveredObject?.box ?? hoveredObject?.picture;
+  const hoverBounds = hoverElement && layer?.contains(hoverElement)
+    ? measureBox(hoverElement, layer, textBlockLayout) : hoverElement ? null : hoveredObject?.bounds ?? null;
   selectionBoundsRef.current = selectionBounds;
 
   /** Outline for the rubber band currently being dragged. */
@@ -3002,7 +2995,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             onOrientationChange={changePageLayout}
             onBackgroundChange={onChangeBackground}
             onPageColorChange={(color) => onPageColorChange?.(color)}
-            selection={hovering ? undefined : selectionTools}
+            selection={selectionTools}
             keyboardOpen={keyboardOpen}
             textEditing={textEditing}
           />
@@ -3029,7 +3022,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             }
           })}
           onScroll={() => {
-            if (hoverKey.current && !transformDragRef.current) setSelection([]);
+            if (!transformDragRef.current) setHover(null);
             extendCanvasAtEdge();
           }}
         >
@@ -3056,7 +3049,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                   onContextMenu={handleContextMenu}
                   onDoubleClick={handleDoubleClick}
                   onPointerLeave={(event) => {
-                    if (event.pointerType === 'mouse' && hoverKey.current && !transformDragRef.current) setSelection([]);
+                    if (event.pointerType === 'mouse' && !transformDragRef.current) setHover(null);
                     if (activeTool !== 'select' && event.pointerType !== 'touch') handlePointerCancel(event);
                   }}
                   onDragOver={(event) => {
@@ -3144,11 +3137,23 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                     </svg>
                   )}
 
+                  {hoveredObject && hoverBounds && (
+                    <SelectionOverlay
+                      bounds={hoverBounds}
+                      transform={transformingHover.current ? liveTransform : null}
+                      hovering
+                      count={0}
+                      onStartResize={hoverElement?.matches(tableBoxSelector) ? undefined
+                        : (corner, event) => beginTransform('resize', corner, event, undefined, { ...hoveredObject, bounds: hoverBounds })}
+                      widthHandle={textWidthHandle(hoveredObject.box ?? null, hoverBounds)}
+                      onStartWidth={(event) => beginTransform('width', null, event, undefined, { ...hoveredObject, bounds: hoverBounds })}
+                      onStartRotate={(event) => beginTransform('rotate', null, event, undefined, { ...hoveredObject, bounds: hoverBounds })}
+                    />
+                  )}
                   {selectionBounds && (
                     <SelectionOverlay
                       bounds={selectionBounds}
-                      transform={liveTransform}
-                      hovering={hovering}
+                      transform={transformingHover.current ? null : liveTransform}
                       count={selectedDrawings.size}
                       boxCount={selectedBoxes.length}
                       tableSelected={selectedBoxes.length === 1 && selectedBoxes[0].matches(tableBoxSelector)}

@@ -87,14 +87,14 @@ export const boxSelector = '[data-note-positioned="true"]';
 export function boxPlacement(element: HTMLElement, layer: HTMLElement): TextBlockLayout {
   return {
     ...offsetWithin(element, layer),
-    scale: 1,
+    scale: Number(element.style.scale) || 1,
     rotation: (parseFloat(element.style.rotate) || 0) * Math.PI / 180,
   };
 }
 
 export function pageBoxPlacement(element: HTMLElement, layer: HTMLElement, layout: TextBlockLayout) {
   const placement = boxPlacement(element, layer);
-  return { ...transformTextBlockPoint(placement, layout), scale: layout.scale, rotation: layout.rotation + placement.rotation };
+  return { ...transformTextBlockPoint(placement, layout), scale: layout.scale * placement.scale, rotation: layout.rotation + placement.rotation };
 }
 
 export function measureBox(element: HTMLElement, layer: HTMLElement, layout: TextBlockLayout): Bounds {
@@ -110,7 +110,7 @@ export function transformBox(
 ) {
   const pagePlacement = {
     ...transformTextBlockPoint(placement, layer),
-    scale: layer.scale,
+    scale: layer.scale * placement.scale,
     rotation: layer.rotation + placement.rotation,
   };
   const next = composeTextBlockLayout(pagePlacement, transform);
@@ -118,9 +118,8 @@ export function transformBox(
   if (commit) {
     box.style.left = `${Math.round(local.x - editorOffset.x)}px`;
     box.style.top = `${Math.round(local.y - editorOffset.y)}px`;
-    if (transform.scale !== 1) {
-      box.style.width = `${Math.max(48, Math.min(8192, Math.round(width * transform.scale)))}px`;
-    } else if (!box.style.width && !box.matches('[data-note-table="true"]')) {
+    if (transform.scale !== 1) box.style.scale = String(Number((next.scale / layer.scale).toFixed(6)));
+    if (!box.style.width && !box.matches('[data-note-table="true"]')) {
       // Keep the measured width of legacy boxes that originally filled the sheet.
       box.style.width = `${width}px`;
     }

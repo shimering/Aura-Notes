@@ -28,6 +28,14 @@ export type EraserMode = 'object' | 'pixel';
 export type InkBackground = 'none' | 'ruled' | 'grid' | 'dotted';
 
 /** Straight connector or a curved one whose bend can be dragged. */
+export type ArrowSide = 'left' | 'right' | 'top' | 'bottom';
+
+export interface ArrowAnchor {
+  objectId: string;
+  /** Optional for arrows saved before edge locking. */
+  side?: ArrowSide;
+}
+
 export type ArrowKind = 'straight' | 'curved';
 
 /**
@@ -45,9 +53,9 @@ export interface NoteArrow {
   color: string;
   width: number;
   /** Object the tail is attached to. */
-  startAnchor?: { objectId: string };
+  startAnchor?: ArrowAnchor;
   /** Object the arrowhead points at. */
-  endAnchor?: { objectId: string };
+  endAnchor?: ArrowAnchor;
 }
 
 /**

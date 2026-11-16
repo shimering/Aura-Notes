@@ -725,7 +725,7 @@ canvas.ink-canvas {
   display: flow-root;
   min-height: 1.5em;
   padding: 4px 8px;
-  border: 1px solid rgb(100 116 139 / 30%);
+  border: 1px solid transparent;
   border-radius: 3px;
   transform-origin: top left;
 }

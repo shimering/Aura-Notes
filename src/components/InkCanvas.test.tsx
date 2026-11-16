@@ -228,13 +228,16 @@ it('opens Insert and places a new box only when requested at the marked canvas c
   expect(onChangeStrokes).not.toHaveBeenCalled();
 });
 
-it('shows mouse hover handles, moves the box, and opens it for editing on double-click', () => {
+it('keeps hover and corner scaling separate from the arrow selection', async () => {
   const editorRef = createRef<TextEditorRef>();
+  const save = vi.fn();
   const note = { id: 'scratch', title: 'Scratch', content: '<p>Existing text</p>', inkStrokes: [],
     tags: [], color: '', createdAt: 0, updatedAt: 0 };
   act(() => root.render(<InkCanvas noteId={note.id} strokes={[]} onChangeStrokes={onChangeStrokes}
     onScribbleToText={() => {}} textEditor={editorRef}
-    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
+    arrows={[{ id: 'arrow', kind: 'straight', color: '#000', width: 2, start: { x: 180, y: 200 }, end: { x: 250, y: 200 } }]}
+    onChangeArrows={() => {}}
+    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={save} embedded />} />));
   const box = container.querySelector<HTMLElement>('[data-note-positioned]')!;
   Object.defineProperties(box, {
     offsetWidth: { value: 100 }, offsetHeight: { value: 40 },
@@ -243,15 +246,47 @@ it('shows mouse hover handles, moves the box, and opens it for editing on double
   });
   const canvas = container.querySelector('.ink-canvas')!;
   const frame = () => container.querySelector('[data-ink-ui="selection"]');
+  const arrowPath = container.querySelectorAll('[data-note-arrow] path')[1];
+  const arrowSelected = () => container.querySelector('[aria-label="Move arrowhead"]');
+  pointer(arrowPath, 'pointerdown', 215, 200, 'mouse', 1);
+  pointer(arrowPath, 'pointerup', 215, 200, 'mouse');
+
   pointer(box, 'pointermove', 40, 20, 'mouse');
-  expect(frame()?.querySelector('[aria-label="Resize selection"]')).not.toBeNull();
-  pointer(canvas, 'pointermove', 150, 150, 'mouse');
+  expect(frame()?.hasAttribute('data-ink-hover')).toBe(true);
+  expect(frame()?.textContent).not.toContain('Edit text');
+  expect(arrowSelected()).not.toBeNull();
+
+  const corner = frame()!.querySelectorAll('[aria-label="Resize selection"]')[3];
+  pointer(corner, 'pointerdown', 100, 40, 'mouse', 1);
+  pointer(box, 'pointermove', 150, 60, 'mouse', 1);
+  pointer(box, 'pointerup', 150, 60, 'mouse');
+  expect(box.style.scale).toBe('1.5');
+  expect(box.offsetWidth).toBe(100);
+  expect(box.textContent).toBe('Existing text');
+  await vi.waitFor(() => expect(save).toHaveBeenCalledWith(expect.stringContaining('scale: 1.5')));
+  expect(arrowSelected()).not.toBeNull();
+
+  pointer(canvas, 'pointermove', 190, 150, 'mouse');
   expect(frame()).toBeNull();
   pointer(box, 'pointerdown', 40, 20, 'mouse', 1);
   pointer(box, 'pointermove', 90, 80, 'mouse', 1);
   pointer(box, 'pointerup', 90, 80, 'mouse');
   expect(box.style.left).toBe('50px');
   expect(box.style.top).toBe('60px');
+  expect(arrowSelected()).not.toBeNull();
+
+  pointer(box, 'pointerdown', 90, 80, 'mouse', 1);
+  pointer(box, 'pointerup', 90, 80, 'mouse');
+  expect(arrowSelected()).not.toBeNull();
+
+  pointer(canvas, 'pointerdown', 280, 180, 'mouse', 1);
+  pointer(canvas, 'pointerup', 280, 180, 'mouse');
+  expect(arrowSelected()).toBeNull();
+
+  pointer(box, 'pointerdown', 90, 80, 'mouse', 1);
+  pointer(box, 'pointerup', 90, 80, 'mouse');
+  expect(frame()?.hasAttribute('data-ink-hover')).toBe(false);
+  expect(frame()?.textContent).toContain('Edit text');
   act(() => box.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 90, clientY: 80 })));
   expect(document.activeElement).toBe(box);
   expect(frame()).toBeNull();
@@ -530,6 +565,42 @@ it('draws a straight arrow from the Insert tab and shows its handles', () => {
   pointer(window as unknown as Element, 'pointerup', 320, 260, 'mouse');
   expect(onChangeArrows).toHaveBeenCalledTimes(1);
   expect([onChangeArrows.mock.calls[0][0][0].end.x, onChangeArrows.mock.calls[0][0][0].end.y]).toEqual([320, 260]);
+});
+
+it('snaps directly to the edge of a PDF attachment inside a text box', async () => {
+  const onChangeArrows = vi.fn();
+  const onChangeContent = vi.fn();
+  const editorRef = createRef<TextEditorRef>();
+  const note = { id: 'scratch', title: 'Scratch',
+    content: '<div data-note-positioned="true"><a href="data:application/pdf;base64,JVBERi0=" download="Handout.pdf">Handout.pdf</a></div>',
+    inkStrokes: [], tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  act(() => root.render(
+    <InkCanvas noteId={note.id} strokes={[]} onChangeStrokes={onChangeStrokes}
+      onChangeArrows={onChangeArrows} onScribbleToText={() => {}} textEditor={editorRef}
+      onChangeBackground={() => {}}
+      textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={onChangeContent} embedded />} />));
+  const box = container.querySelector<HTMLElement>('[data-note-positioned]')!;
+  const attachment = box.querySelector('a')!;
+  Object.defineProperties(box, { offsetWidth: { value: 260 }, offsetHeight: { value: 160 } });
+  Object.defineProperties(attachment, {
+    offsetParent: { value: box }, offsetLeft: { value: 20 }, offsetTop: { value: 20 },
+    offsetWidth: { value: 100 }, offsetHeight: { value: 30 },
+  });
+
+  const straight = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    .find((button) => button.textContent?.includes('Straight arrow'))!;
+  act(() => straight.click());
+  const canvas = container.querySelector('.ink-canvas')!;
+  pointer(canvas, 'pointerdown', 126, 35, 'mouse', 1);
+  pointer(canvas, 'pointermove', 350, 45, 'mouse', 1);
+  pointer(canvas, 'pointerup', 350, 45, 'mouse');
+  expect(attachment.dataset.noteId).toBeTruthy();
+  expect(onChangeArrows).toHaveBeenCalledWith([expect.objectContaining({
+    start: { x: 120, y: 35 },
+    startAnchor: { objectId: attachment.dataset.noteId, side: 'right' },
+  })]);
+  await vi.waitFor(() => expect(onChangeContent).toHaveBeenCalledWith(
+    expect.stringContaining(`data-note-id="${attachment.dataset.noteId}"`)));
 });
 
 it('leaves a plain mouse wheel to scroll A4 pages', () => {

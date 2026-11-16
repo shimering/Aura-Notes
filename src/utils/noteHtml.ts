@@ -62,7 +62,9 @@ export function sanitizeNoteHtml(html: string): string {
         attribute.keepAttr = node.nodeName === 'DIV' && attribute.attrValue === 'true';
       } else if (attribute.attrName === 'data-note-id') {
         // Stable ids let arrows stay attached to the objects they connect.
-        attribute.keepAttr = (node.nodeName === 'DIV' || node.nodeName === 'IMG')
+        attribute.keepAttr = (node.nodeName === 'IMG'
+          || (['P', 'DIV'].includes(node.nodeName) && node.getAttribute('data-note-positioned') === 'true')
+          || (node.nodeName === 'A' && node.hasAttribute('download') && pdfData.test(node.getAttribute('href') ?? '')))
           && /^[A-Za-z0-9_-]{6,64}$/.test(attribute.attrValue);
       } else if (attribute.attrName === 'data-cell-formula') {
         attribute.keepAttr = ['TD', 'TH'].includes(node.nodeName) && cellFormula.test(attribute.attrValue);
@@ -71,7 +73,7 @@ export function sanitizeNoteHtml(html: string): string {
         css.cssText = attribute.attrValue;
         const styles = node.nodeName === 'IMG' ? { ...formattingStyles, ...pictureStyles }
           : node.getAttribute('data-note-positioned') === 'true' && ['P', 'DIV'].includes(node.nodeName)
-            ? { ...formattingStyles, ...pictureStyles, 'min-height': pictureStyles.width }
+            ? { ...formattingStyles, ...pictureStyles, 'min-height': pictureStyles.width, scale: /^(?:[1-9]\d{0,5}(?:\.\d{1,6})?|0\.\d{0,5}[1-9]\d{0,5})$/ }
             : ['COL', 'TABLE'].includes(node.nodeName) ? { width: /^[1-9]\d{0,5}px$/ }
             : node.nodeName === 'TR' ? { height: pictureStyles.width } : formattingStyles;
         attribute.attrValue = Object.entries(styles).flatMap(([property, allowed]) => {

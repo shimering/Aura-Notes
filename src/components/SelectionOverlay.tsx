@@ -26,9 +26,9 @@ interface SelectionOverlayProps {
   inkColor?: string;
   inkWidth?: number;
   onStartRotate: (e: React.PointerEvent) => void;
-  onBringToFront: () => void;
-  onSendToBack: () => void;
-  onDelete: () => void;
+  onBringToFront?: () => void;
+  onSendToBack?: () => void;
+  onDelete?: () => void;
 }
 
 const CORNERS: { corner: ResizeCorner; className: string; cursor: string }[] = [
@@ -87,8 +87,9 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
 
   return (
     <div
-      className="absolute z-40 pointer-events-none"
+      className={`absolute pointer-events-none ${hovering ? 'z-[34]' : 'z-40'}`}
       style={style}
+      data-ink-hover={hovering ? '' : undefined}
       data-ink-ui="selection"
       aria-hidden={false}
     >
@@ -132,10 +133,10 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
         </button>
       ))}
 
-      {/* Object actions, pinned under the frame. */}
-      <div
+      {/* Object actions, pinned under the selected frame. */}
+      {!hovering && <div
         onPointerDown={(e) => e.stopPropagation()}
-        className={`absolute left-1/2 ${tableSelected ? '-bottom-20' : '-bottom-12'} -translate-x-1/2 pointer-events-auto flex items-center gap-1 px-1.5 py-1 rounded-xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] text-ink-light dark:text-ink-dark whitespace-nowrap ${hovering ? `before:absolute before:inset-x-0 before:bottom-full ${tableSelected ? 'before:h-12' : 'before:h-6'}` : ''}`}
+        className={`absolute left-1/2 ${tableSelected ? '-bottom-20' : '-bottom-12'} -translate-x-1/2 pointer-events-auto flex items-center gap-1 px-1.5 py-1 rounded-xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] text-ink-light dark:text-ink-dark whitespace-nowrap`}
       >
         <span
           className="px-1 text-ink-muted-light dark:text-ink-muted-dark"
@@ -194,7 +195,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
-      </div>
+      </div>}
     </div>
   );
 };

@@ -2,8 +2,8 @@ import React, { useRef, useState } from 'react';
 import type { NoteArrow } from '../types/note';
 import type { Point } from '../utils/inkSelection';
 import {
-  arrowGeometry, arrowHeadPoints, arrowPath, moveArrow,
-  type ArrowTarget,
+  arrowGeometry, arrowHeadPoints, arrowPath, lockArrowSides, moveArrow,
+  type ArrowSnap, type ArrowTarget,
 } from '../utils/noteArrows';
 
 interface NoteArrowLayerProps {
@@ -19,7 +19,7 @@ interface NoteArrowLayerProps {
   /** Client coordinates to page coordinates, including scroll and zoom. */
   toPage: (clientX: number, clientY: number) => Point;
   /** Snaps a page point to nearby object edges and reports the object. */
-  snap: (point: Point) => { point: Point; objectId?: string };
+  snap: (point: Point) => ArrowSnap;
   onSelect: (id: string | null) => void;
   onChange: (arrow: NoteArrow) => void;
   /** Saves any object ids assigned while snapping. */
@@ -57,18 +57,20 @@ export const NoteArrowLayer: React.FC<NoteArrowLayerProps> = ({
     event.preventDefault();
     event.stopPropagation();
     onSelect(arrow.id);
+    const geometry = arrowGeometry(arrow, targets);
     dragRef.current = {
       mode,
-      base: arrow,
+      base: mode === 'move' ? { ...arrow, start: geometry.start, end: geometry.end } : lockArrowSides(arrow, targets),
       start: toPage(event.clientX, event.clientY),
     };
     let settled: NoteArrow | null = null;
 
     const onMove = (moveEvent: PointerEvent) => {
       const drag = dragRef.current;
-      if (!drag) return;
+      if (!drag || moveEvent.pointerId !== event.pointerId) return;
       const point = toPage(moveEvent.clientX, moveEvent.clientY);
       const delta = { x: point.x - drag.start.x, y: point.y - drag.start.y };
+      if (!settled && Math.hypot(delta.x, delta.y) * zoom < 3) return;
       if (drag.mode === 'move') {
         settled = moveArrow(drag.base, delta);
       } else if (drag.mode === 'bend') {
@@ -77,25 +79,23 @@ export const NoteArrowLayer: React.FC<NoteArrowLayerProps> = ({
       } else {
         const snapped = snap(point);
         settled = drag.mode === 'start'
-          ? { ...drag.base, start: snapped.point, startAnchor: snapped.objectId ? { objectId: snapped.objectId } : undefined }
-          : { ...drag.base, end: snapped.point, endAnchor: snapped.objectId ? { objectId: snapped.objectId } : undefined };
+          ? { ...drag.base, start: snapped.point, startAnchor: snapped.anchor }
+          : { ...drag.base, end: snapped.point, endAnchor: snapped.anchor };
       }
       setLive(settled);
     };
 
-    const onUp = () => {
+    const onUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== event.pointerId) return;
+      const commit = upEvent.type === 'pointerup';
+      if (commit) onMove(upEvent);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
       dragRef.current = null;
-      const finished = settled;
       setLive(null);
-      if (!finished) return;
-      const stored = arrows.find((arrow) => arrow.id === finished.id);
-      if (stored && (stored.start.x !== finished.start.x || stored.end.x !== finished.end.x
-        || stored.bend?.x !== finished.bend?.x || stored.startAnchor?.objectId !== finished.startAnchor?.objectId
-        || stored.endAnchor?.objectId !== finished.endAnchor?.objectId)) {
-        onChange(finished);
+      if (commit && settled && JSON.stringify(arrow) !== JSON.stringify(settled)) {
+        onChange(settled);
         onObjectsChanged();
       }
     };
