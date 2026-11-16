@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { InkCanvas } from './InkCanvas';
 import { TextEditor, type TextEditorRef } from './TextEditor';
+import { CANVAS_BASE_SIZE } from '../utils/pageLayout';
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -385,4 +386,45 @@ it.each(['clipboard API', 'iPad system Paste', 'blocked clipboard fallback'])('p
     Reflect.deleteProperty(navigator, 'clipboard');
     Reflect.deleteProperty(document, 'execCommand');
   }
+});
+
+it('opens the endless canvas on a workspace larger than the A4 sheet', () => {
+  act(() => root.render(<InkCanvas noteId="scratch" pageLayout="canvas" defaultTool="pen"
+    strokes={[]} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />));
+
+  const paper = container.querySelector<HTMLElement>('.note-paper')!;
+  expect(paper.dataset.layout).toBe('canvas');
+  expect(paper.style.width).toBe(`${CANVAS_BASE_SIZE.width}px`);
+  expect(paper.style.minHeight).toBe(`${CANVAS_BASE_SIZE.height}px`);
+  expect(container.querySelector('.note-page-footer')).toBeNull();
+});
+
+it('zooms the endless canvas with a plain mouse wheel', () => {
+  act(() => root.render(<InkCanvas noteId="scratch" pageLayout="canvas" defaultTool="pen"
+    strokes={[]} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />));
+
+  const viewport = container.querySelector<HTMLElement>('.note-desk')!;
+  const scaleTransform = () => container.querySelector<HTMLElement>('.note-paper-scale')!.style.transform;
+
+  const zoomIn = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -100, clientX: 200, clientY: 200 });
+  act(() => viewport.dispatchEvent(zoomIn));
+  expect(zoomIn.defaultPrevented).toBe(true);
+  expect(scaleTransform()).not.toBe('scale(1)');
+  const zoomed = scaleTransform();
+
+  const zoomOut = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 100, clientX: 200, clientY: 200 });
+  act(() => viewport.dispatchEvent(zoomOut));
+  expect(scaleTransform()).not.toBe(zoomed);
+});
+
+it('leaves a plain mouse wheel to scroll A4 pages', () => {
+  act(() => root.render(<InkCanvas noteId="scratch" pageLayout="portrait" defaultTool="pen"
+    strokes={[]} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />));
+
+  const viewport = container.querySelector<HTMLElement>('.note-desk')!;
+  const scale = container.querySelector<HTMLElement>('.note-paper-scale')!.style.transform;
+  const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -100 });
+  act(() => viewport.dispatchEvent(wheel));
+  expect(wheel.defaultPrevented).toBe(false);
+  expect(container.querySelector<HTMLElement>('.note-paper-scale')!.style.transform).toBe(scale);
 });

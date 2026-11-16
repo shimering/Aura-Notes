@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import {
-  AlignJustify, ChevronDown, ChevronUp, Circle, FileText, Grid3x3, Image, RectangleHorizontal,
-  RectangleVertical, Square, Table2, Type,
+  AlignJustify, ChevronDown, ChevronUp, Circle, FileText, Grid3x3, Image, Infinity as InfinityIcon,
+  RectangleHorizontal, RectangleVertical, Square, Table2, Type,
 } from 'lucide-react';
 import { InkBackground, PageLayout } from '../types/note';
 import { INK_BACKGROUNDS } from '../utils/inkBackground';
@@ -18,9 +18,10 @@ export interface RibbonSelection {
 type RibbonTab = StandardTab | RibbonSelection['tab'];
 
 const BACKGROUND_ICONS = { none: Square, ruled: AlignJustify, grid: Grid3x3, dotted: Circle };
-const ORIENTATIONS = [
+const PAGE_LAYOUTS = [
   { value: 'portrait', label: 'Portrait', Icon: RectangleVertical },
   { value: 'landscape', label: 'Landscape', Icon: RectangleHorizontal },
+  { value: 'canvas', label: 'Canvas', Icon: InfinityIcon },
 ] as const;
 
 interface NoteRibbonProps {
@@ -198,14 +199,14 @@ export function NoteRibbon({
           <div className="ribbon-groups">
             <div className="ribbon-group">
               <div className="ribbon-row">
-                {ORIENTATIONS.map(({ value, label, Icon }) => (
+                {PAGE_LAYOUTS.map(({ value, label, Icon }) => (
                   <button type="button" key={value} className="ribbon-command ribbon-large-command"
                     aria-pressed={orientation === value} onClick={() => onOrientationChange(value)}>
                     <Icon size={21} /> {label}
                   </button>
                 ))}
               </div>
-              {!compact && <span className="ribbon-group-label">A4 orientation</span>}
+              {!compact && <span className="ribbon-group-label">Page layout</span>}
             </div>
             <div className="ribbon-group">
               <div className="ribbon-row">

@@ -28,10 +28,11 @@ export type EraserMode = 'object' | 'pixel';
 export type InkBackground = 'none' | 'ruled' | 'grid' | 'dotted';
 
 /**
- * Orientation of the note's A4 sheet. Portrait is the default for existing
- * notes that predate page layouts.
+ * Shape of the note surface. Portrait and landscape are fixed A4 sheets;
+ * canvas is an endless workspace that grows as content is added. Portrait is
+ * the default for existing notes that predate page layouts.
  */
-export type PageLayout = 'portrait' | 'landscape';
+export type PageLayout = 'portrait' | 'landscape' | 'canvas';
 
 export interface Stroke {
   id: string;

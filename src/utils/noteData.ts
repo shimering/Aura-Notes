@@ -29,7 +29,8 @@ function isPageData(value: Record<string, unknown>): value is Record<string, unk
     && (value.recognizedText === undefined || typeof value.recognizedText === 'string')
     && (value.inkBackground === undefined || value.inkBackground === 'none'
       || value.inkBackground === 'ruled' || value.inkBackground === 'grid' || value.inkBackground === 'dotted')
-    && (value.pageLayout === undefined || value.pageLayout === 'portrait' || value.pageLayout === 'landscape')
+    && (value.pageLayout === undefined || value.pageLayout === 'portrait'
+      || value.pageLayout === 'landscape' || value.pageLayout === 'canvas')
     && (value.textLayout === undefined || (isRecord(value.textLayout)
       && [value.textLayout.x, value.textLayout.y, value.textLayout.rotation].every(isFiniteNumber)
       && isFiniteNumber(value.textLayout.scale) && value.textLayout.scale > 0));

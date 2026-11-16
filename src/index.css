@@ -136,6 +136,54 @@ canvas.ink-canvas {
   background-image: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
 }
 
+/* Keep the desk scrollbars visible so a mouse can pan the endless canvas. */
+.note-desk::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.note-desk::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.note-desk::-webkit-scrollbar-thumb {
+  min-height: 42px;
+  min-width: 42px;
+  background: rgba(71, 85, 105, 0.62);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+}
+
+.note-desk::-webkit-scrollbar-thumb:hover {
+  background: rgba(51, 65, 85, 0.85);
+  background-clip: content-box;
+}
+
+.note-desk::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@supports (-moz-appearance: none) {
+  .note-desk {
+    scrollbar-width: auto;
+    scrollbar-color: rgba(71, 85, 105, 0.62) rgba(15, 23, 42, 0.08);
+  }
+
+  .dark .note-desk {
+    scrollbar-color: rgba(148, 163, 184, 0.5) rgba(255, 255, 255, 0.08);
+  }
+}
+
+.dark .note-desk::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dark .note-desk::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.52);
+  background-clip: content-box;
+}
+
 .note-desk-inner {
   --note-desk-gutter: 0.75rem;
   min-height: 100%;
@@ -212,6 +260,15 @@ canvas.ink-canvas {
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.5),
     0 22px 48px -20px rgba(0, 0, 0, 0.75);
+}
+
+/* The endless canvas has no physical edge: it is the desk itself. */
+.note-paper[data-layout="canvas"],
+.dark .note-paper[data-layout="canvas"] {
+  background-color: transparent;
+  border-radius: 0;
+  outline: none;
+  box-shadow: none;
 }
 
 /* Glassmorphism utility */

@@ -39,10 +39,16 @@ import { TableResizeHandles, type TableResizeAxis } from './TableResizeHandles';
 import { TableToolbar } from './TableToolbar';
 import { SPenQuickMenu } from './SPenQuickMenu';
 import {
+  CANVAS_CONTENT_MARGIN,
+  CANVAS_MAX_BITMAP_SIZE,
+  CANVAS_TEXT_INSET,
+  CANVAS_TEXT_WIDTH,
   clampPageZoom,
   getFitWidthZoom,
   getPageSize,
-  PAGE_ZOOM_STEP
+  isCanvasLayout,
+  PAGE_ZOOM_STEP,
+  type PageSize
 } from '../utils/pageLayout';
 import {
   Eraser,
@@ -268,8 +274,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // ---- Page sheet: A4 size, orientation and zoom -------------------------
   const pageSize = useMemo(() => getPageSize(pageLayout), [pageLayout]);
+  const isCanvas = isCanvasLayout(pageLayout);
+  /** Endless canvas extent. Only grows so ink never slides under the viewport. */
+  const [canvasExtent, setCanvasExtent] = useState<PageSize>(() => getPageSize('canvas'));
+  /** Sheet width: an A4 width, or the current endless canvas width. */
+  const sheetWidth = isCanvas ? Math.max(pageSize.width, canvasExtent.width) : pageSize.width;
+  /** Minimum sheet height before the measured text height is taken into account. */
+  const sheetMinHeight = isCanvas ? Math.max(pageSize.height, canvasExtent.height) : pageSize.height;
   /** Measured height of the sheet in page pixels (A4 minimum, grows with text). */
   const [pageHeight, setPageHeight] = useState<number>(pageSize.height);
+  const sheetHeight = Math.max(pageHeight, sheetMinHeight);
   const [zoom, setZoom] = useState<number>(1);
   const zoomRef = useRef<number>(1);
   /** Device-pixel scale of the bitmap currently backing the canvases. */
@@ -883,8 +897,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const dpr = window.devicePixelRatio || 1;
     // Render the sheet a little sharper than the screen while zoomed in, but
-    // cap the bitmap so four canvases cannot exhaust tablet memory.
-    const scale = Math.max(1, Math.min(3, dpr * zoomRef.current));
+    // cap the bitmap so canvases cannot exhaust tablet memory. The endless
+    // canvas is larger than A4, so it also caps each bitmap side.
+    const desired = Math.min(3, dpr * zoomRef.current);
+    const scale = isCanvas
+      ? Math.max(0.2, Math.min(desired, CANVAS_MAX_BITMAP_SIZE / Math.max(1, width),
+        CANVAS_MAX_BITMAP_SIZE / Math.max(1, height)))
+      : Math.max(1, desired);
     renderScaleRef.current = scale;
 
     canvas.width = Math.floor(width * scale);
@@ -913,7 +932,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     drawBackground();
     redraw();
-  }, [drawBackground, redraw]);
+  }, [drawBackground, isCanvas, redraw]);
 
   // Keep the page canvases matched to the sheet as the note grows.
   useEffect(() => {
@@ -940,6 +959,82 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     redraw();
   }, [redraw]);
 
+  // ---- Endless canvas ------------------------------------------------------
+  /**
+   * Grows the canvas so content always has blank workspace ahead of it. It only
+   * ever expands: shrinking would move saved ink under the viewport and lose
+   * the reader's scroll position.
+   */
+  const growCanvasToContent = useCallback(() => {
+    if (!isCanvas) return;
+    const bounds = getStrokesBounds(strokesRef.current);
+    const layer = textLayerRef.current;
+    const contentRight = Math.max(
+      bounds ? bounds.x + bounds.width : 0,
+      layer ? layer.offsetLeft + layer.offsetWidth : 0,
+    );
+    const contentBottom = Math.max(
+      bounds ? bounds.y + bounds.height : 0,
+      layer ? layer.offsetTop + layer.offsetHeight : 0,
+    );
+    setCanvasExtent((current) => {
+      const width = Math.max(current.width, Math.ceil(contentRight + CANVAS_CONTENT_MARGIN));
+      const height = Math.max(current.height, Math.ceil(contentBottom + CANVAS_CONTENT_MARGIN));
+      return width === current.width && height === current.height ? current : { width, height };
+    });
+  }, [isCanvas]);
+
+  // Typed text grows the sheet in flow, while ink can be drawn past the current
+  // edge under pointer capture. Both are measured after they change.
+  useEffect(() => {
+    growCanvasToContent();
+  }, [growCanvasToContent, pageHeight, strokes]);
+
+  /** Opens the canvas on a workspace that fills the viewport with room to pan. */
+  useLayoutEffect(() => {
+    if (!isCanvas) return;
+    const scroll = scrollRef.current;
+    const currentZoom = zoomRef.current || 1;
+    const viewWidth = scroll ? scroll.clientWidth / currentZoom : 0;
+    const viewHeight = scroll ? scroll.clientHeight / currentZoom : 0;
+    setCanvasExtent((current) => {
+      const width = Math.max(current.width, Math.ceil(viewWidth + CANVAS_CONTENT_MARGIN * 2));
+      const height = Math.max(current.height, Math.ceil(viewHeight + CANVAS_CONTENT_MARGIN * 2));
+      return width === current.width && height === current.height ? current : { width, height };
+    });
+    growCanvasToContent();
+  }, [growCanvasToContent, isCanvas]);
+
+  // Opening or leaving a canvas page returns to the origin so the text column
+  // is visible instead of a remote corner of the old workspace.
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    scroll.scrollLeft = 0;
+    scroll.scrollTop = 0;
+  }, [isCanvas]);
+
+  /**
+   * Extends the endless canvas when panning reaches its right or bottom edge,
+   * so the workspace never runs out while the reader moves around.
+   */
+  const extendCanvasAtEdge = useCallback(() => {
+    if (!isCanvas) return;
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const currentZoom = zoomRef.current || 1;
+    const right = (scroll.scrollLeft + scroll.clientWidth) / currentZoom;
+    const bottom = (scroll.scrollTop + scroll.clientHeight) / currentZoom;
+    const threshold = CANVAS_CONTENT_MARGIN / 2;
+    setCanvasExtent((current) => {
+      const width = right >= current.width - threshold
+        ? Math.ceil(current.width + CANVAS_CONTENT_MARGIN) : current.width;
+      const height = bottom >= current.height - threshold
+        ? Math.ceil(current.height + CANVAS_CONTENT_MARGIN) : current.height;
+      return width === current.width && height === current.height ? current : { width, height };
+    });
+  }, [isCanvas]);
+
   // ---- Page zoom ---------------------------------------------------------
   /**
    * Changes the sheet zoom while keeping `focal` (a client point) over the same
@@ -947,7 +1042,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    * after the new transform has been applied.
    */
   const applyZoom = useCallback((nextZoom: number, focal?: Point, target = focal) => {
-    const clamped = clampPageZoom(nextZoom);
+    const clamped = clampPageZoom(nextZoom, pageLayout);
     const page = containerRef.current;
     const current = zoomRef.current || 1;
 
@@ -968,7 +1063,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     zoomRef.current = clamped;
     setZoom(clamped);
-  }, []);
+  }, [pageLayout]);
 
   // Keep the focal page point under the user's fingers after the transform.
   useLayoutEffect(() => {
@@ -990,11 +1085,30 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     return () => window.clearTimeout(timer);
   }, [zoom, resizeCanvas]);
 
+  // Zooming out exposes more of the endless canvas than it currently holds.
+  // Grow it to cover the viewport so the reader never sees the world end.
+  useEffect(() => {
+    if (!isCanvas) return;
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const currentZoom = zoomRef.current || 1;
+    const width = Math.ceil((scroll.scrollLeft + scroll.clientWidth) / currentZoom + CANVAS_CONTENT_MARGIN);
+    const height = Math.ceil((scroll.scrollTop + scroll.clientHeight) / currentZoom + CANVAS_CONTENT_MARGIN);
+    setCanvasExtent((current) => {
+      const nextWidth = Math.max(current.width, width);
+      const nextHeight = Math.max(current.height, height);
+      return nextWidth === current.width && nextHeight === current.height
+        ? current : { width: nextWidth, height: nextHeight };
+    });
+  }, [isCanvas, zoom]);
+
   /** Opens small screens at a readable width instead of a cropped A4 sheet. */
   const initialFitDoneRef = useRef(false);
   useLayoutEffect(() => {
     if (initialFitDoneRef.current) return;
     initialFitDoneRef.current = true;
+    // The endless canvas opens at 100% on its origin instead of fitting A4 width.
+    if (isCanvas) return;
     const scroll = scrollRef.current;
     if (!scroll) return;
     const fit = getFitWidthZoom(scroll.clientWidth, pageSize.width, 24);
@@ -1020,11 +1134,31 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const scroll = scrollRef.current;
     if (!scroll) return;
     const rect = scroll.getBoundingClientRect();
-    applyZoom(getFitWidthZoom(rect.width, pageSize.width, 24), {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2
-    });
-  }, [applyZoom, pageSize.width]);
+    const focus = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+
+    // The endless canvas has no page edge: fit all content instead.
+    if (isCanvas) {
+      const bounds = getStrokesBounds(strokesRef.current);
+      const layer = textLayerRef.current;
+      const contentRight = Math.max(
+        bounds ? bounds.x + bounds.width : 0,
+        layer ? layer.offsetLeft + layer.offsetWidth : 0,
+      );
+      const contentBottom = Math.max(
+        bounds ? bounds.y + bounds.height : 0,
+        layer ? layer.offsetTop + layer.offsetHeight : 0,
+      );
+      const fit = Math.min(
+        1,
+        rect.width / Math.max(1, contentRight + CANVAS_CONTENT_MARGIN),
+        rect.height / Math.max(1, contentBottom + CANVAS_CONTENT_MARGIN),
+      );
+      applyZoom(fit, focus);
+      return;
+    }
+
+    applyZoom(getFitWidthZoom(rect.width, pageSize.width, 24), focus);
+  }, [applyZoom, isCanvas, pageSize.width]);
 
   const resetZoom = useCallback(() => {
     const scroll = scrollRef.current;
@@ -1038,7 +1172,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   /**
    * Two-finger pinch on the page viewport (paper or desk), plus trackpad pinch
-   * (reported as Ctrl + wheel). A second finger takes over an open selection drag.
+   * (reported as Ctrl + wheel). A plain mouse wheel zooms the endless canvas;
+   * its scrollbars handle panning.
    */
   useEffect(() => {
     const node = scrollRef.current;
@@ -1206,11 +1341,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
 
     // Desktop pinch arrives as a ctrl/meta wheel gesture from the trackpad.
+    // On the endless canvas a plain wheel zooms around the pointer as well,
+    // because its scrollbars are the panning surface.
     const onWheel = (event: WheelEvent) => {
       stopCoast();
-      if (!event.ctrlKey && !event.metaKey) return;
+      const pinch = event.ctrlKey || event.metaKey;
+      if (!pinch && !isCanvas) return;
       event.preventDefault();
-      const factor = Math.exp(-event.deltaY * 0.0025);
+      const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+      const factor = Math.exp(-delta * (pinch ? 0.0025 : 0.0015));
       applyZoom(zoomRef.current * factor, { x: event.clientX, y: event.clientY });
     };
 
@@ -1231,32 +1370,41 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       stopCoast();
       stopPanMomentum.current = null;
     };
-  }, [abortActiveCanvasDrag, applyZoom, clearTouchTap]);
+  }, [abortActiveCanvasDrag, applyZoom, clearTouchTap, isCanvas]);
 
   /**
    * Rotates the sheet. Ink drawn on a wider page is scaled down so switching
    * between landscape and portrait never hides strokes off the right edge.
+   * The endless canvas never shrinks ink, so entering it keeps everything.
    */
   const changePageLayout = useCallback(
     (next: PageLayout) => {
       if (next === pageLayout) return;
 
-      const nextSize = getPageSize(next);
-      const bounds = getStrokesBounds(strokesRef.current);
-      const contentRight = bounds ? bounds.x + bounds.width : 0;
-      if (contentRight > nextSize.width) {
-        const factor = nextSize.width / contentRight;
-        commitStrokes(
-          strokesRef.current.map((stroke) => ({
-            ...stroke,
-            points: stroke.points.map((point) => ({
-              ...point,
-              x: point.x * factor,
-              y: point.y * factor
+      if (next !== 'canvas') {
+        const nextSize = getPageSize(next);
+        const bounds = getStrokesBounds(strokesRef.current);
+        const contentRight = bounds ? bounds.x + bounds.width : 0;
+        if (contentRight > nextSize.width) {
+          const factor = nextSize.width / contentRight;
+          commitStrokes(
+            strokesRef.current.map((stroke) => ({
+              ...stroke,
+              points: stroke.points.map((point) => ({
+                ...point,
+                x: point.x * factor,
+                y: point.y * factor
+              }))
             }))
-          }))
-        );
-        setSelection([]);
+          );
+          setSelection([]);
+        }
+      }
+
+      // Switching to or from the endless workspace returns to a familiar scale.
+      if (next === 'canvas' || pageLayout === 'canvas') {
+        zoomRef.current = 1;
+        setZoom(1);
       }
 
       onChangePageLayout?.(next);
@@ -1270,6 +1418,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   useEffect(() => {
     if (normalizedNoteRef.current === noteId) return;
     normalizedNoteRef.current = noteId;
+    if (isCanvas) return;
     const bounds = getStrokesBounds(strokesRef.current);
     const contentRight = bounds ? bounds.x + bounds.width : 0;
     if (contentRight <= pageSize.width) return;
@@ -1284,7 +1433,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         }))
       }))
     );
-  }, [noteId, pageSize.width, commitStrokes]);
+  }, [noteId, pageSize.width, isCanvas, commitStrokes]);
 
   /**
    * Converts a client point to page CSS pixels. The sheet is CSS-scaled for
@@ -1710,10 +1859,24 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     return { ...point, x: local.x - offset.x, y: local.y - offset.y };
   };
 
-  const getInsertionPosition = (): InsertionPosition => insertionPoint ?? {
-    x: pageSize.width / 2,
-    y: Math.max(pageHeight, pageSize.height) / 2,
-    centered: true,
+  const getInsertionPosition = (): InsertionPosition => {
+    if (insertionPoint) return insertionPoint;
+    if (isCanvas) {
+      const scroll = scrollRef.current;
+      if (scroll) {
+        const currentZoom = zoomRef.current || 1;
+        return {
+          x: (scroll.scrollLeft + scroll.clientWidth / 2) / currentZoom,
+          y: (scroll.scrollTop + scroll.clientHeight / 2) / currentZoom,
+          centered: true,
+        };
+      }
+    }
+    return {
+      x: pageSize.width / 2,
+      y: Math.max(pageHeight, pageSize.height) / 2,
+      centered: true,
+    };
   };
 
   const insertTextBox = () => {
@@ -2381,12 +2544,21 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     return <rect x={x} y={y} width={width} height={height} {...common} />;
   };
 
-  const textLayerStyle: React.CSSProperties | undefined = isIdentityTextBlockLayout(textBlockLayout)
-    ? undefined
-    : {
-        transformOrigin: '0 0',
-        transform: `translate(${textBlockLayout.x}px, ${textBlockLayout.y}px) rotate(${textBlockLayout.rotation}rad) scale(${textBlockLayout.scale})`
-      };
+  const textLayerStyle: React.CSSProperties = {
+    ...(isIdentityTextBlockLayout(textBlockLayout) ? {} : {
+      transformOrigin: '0 0',
+      transform: `translate(${textBlockLayout.x}px, ${textBlockLayout.y}px) rotate(${textBlockLayout.rotation}rad) scale(${textBlockLayout.scale})`
+    }),
+    // On the endless canvas the text stays in a readable column anchored near
+    // the origin, leaving blank workspace around it for ink. The inset is
+    // padding rather than margin so page-space measurements (selection frame,
+    // hit testing) include it: object offsets are relative to the padding edge.
+    ...(isCanvas ? {
+      width: CANVAS_TEXT_WIDTH + CANVAS_TEXT_INSET,
+      paddingTop: CANVAS_TEXT_INSET,
+      paddingLeft: CANVAS_TEXT_INSET,
+    } : {})
+  };
 
   const saveObjects = () => {
     textEditor?.current?.savePageObjects();
@@ -2621,15 +2793,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           })}
           onScroll={() => {
             if (hoverKey.current && !transformDragRef.current) setSelection([]);
+            extendCanvasAtEdge();
           }}
         >
           <div className="note-desk-inner py-4 sm:py-8"
-            style={{ minWidth: `calc(${pageSize.width * zoom}px + 2 * var(--note-desk-gutter))` }}>
+            style={{ minWidth: `calc(${sheetWidth * zoom}px + 2 * var(--note-desk-gutter))` }}>
             <div
               className="relative mx-auto"
               style={{
-                width: `${pageSize.width * zoom}px`,
-                height: `${Math.max(pageHeight, pageSize.height) * zoom}px`
+                width: `${sheetWidth * zoom}px`,
+                height: `${sheetHeight * zoom}px`
               }}
             >
               {/* Scale from a zero-sized box so the scroll area follows the visible paper. */}
@@ -2656,7 +2829,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                   }}
                   onDrop={(event) => void handlePictureDrop(event)}
                   className="note-paper relative"
-                  style={{ width: `${pageSize.width}px`, minHeight: `${pageSize.height}px` }}
+                  data-layout={pageLayout}
+                  style={{ width: `${sheetWidth}px`, minHeight: `${sheetMinHeight}px` }}
                 >
                   <canvas
                     ref={backgroundCanvasRef}
@@ -2741,7 +2915,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                 </div>
               </div>
             </div>
-            {pageControls && <div className="note-page-footer">{pageControls}</div>}
+            {pageControls && !isCanvas && <div className="note-page-footer">{pageControls}</div>}
           </div>
         </div>
 
@@ -2785,6 +2959,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
         {/* Overlays that stay put while the page scrolls. */}
         <div className="pointer-events-none absolute inset-0 z-40">
+        {/* The endless canvas has no sheet footer, so its page bar floats. */}
+        {isCanvas && pageControls && (
+          <div className="pointer-events-auto absolute left-1/2 top-3 z-20 -translate-x-1/2">
+            {pageControls}
+          </div>
+        )}
         <div className="pointer-events-auto absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1" data-ink-ui="stylus-status">
           <button
             type="button"
@@ -2902,8 +3082,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           <button
             type="button"
             onClick={fitPageWidth}
-            title="Fit page width"
-            aria-label="Fit page width"
+            title={isCanvas ? 'Fit canvas content' : 'Fit page width'}
+            aria-label={isCanvas ? 'Fit canvas content' : 'Fit page width'}
             className="flex h-8 w-8 items-center justify-center rounded-xl text-ink-light transition hover:bg-surface-subtle-light active:scale-95 dark:text-ink-dark dark:hover:bg-surface-subtle-dark"
           >
             <Maximize2 className="w-4 h-4" />
