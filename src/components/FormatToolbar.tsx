@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AlignCenter, AlignJustify, AlignLeft, AlignRight, Bold, ChevronDown, ClipboardPaste,
   Copy, Eraser, IndentDecrease, IndentIncrease, Italic, List, ListOrdered, Minus,
@@ -10,6 +10,7 @@ import { ColorPalette } from './ColorPalette';
 interface FormatToolbarProps {
   onApplyFormat: (command: string, value?: string) => void;
   compact?: boolean;
+  quickActions?: ReactNode;
 }
 
 const FONT_FAMILIES = ['Arial', 'Georgia', 'Segoe UI', 'Times New Roman', 'Verdana', 'Courier New'];
@@ -17,7 +18,7 @@ const FONT_SIZES = [
   ['1', '8'], ['2', '10'], ['3', '12'], ['4', '14'], ['5', '18'], ['6', '24'], ['7', '36'],
 ];
 
-export function FormatToolbar({ onApplyFormat, compact = false }: FormatToolbarProps) {
+export function FormatToolbar({ onApplyFormat, compact = false, quickActions }: FormatToolbarProps) {
   const [showColors, setShowColors] = useState(false);
   const toolbar = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -44,6 +45,18 @@ export function FormatToolbar({ onApplyFormat, compact = false }: FormatToolbarP
       <Icon size={16} />
     </button>
   );
+
+  if (quickActions) {
+    return (
+      <div className="phone-format-quick" aria-label="Quick formatting">
+        {command(Bold, 'Bold', 'bold')}
+        {command(Italic, 'Italic', 'italic')}
+        {command(List, 'Bullets', 'insertUnorderedList')}
+        {command(ListOrdered, 'Numbering', 'insertOrderedList')}
+        {quickActions}
+      </div>
+    );
+  }
 
   return (
     <div

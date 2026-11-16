@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import {
-  AlignJustify, ArrowRight, ChevronDown, ChevronUp, Circle, FileText, Grid3x3, Image, Infinity as InfinityIcon,
-  RectangleHorizontal, RectangleVertical, Spline, Square, Table2, Type,
+  AlignJustify, ArrowRight, ChevronDown, ChevronUp, Circle, Ellipsis, FileText, Grid3x3, Image, Infinity as InfinityIcon,
+  Maximize2, Pencil, Plus, RectangleHorizontal, RectangleVertical, Spline, Square, Table2, Type,
 } from 'lucide-react';
 import { ArrowKind, InkBackground, PageLayout } from '../types/note';
 import { INK_BACKGROUNDS, PAGE_COLORS } from '../utils/inkBackground';
@@ -26,9 +26,13 @@ const PAGE_LAYOUTS = [
 
 interface NoteRibbonProps {
   editor: RefObject<TextEditorRef | null>;
+  isPhone?: boolean;
   notesMenuButton?: ReactNode;
   enableText: () => void;
   onFocusText: () => void;
+  onFinishText: () => void;
+  onStartDrawing: () => void;
+  onFitWidth: () => void;
   onInsertTextBox: () => void;
   onInsertTable: (rows: number, columns: number) => void;
   onInsertPicture: (file: File) => void;
@@ -51,7 +55,10 @@ interface NoteRibbonProps {
 }
 
 export function NoteRibbon({
-  editor, notesMenuButton, enableText, onFocusText, onInsertTextBox, onInsertTable, onInsertPicture, arrowMode, onArrowMode, textActive, drawRequest, drawingTools, orientation, background, pageColor, onOrientationChange, onBackgroundChange, onPageColorChange, selection, keyboardOpen = false, textEditing = false,
+  editor, isPhone = false, notesMenuButton, enableText, onFocusText, onFinishText, onStartDrawing, onFitWidth,
+  onInsertTextBox, onInsertTable, onInsertPicture, arrowMode, onArrowMode, textActive, drawRequest, drawingTools,
+  orientation, background, pageColor, onOrientationChange, onBackgroundChange, onPageColorChange,
+  selection, keyboardOpen = false, textEditing = false,
 }: NoteRibbonProps) {
   const id = useId();
   const [standardTab, setStandardTab] = useState<StandardTab>('Insert');
@@ -60,15 +67,23 @@ export function NoteRibbon({
   const [previousEditing, setPreviousEditing] = useState(textEditing);
   const [previousDrawRequest, setPreviousDrawRequest] = useState(drawRequest);
   const [tabOverride, setTabOverride] = useState<RibbonTab>();
+  const [phonePanel, setPhonePanel] = useState<'tools' | 'more'>();
   if (target !== previousTarget || textEditing !== previousEditing || drawRequest !== previousDrawRequest) {
     setPreviousTarget(target);
     setPreviousEditing(textEditing);
     setPreviousDrawRequest(drawRequest);
-    if (drawRequest !== previousDrawRequest) setStandardTab('Draw');
+    if (drawRequest !== previousDrawRequest) {
+      setStandardTab('Draw');
+      if (isPhone) setPhonePanel('tools');
+    }
     setTabOverride(undefined);
   }
   const tabs: readonly RibbonTab[] = selection ? [...TABS, selection.tab] : TABS;
-  const tab = tabOverride ?? (textEditing ? 'Home' : selection?.tab ?? standardTab);
+  const showHeader = !isPhone || phonePanel === 'more';
+  const typingOnPhone = isPhone && keyboardOpen && textEditing;
+  const quickFormat = typingOnPhone && !showHeader;
+  const tab = quickFormat ? 'Home' : tabOverride ?? (textEditing ? 'Home' : selection?.tab ?? standardTab);
+  const showPanel = !isPhone || !!phonePanel || quickFormat || tab === selection?.tab;
   const activeTab = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     if (activeTab.current) {
@@ -79,9 +94,9 @@ export function NoteRibbon({
         list.scrollLeft = button.offsetLeft + button.offsetWidth - list.clientWidth;
       }
     }
-  }, [tab]);
+  }, [tab, showHeader]);
   const [preferCompact, setPreferCompact] = useState(true);
-  const compact = keyboardOpen || preferCompact;
+  const compact = isPhone || keyboardOpen || preferCompact;
   const [showTable, setShowTable] = useState(false);
   const [message, setMessage] = useState('');
   const pictureInput = useRef<HTMLInputElement>(null);
@@ -111,10 +126,39 @@ export function NoteRibbon({
     setShowTable(false);
   };
 
+  const togglePhoneTools = (next: 'Draw' | 'Insert') => {
+    if (phonePanel === 'tools' && tab === next) {
+      setPhonePanel(undefined);
+      setShowTable(false);
+      return;
+    }
+    setPhonePanel('tools');
+    selectTab(next);
+    if (next === 'Draw') onStartDrawing();
+  };
+
+  const phoneMoreButton = (
+    <button type="button" className="phone-editor-action" aria-expanded={showHeader}
+      aria-label={typingOnPhone ? 'More formatting' : 'More tools'} onMouseDown={(event) => event.preventDefault()}
+      onClick={() => {
+        setPhonePanel(phonePanel === 'more' ? undefined : 'more');
+        if (typingOnPhone) selectTab('Home');
+        else setShowTable(false);
+      }}><Ellipsis size={20} /> {!typingOnPhone && 'More'}</button>
+  );
+  const phoneDoneButton = (
+    <button type="button" className="phone-editor-action phone-done" onMouseDown={(event) => event.preventDefault()}
+      onClick={() => {
+        setPhonePanel(undefined);
+        onFinishText();
+      }}>Done</button>
+  );
+
   return (
-    <section className="note-ribbon" data-compact={compact} data-keyboard-open={keyboardOpen} aria-label="Note ribbon">
-      <div className="ribbon-header">
-        {notesMenuButton}
+    <section className={`note-ribbon ${isPhone ? 'phone-ribbon' : ''}`} data-compact={compact}
+      data-keyboard-open={keyboardOpen} aria-label="Note ribbon">
+      {showHeader && <div className="ribbon-header">
+        {!isPhone && notesMenuButton}
         <div className="ribbon-tabs" role="tablist" aria-label="Ribbon tabs">
           {tabs.map((name, index) => (
             <button key={name} type="button" role="tab" id={`${id}-tab-${index}`}
@@ -138,26 +182,30 @@ export function NoteRibbon({
           ))}
         </div>
         <div className="ribbon-header-tools">
-          <button type="button" className="ribbon-command"
+          {isPhone ? <button type="button" className="phone-editor-action" title={orientation === 'canvas' ? 'Fit canvas content' : 'Fit page width'}
+            aria-label={orientation === 'canvas' ? 'Fit canvas content' : 'Fit page width'}
+            onClick={onFitWidth}><Maximize2 size={17} /></button> : <button type="button" className="ribbon-command"
             aria-label="Text tool" title="Text tool" aria-pressed={textActive}
             onMouseDown={(event) => event.preventDefault()} onClick={onFocusText}>
             <Type size={16} />
-          </button>
-          {!keyboardOpen && <button type="button" className="ribbon-command ribbon-toggle"
+          </button>}
+          {!isPhone && !keyboardOpen && <button type="button" className="ribbon-command ribbon-toggle"
             onMouseDown={(event) => event.preventDefault()} onClick={() => setPreferCompact(!preferCompact)}
             title={compact ? 'Expand ribbon' : 'Switch to compact ribbon'}
             aria-label={compact ? 'Expand ribbon' : 'Switch to compact ribbon'}>
             {compact ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
           </button>}
         </div>
-      </div>
+      </div>}
 
-      <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-tab-${tabs.indexOf(tab)}`}
+      {showPanel && <div role="tabpanel" id={`${id}-panel`} aria-labelledby={showHeader ? `${id}-tab-${tabs.indexOf(tab)}` : undefined}
+        aria-label={showHeader ? undefined : tab}
         className="ribbon-panel" onKeyDown={(event) => {
           if (event.key === 'Escape') setShowTable(false);
         }}>
         {tab === 'Home' && (
-          <FormatToolbar compact={compact} onApplyFormat={(command, value) =>
+          <FormatToolbar compact={compact} quickActions={quickFormat ? <>{phoneMoreButton}{phoneDoneButton}</> : undefined}
+            onApplyFormat={(command, value) =>
             void edit((current) => current.applyFormat(command, value))} />
         )}
         {tab === 'Insert' && (
@@ -265,7 +313,25 @@ export function NoteRibbon({
         )}
         {tab === 'Draw' && drawingTools}
         {tab === selection?.tab && selection.tools}
-      </div>
+      </div>}
+
+      {isPhone && !quickFormat && (
+        <div className="phone-editor-tools" role="group" aria-label="Editor tools">
+          {typingOnPhone ? <>{phoneMoreButton}{phoneDoneButton}</> : <>
+            <button type="button" className="phone-editor-action" onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setPhonePanel(undefined);
+                selectTab('Home');
+                onFocusText();
+              }}><Type size={19} /> Type</button>
+            <button type="button" className="phone-editor-action" aria-expanded={showPanel && tab === 'Draw'}
+              onClick={() => togglePhoneTools('Draw')}><Pencil size={18} /> Draw</button>
+            <button type="button" className="phone-editor-action" aria-expanded={showPanel && tab === 'Insert'}
+              onMouseDown={(event) => event.preventDefault()} onClick={() => togglePhoneTools('Insert')}><Plus size={21} /> Insert</button>
+            {phoneMoreButton}
+          </>}
+        </div>
+      )}
 
       <input hidden ref={pictureInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp"
         onChange={(event) => {

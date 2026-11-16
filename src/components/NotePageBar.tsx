@@ -1,4 +1,5 @@
-import { ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { useId, useRef } from 'react';
+import { ChevronLeft, ChevronRight, Files, Plus, Trash2, X } from 'lucide-react';
 import type { NotePage } from '../types/note';
 
 interface NotePageBarProps {
@@ -28,5 +29,47 @@ export function NotePageBar({ pages, pageIndex, onSelect, onAdd, onDelete }: Not
           onClick={onDelete}><Trash2 size={15} /></button>
       </div>
     </nav>
+  );
+}
+
+export function PhonePagePicker({ pages, pageIndex, onSelect, onAdd, onDelete }: NotePageBarProps) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+
+  return (
+    <>
+      <button type="button" className="phone-editor-action phone-pages-trigger" aria-haspopup="dialog"
+        aria-label={`Pages, ${pageIndex + 1} of ${pages.length}`} onClick={() => dialog.current?.showModal()}>
+        <Files size={17} /> <span>{pageIndex + 1}/{pages.length}</span>
+      </button>
+      <dialog ref={dialog} className="phone-pages" aria-labelledby={titleId}
+        onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
+        <div className="phone-pages-content">
+          <header>
+            <h2 id={titleId}>Pages</h2>
+            <button type="button" className="phone-editor-action" aria-label="Close pages"
+              onClick={() => dialog.current?.close()}><X size={20} /></button>
+          </header>
+          <ol>
+            {pages.map(({ id }, index) => (
+              <li key={id}>
+                <button type="button" aria-current={index === pageIndex ? 'page' : undefined} onClick={() => {
+                  onSelect(id);
+                  dialog.current?.close();
+                }}>Page {index + 1}</button>
+              </li>
+            ))}
+          </ol>
+          <footer>
+            <button type="button" className="phone-editor-action phone-page-add" onClick={() => {
+              onAdd();
+              dialog.current?.close();
+            }}><Plus size={18} /> Add page</button>
+            <button type="button" className="phone-editor-action" disabled={pages.length < 2}
+              onClick={onDelete}><Trash2 size={17} /> Delete page</button>
+          </footer>
+        </div>
+      </dialog>
+    </>
   );
 }

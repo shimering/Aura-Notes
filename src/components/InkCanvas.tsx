@@ -94,6 +94,7 @@ interface InkCanvasProps {
   onToolChange?: (tool: PenTool) => void;
   onCanvasInteraction?: () => void;
   notesMenuButton?: React.ReactNode;
+  isPhone?: boolean;
   /** The note's typed text, drawn between the back and front ink layers. */
   textLayer?: React.ReactNode;
   pageControls?: React.ReactNode;
@@ -262,6 +263,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   onToolChange,
   onCanvasInteraction,
   notesMenuButton,
+  isPhone = false,
   textLayer,
   pageControls,
   textEditor,
@@ -2986,14 +2988,24 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             setPictureError(error instanceof Error ? error.message : 'Could not replace the image.');
           }
         }} />
-      <div className="relative z-10 shrink-0 pointer-events-auto" data-ink-ui="toolbar-shell">
+      <div className={`relative z-10 shrink-0 pointer-events-auto ${isPhone ? 'phone-toolbar-shell' : ''}`} data-ink-ui="toolbar-shell">
         {textEditor && onChangeBackground ? (
           <NoteRibbon
+            key={isPhone ? noteId : undefined}
             editor={textEditor}
+            isPhone={isPhone}
             notesMenuButton={notesMenuButton}
             textActive={activeTool === 'text'}
             enableText={enableText}
-            onFocusText={focusText}
+            onFocusText={() => {
+              if (isPhone && arrowMode) toggleArrowMode(arrowMode);
+              focusText();
+            }}
+            onFinishText={() => textEditor.current?.finishEditing()}
+            onStartDrawing={() => {
+              if (activeTool === 'text' || activeTool === 'select' || arrowMode) handleManualToolSelect(lastWritingToolRef.current);
+            }}
+            onFitWidth={fitPageWidth}
             onInsertTextBox={insertTextBox}
             onInsertTable={insertTable}
             onInsertPicture={(file) => {

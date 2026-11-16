@@ -60,6 +60,29 @@ describe('note persistence in the workspace', () => {
     return match;
   }
 
+  it('opens the full phone notes list and focuses the title of a new blank note', async () => {
+    vi.stubGlobal('innerWidth', 390);
+    await saveNote(note('existing', 'Existing note'));
+    await mount();
+
+    const list = container.querySelector<HTMLElement>('#notes-sidebar')!;
+    expect(list.hidden).toBe(false);
+    expect(container.querySelector('main')?.hasAttribute('inert')).toBe(true);
+
+    await act(async () => button('Existing note').click());
+    expect(list.hidden).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('main [aria-label="Note title"]')?.value).toBe('Existing note');
+
+    await act(async () => button('Notes').click());
+    expect(list.hidden).toBe(false);
+    await act(async () => button('New note').click());
+    const title = container.querySelector<HTMLInputElement>('main [aria-label="Note title"]')!;
+    expect(list.hidden).toBe(true);
+    expect(document.activeElement).toBe(title);
+    expect(title.selectionEnd).toBe(title.value.length);
+    expect(title.selectionStart).toBe(0);
+  });
+
   it('persists rapid changes to two different notes', async () => {
     await saveNote(note('first'));
     await saveNote(note('second'));
