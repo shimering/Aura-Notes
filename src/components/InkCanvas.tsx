@@ -80,8 +80,11 @@ interface InkCanvasProps {
   onRequestTextFocus?: () => void;
   /** Reports the active tool so the host can reflect it in the text sheet. */
   onToolChange?: (tool: PenTool) => void;
+  onCanvasInteraction?: () => void;
+  notesMenuButton?: React.ReactNode;
   /** The note's typed text, drawn between the back and front ink layers. */
   textLayer?: React.ReactNode;
+  pageControls?: React.ReactNode;
   textEditor?: React.RefObject<TextEditorRef | null>;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
@@ -238,7 +241,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   onFingerTap,
   onRequestTextFocus,
   onToolChange,
+  onCanvasInteraction,
+  notesMenuButton,
   textLayer,
+  pageControls,
   textEditor,
   background = 'none',
   onChangeBackground,
@@ -259,7 +265,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // Ink assigned to the note's back layer is painted on this canvas, behind the text.
   const backCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const pageRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // ---- Page sheet: A4 size, orientation and zoom -------------------------
@@ -938,7 +943,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    */
   const applyZoom = useCallback((nextZoom: number, focal?: Point, target = focal) => {
     const clamped = clampPageZoom(nextZoom);
-    const page = pageRef.current;
+    const page = containerRef.current;
     const current = zoomRef.current || 1;
 
     if (focal && target && page) {
@@ -964,7 +969,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   useLayoutEffect(() => {
     const anchor = zoomAnchorRef.current;
     zoomAnchorRef.current = null;
-    const page = pageRef.current;
+    const page = containerRef.current;
     const scroll = scrollRef.current;
     if (!anchor || !page || !scroll) return;
 
@@ -2495,6 +2500,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         {textEditor && onChangeBackground ? (
           <NoteRibbon
             editor={textEditor}
+            notesMenuButton={notesMenuButton}
             textActive={activeTool === 'text'}
             enableText={enableText}
             onInsertTextBox={startTextBox}
@@ -2526,27 +2532,31 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           ref={scrollRef}
           className="note-desk absolute inset-0 overflow-auto"
           data-ink-ui="page-viewport"
+          onPointerUpCapture={onCanvasInteraction && ((event) => {
+            if (event.isPrimary && event.button === 0 && !isInkUiTarget(event.target)) onCanvasInteraction();
+          })}
+          onInputCapture={onCanvasInteraction && ((event) => {
+            if (event.target instanceof Element && event.target.closest('[data-note-editor] [contenteditable="true"]')) {
+              onCanvasInteraction();
+            }
+          })}
           onScroll={() => {
             if (hoverKey.current && !transformDragRef.current) setSelection([]);
           }}
         >
-          <div className="note-desk-inner px-3 py-4 sm:px-6 sm:py-8">
+          <div className="note-desk-inner py-4 sm:py-8"
+            style={{ minWidth: `calc(${pageSize.width * zoom}px + 2 * var(--note-desk-gutter))` }}>
             <div
-              className="mx-auto"
+              className="relative mx-auto"
               style={{
                 width: `${pageSize.width * zoom}px`,
                 height: `${Math.max(pageHeight, pageSize.height) * zoom}px`
               }}
             >
+              {/* Scale from a zero-sized box so the scroll area follows the visible paper. */}
               <div
-                ref={pageRef}
-                className="note-paper relative"
-                style={{
-                  width: `${pageSize.width}px`,
-                  minHeight: `${pageSize.height}px`,
-                  transform: `scale(${zoom})`,
-                  transformOrigin: 'top left'
-                }}
+                className="note-paper-scale absolute left-0 top-0 size-0"
+                style={{ transform: `scale(${zoom})` }}
               >
                 <div
                   ref={containerRef}
@@ -2566,8 +2576,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                     event.dataTransfer.dropEffect = 'copy';
                   }}
                   onDrop={(event) => void handlePictureDrop(event)}
-                  className="relative w-full"
-                  style={{ minHeight: `${pageSize.height}px` }}
+                  className="note-paper relative"
+                  style={{ width: `${pageSize.width}px`, minHeight: `${pageSize.height}px` }}
                 >
                   <canvas
                     ref={backgroundCanvasRef}
@@ -2643,6 +2653,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                 </div>
               </div>
             </div>
+            {pageControls && <div className="note-page-footer">{pageControls}</div>}
           </div>
         </div>
 

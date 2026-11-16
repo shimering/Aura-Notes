@@ -7,8 +7,8 @@ import {
   Trash2, 
   PenTool as PenIcon, 
   Tag, 
-  FileText,
-  ChevronLeft,
+  FileDown,
+  Settings,
   X,
   Download,
   Cloud,
@@ -18,6 +18,7 @@ import {
 import { NOTE_TEMPLATES } from '../utils/templates';
 import { sanitizeNoteHtml } from '../utils/noteHtml';
 import { notePages } from '../utils/notePages';
+import { TagEditor } from './TagEditor';
 
 interface SidebarProps {
   notes: Note[];
@@ -26,6 +27,12 @@ interface SidebarProps {
   onCreateNote: (templateId?: string) => void;
   onDeleteNote: (id: string) => void;
   onTogglePin: (id: string) => void;
+  onUpdateTitle: (title: string) => void;
+  onUpdateTags: (tags: string[]) => void;
+  onExport: () => void;
+  onOpenSettings: () => void;
+  isSaving: boolean;
+  isSyncing: boolean;
   isOpen: boolean;
   onToggleOpen: () => void;
   onDownloadApp?: () => void;
@@ -42,6 +49,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCreateNote,
   onDeleteNote,
   onTogglePin,
+  onUpdateTitle,
+  onUpdateTags,
+  onExport,
+  onOpenSettings,
+  isSaving,
+  isSyncing,
   isOpen,
   onToggleOpen,
   onDownloadApp,
@@ -53,7 +66,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [isTemplateMenuOpen, setIsTemplateMenuOpen] = useState(false);
+  const [tagEditorNoteId, setTagEditorNoteId] = useState<string>();
   const templateMenuRef = useRef<HTMLDivElement>(null);
+  const activeNote = notes.find(({ id }) => id === activeNoteId);
 
   useEffect(() => {
     if (!isTemplateMenuOpen) return;
@@ -109,6 +124,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       <aside
+        id="notes-sidebar"
+        aria-label="Notes list"
+        inert={!isOpen}
         className={`fixed md:relative bottom-0 top-[var(--app-safe-top)] md:top-auto left-0 z-40 flex-shrink-0 flex flex-col bg-surface-light dark:bg-surface-dark border-surface-subtle-light dark:border-surface-subtle-dark transition-all duration-300 ease-in-out overflow-hidden ${
           isOpen 
             ? 'w-80 border-r translate-x-0 opacity-100' 
@@ -185,12 +203,45 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <button
               onClick={onToggleOpen}
+              aria-label="Close notes list"
               className="p-2 rounded-xl text-ink-muted-light hover:text-ink-light dark:text-ink-muted-dark dark:hover:text-ink-dark md:hidden"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
         </div>
+
+        {isOpen && activeNote && (
+          <details key={activeNote.id}
+            className="mx-3 mb-2 rounded-xl bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60"
+            onToggle={(event) => {
+              if (!event.currentTarget.open) setTagEditorNoteId(undefined);
+            }}>
+            <summary className="cursor-pointer px-3 py-2 text-xs font-semibold">
+              Note actions
+              {isSaving && <span className="float-right font-normal" role="status">Saving…</span>}
+            </summary>
+            <div className="space-y-2 px-3 pb-3">
+              <input aria-label="Note title" type="text" value={activeNote.title} placeholder="Untitled Note"
+                onChange={(event) => onUpdateTitle(event.target.value)}
+                className="w-full rounded-lg border border-surface-subtle-light bg-surface-light px-2 py-1.5 text-sm dark:border-surface-subtle-dark dark:bg-surface-dark" />
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="ribbon-command" aria-expanded={tagEditorNoteId === activeNote.id}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={() => setTagEditorNoteId(tagEditorNoteId === activeNote.id ? undefined : activeNote.id)}>
+                  <Tag size={14} /> Tags
+                </button>
+                <button type="button" className="ribbon-command" onClick={onExport}>
+                  <FileDown size={14} /> Export note
+                </button>
+              </div>
+              {tagEditorNoteId === activeNote.id && (
+                <TagEditor tags={activeNote.tags ?? []} allTags={allTags} onChange={onUpdateTags}
+                  onClose={() => setTagEditorNoteId(undefined)} />
+              )}
+            </div>
+          </details>
+        )}
 
         {/* Search Bar */}
         <div className="p-3">
@@ -318,8 +369,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
-        {/* Sidebar Footer with Sync & Download App shortcuts */}
+        {/* App shortcuts */}
         <div className="p-3 border-t border-surface-subtle-light dark:border-surface-subtle-dark flex-shrink-0 space-y-1.5">
+          <button type="button" onClick={onOpenSettings} aria-label="Open settings"
+            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-xl bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60 text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark border border-surface-subtle-light dark:border-surface-subtle-dark transition active:scale-95">
+            <Settings size={14} />
+            Settings
+          </button>
           {onOpenSync && (
             <button
               onClick={onOpenSync}
@@ -328,7 +384,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="flex items-center gap-2">
                 <Cloud className={`w-3.5 h-3.5 ${accountSyncActive || syncVaultKey ? 'text-emerald-500' : 'text-violet-500'}`} />
                 <span>
-                  {accountSyncActive
+                  {isSyncing
+                    ? 'Syncing notes…'
+                    : accountSyncActive
                     ? 'Account Sync: Active'
                     : syncVaultKey
                       ? 'Cross-Device Sync: Active'

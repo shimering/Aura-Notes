@@ -29,22 +29,21 @@ export function FormatToolbar({ onApplyFormat, compact = false }: FormatToolbarP
     return () => document.removeEventListener('pointerdown', dismiss);
   }, [showColors]);
 
-  const command = (Icon: LucideIcon, label: string, name: string, expandedOnly = false) =>
-    (!compact || !expandedOnly) && (
-      <button
-        type="button"
-        className="ribbon-command"
-        title={label}
-        aria-label={label}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={() => {
-          setShowColors(false);
-          onApplyFormat(name);
-        }}
-      >
-        <Icon size={16} />
-      </button>
-    );
+  const command = (Icon: LucideIcon, label: string, name: string) => (
+    <button
+      type="button"
+      className="ribbon-command"
+      title={label}
+      aria-label={label}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => {
+        setShowColors(false);
+        onApplyFormat(name);
+      }}
+    >
+      <Icon size={16} />
+    </button>
+  );
 
   return (
     <div
@@ -57,21 +56,19 @@ export function FormatToolbar({ onApplyFormat, compact = false }: FormatToolbarP
         if (event.key === 'Escape') setShowColors(false);
       }}
     >
-      {!compact && (
-        <div className="ribbon-group">
-          <div className="ribbon-row">
-            <button type="button" className="ribbon-command ribbon-large-command"
-              onMouseDown={(event) => event.preventDefault()} onClick={() => onApplyFormat('paste')}>
-              <ClipboardPaste size={21} /> Paste
-            </button>
-            <div className="ribbon-stack">
-              {command(Scissors, 'Cut', 'cut')}
-              {command(Copy, 'Copy', 'copy')}
-            </div>
+      <div className="ribbon-group">
+        <div className="ribbon-row">
+          <button type="button" className="ribbon-command ribbon-large-command"
+            onMouseDown={(event) => event.preventDefault()} onClick={() => onApplyFormat('paste')}>
+            <ClipboardPaste size={21} /> Paste
+          </button>
+          <div className="ribbon-stack">
+            {command(Scissors, 'Cut', 'cut')}
+            {command(Copy, 'Copy', 'copy')}
           </div>
-          <span className="ribbon-group-label">Clipboard</span>
         </div>
-      )}
+        {!compact && <span className="ribbon-group-label">Clipboard</span>}
+      </div>
       <div className="ribbon-group">
         <div className="ribbon-row">
           <select className="ribbon-select ribbon-font" aria-label="Font family" value=""
@@ -95,15 +92,15 @@ export function FormatToolbar({ onApplyFormat, compact = false }: FormatToolbarP
           {command(Bold, 'Bold', 'bold')}
           {command(Italic, 'Italic', 'italic')}
           {command(Underline, 'Underline', 'underline')}
-          {command(Strikethrough, 'Strikethrough', 'strikeThrough', true)}
-          {command(Subscript, 'Subscript', 'subscript', true)}
-          {command(Superscript, 'Superscript', 'superscript', true)}
+          {command(Strikethrough, 'Strikethrough', 'strikeThrough')}
+          {command(Subscript, 'Subscript', 'subscript')}
+          {command(Superscript, 'Superscript', 'superscript')}
           <button type="button" className="ribbon-command" aria-label="Text color and highlight"
             title="Text color and highlight" aria-expanded={showColors}
             onMouseDown={(event) => event.preventDefault()} onClick={() => setShowColors(!showColors)}>
             <Palette size={16} /><ChevronDown size={11} />
           </button>
-          {command(Eraser, 'Clear formatting', 'removeFormat', true)}
+          {command(Eraser, 'Clear formatting', 'removeFormat')}
         </div>
         {!compact && <span className="ribbon-group-label">Font</span>}
       </div>
@@ -111,9 +108,9 @@ export function FormatToolbar({ onApplyFormat, compact = false }: FormatToolbarP
         <div className="ribbon-row">
           {command(List, 'Bullets', 'insertUnorderedList')}
           {command(ListOrdered, 'Numbering', 'insertOrderedList')}
-          {command(IndentDecrease, 'Decrease indent', 'outdent', true)}
-          {command(IndentIncrease, 'Increase indent', 'indent', true)}
-          {command(Minus, 'Horizontal divider', 'insertHorizontalRule', true)}
+          {command(IndentDecrease, 'Decrease indent', 'outdent')}
+          {command(IndentIncrease, 'Increase indent', 'indent')}
+          {command(Minus, 'Horizontal divider', 'insertHorizontalRule')}
         </div>
         <div className="ribbon-row">
           {command(AlignLeft, 'Align left', 'justifyLeft')}
@@ -123,23 +120,23 @@ export function FormatToolbar({ onApplyFormat, compact = false }: FormatToolbarP
         </div>
         {!compact && <span className="ribbon-group-label">Paragraph</span>}
       </div>
-      {!compact && (
-        <div className="ribbon-group">
+      <div className="ribbon-group">
+        {!compact && (
           <div className="ribbon-row">
             {command(Undo2, 'Undo text edit', 'undo')}
             {command(Redo2, 'Redo text edit', 'redo')}
           </div>
-          <div className="ribbon-row">
-            {([['Body text', 'p'], ['Heading 1', 'h1'], ['Heading 2', 'h2'], ['Quote', 'blockquote']]).map(([label, tag]) => (
-              <button type="button" key={tag} className={`ribbon-command ribbon-style ribbon-style-${tag}`}
-                onMouseDown={(event) => event.preventDefault()} onClick={() => onApplyFormat('formatBlock', tag)}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <span className="ribbon-group-label">Styles</span>
+        )}
+        <div className="ribbon-row">
+          {([['Body text', 'p'], ['Heading 1', 'h1'], ['Heading 2', 'h2'], ['Quote', 'blockquote']]).map(([label, tag]) => (
+            <button type="button" key={tag} className={`ribbon-command ribbon-style ribbon-style-${tag}`}
+              onMouseDown={(event) => event.preventDefault()} onClick={() => onApplyFormat('formatBlock', tag)}>
+              {label}
+            </button>
+          ))}
         </div>
-      )}
+        {!compact && <span className="ribbon-group-label">Styles</span>}
+      </div>
       {showColors && (
         <div className="ribbon-popover">
           <ColorPalette

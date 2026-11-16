@@ -69,7 +69,7 @@ export const TagEditor: React.FC<TagEditorProps> = ({ tags, allTags, onChange, o
   return (
     <div
       ref={panelRef}
-      className="absolute top-full left-0 mt-2 z-50 w-72 p-3 rounded-2xl bg-surface-light dark:bg-surface-dark border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating animate-in fade-in slide-in-from-top-1"
+      className="p-3 rounded-xl bg-surface-light dark:bg-surface-dark border border-surface-subtle-light dark:border-surface-subtle-dark"
     >
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-ink-light dark:text-ink-dark flex items-center gap-1.5">
@@ -120,7 +120,7 @@ export const TagEditor: React.FC<TagEditorProps> = ({ tags, allTags, onChange, o
           onChange={(e) => setInput(e.target.value)}
           placeholder="Add a tag..."
           maxLength={MAX_TAG_LENGTH}
-          className="flex-1 px-2.5 py-1.5 rounded-lg bg-surface-subtle-light dark:bg-surface-subtle-dark border-none outline-none focus:ring-2 focus:ring-violet-500 text-xs text-ink-light dark:text-ink-dark"
+          className="min-w-0 flex-1 px-2.5 py-1.5 rounded-lg bg-surface-subtle-light dark:bg-surface-subtle-dark border-none outline-none focus:ring-2 focus:ring-violet-500 text-xs text-ink-light dark:text-ink-dark"
         />
         <button
           type="submit"

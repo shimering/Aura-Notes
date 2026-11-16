@@ -1,5 +1,6 @@
-import { ViewMode } from '../components/Header';
 import { EraserMode, PenTool } from './note';
+
+type ViewMode = 'text' | 'ink';
 
 export interface AppSettings {
   theme: 'light' | 'dark';

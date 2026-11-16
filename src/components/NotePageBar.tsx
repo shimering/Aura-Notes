@@ -11,7 +11,7 @@ interface NotePageBarProps {
 
 export function NotePageBar({ pages, pageIndex, onSelect, onAdd, onDelete }: NotePageBarProps) {
   return (
-    <nav className="note-page-bar" aria-label="Note pages">
+    <nav className="note-page-bar" aria-label="Note pages" data-ink-ui="page-controls">
       <div className="note-page-navigation">
         <button type="button" aria-label="Previous page" title="Previous page" disabled={pageIndex === 0}
           onClick={() => onSelect(pages[pageIndex - 1].id)}><ChevronLeft size={15} /></button>

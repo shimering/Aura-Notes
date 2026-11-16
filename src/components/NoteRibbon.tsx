@@ -25,6 +25,7 @@ const ORIENTATIONS = [
 
 interface NoteRibbonProps {
   editor: RefObject<TextEditorRef | null>;
+  notesMenuButton?: ReactNode;
   enableText: () => void;
   onInsertTextBox: () => void;
   onInsertTable: (box: HTMLElement) => void;
@@ -41,7 +42,7 @@ interface NoteRibbonProps {
 }
 
 export function NoteRibbon({
-  editor, enableText, onInsertTextBox, onInsertTable, textActive, drawRequest, drawingTools, orientation, background, onOrientationChange, onBackgroundChange, selection, keyboardOpen = false, textEditing = false,
+  editor, notesMenuButton, enableText, onInsertTextBox, onInsertTable, textActive, drawRequest, drawingTools, orientation, background, onOrientationChange, onBackgroundChange, selection, keyboardOpen = false, textEditing = false,
 }: NoteRibbonProps) {
   const id = useId();
   const [standardTab, setStandardTab] = useState<StandardTab>('Insert');
@@ -70,7 +71,7 @@ export function NoteRibbon({
       }
     }
   }, [tab]);
-  const [preferCompact, setPreferCompact] = useState(() => window.matchMedia?.('(max-width: 640px)').matches ?? false);
+  const [preferCompact, setPreferCompact] = useState(true);
   const compact = keyboardOpen || preferCompact;
   const [showTable, setShowTable] = useState(false);
   const [message, setMessage] = useState('');
@@ -105,6 +106,7 @@ export function NoteRibbon({
   return (
     <section className="note-ribbon" data-compact={compact} data-keyboard-open={keyboardOpen} aria-label="Note ribbon">
       <div className="ribbon-header">
+        {notesMenuButton}
         <div className="ribbon-tabs" role="tablist" aria-label="Ribbon tabs">
           {tabs.map((name, index) => (
             <button key={name} type="button" role="tab" id={`${id}-tab-${index}`}

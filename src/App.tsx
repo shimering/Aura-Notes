@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Menu } from 'lucide-react';
 import { Note, NotePageData, Stroke, InkBackground, PenTool, PageLayout } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
@@ -21,7 +22,6 @@ import {
 } from './services/authService';
 import { AccountSyncError, syncAccountNotes } from './services/accountSyncService';
 import { watchAccountChanges, watchVaultChanges } from './services/liveSyncService';
-import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { TextEditor, TextEditorRef } from './components/TextEditor';
 import { InkCanvas, InkCanvasRef } from './components/InkCanvas';
@@ -398,9 +398,6 @@ export default function App() {
   const pageIndex = Math.max(0, pages.findIndex((page) => pageSelection?.noteId === activeNoteId && page.id === pageSelection.pageId));
   const activePage = pages[pageIndex];
   const surfaceId = activeNote && activePage ? JSON.stringify([activeNote.id, activePage.id]) : '';
-  const allTags = Array.from(new Set(notes.flatMap((n) => n.tags || []))).sort((a, b) =>
-    a.localeCompare(b)
-  );
 
   const persistLocalEdit = useCallback((note: Note) => {
     if (deletingNotes.current.has(note.id)) return;
@@ -611,7 +608,7 @@ export default function App() {
     }
   };
 
-  // Manual Trigger Sync from Sync Modal or Header
+  // Manual sync from the sync dialog
   const handleManualSync = async (vaultKey: string) => {
     if (accountRef.current) {
       // Account sync replaces vault-key sync while signed in.
@@ -804,6 +801,20 @@ export default function App() {
     );
   }
 
+  const toggleSidebar = () => {
+    const next = !isSidebarOpen;
+    setIsSidebarOpen(next);
+    void saveSettings({ isSidebarOpen: next });
+  };
+  const notesMenuButton = (
+    <button type="button" className="ribbon-command shrink-0"
+      title={isSidebarOpen ? 'Hide notes list' : 'Show notes list'}
+      aria-label="Notes list" aria-controls="notes-sidebar" aria-expanded={isSidebarOpen}
+      onMouseDown={(event) => event.preventDefault()} onClick={toggleSidebar}>
+      <Menu size={17} />
+    </button>
+  );
+
   return (
     <div className="h-full w-full flex bg-canvas-light dark:bg-canvas-dark text-ink-light dark:text-ink-dark overflow-hidden font-sans select-none">
       {/* Collapsible Note Sidebar */}
@@ -815,11 +826,13 @@ export default function App() {
         onDeleteNote={handleDeleteNote}
         onTogglePin={handleTogglePin}
         isOpen={isSidebarOpen}
-        onToggleOpen={() => {
-          const next = !isSidebarOpen;
-          setIsSidebarOpen(next);
-          saveSettings({ isSidebarOpen: next });
-        }}
+        onToggleOpen={toggleSidebar}
+        onUpdateTitle={handleUpdateTitle}
+        onUpdateTags={handleUpdateTags}
+        onExport={handleExport}
+        isSaving={isSaving}
+        isSyncing={isSyncing}
+        onOpenSettings={() => setIsSettingsModalOpen(true)}
         onDownloadApp={() => setIsInstallModalOpen(true)}
         onOpenSync={() => setIsSyncModalOpen(true)}
         syncVaultKey={settings.syncVaultKey}
@@ -829,27 +842,6 @@ export default function App() {
 
       {/* Main Content Workspace */}
       <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative transition-all duration-300">
-        <Header
-          note={activeNote}
-          onUpdateTitle={handleUpdateTitle}
-          onUpdateTags={handleUpdateTags}
-          allTags={allTags}
-          onToggleSidebar={() => {
-            const next = !isSidebarOpen;
-            setIsSidebarOpen(next);
-            saveSettings({ isSidebarOpen: next });
-          }}
-          isSidebarOpen={isSidebarOpen}
-          isSaving={isSaving}
-          onExport={handleExport}
-          onOpenInstall={() => setIsInstallModalOpen(true)}
-          onOpenSync={() => setIsSyncModalOpen(true)}
-          onOpenSettings={() => setIsSettingsModalOpen(true)}
-          isSyncing={isSyncing}
-          syncVaultKey={settings.syncVaultKey}
-          accountSyncActive={!!account}
-        />
-
         {offlineAccountId && (
           <div role="status" className="flex flex-wrap items-center gap-x-3 px-4 py-2 text-sm bg-amber-100 text-amber-950">
             <span>Showing cached account notes. Sync is paused until your account is verified.</span>
@@ -880,6 +872,11 @@ export default function App() {
               onScribbleToText={() => setIsScribbleModalOpen(true)}
               onRequestTextFocus={() => textEditorRef.current?.focusEditor()}
               onToolChange={setSurfaceTool}
+              notesMenuButton={notesMenuButton}
+              onCanvasInteraction={isSidebarOpen ? () => setIsSidebarOpen(false) : undefined}
+              pageControls={
+                <NotePageBar pages={pages} pageIndex={pageIndex} onSelect={openPage} onAdd={addPage} onDelete={deletePage} />
+              }
               textLayer={
                 <TextEditor
                   ref={textEditorRef}
@@ -909,10 +906,10 @@ export default function App() {
               onChangePageLayout={handleUpdatePageLayout}
               textLayout={activePage.textLayout}
             />
-            <NotePageBar pages={pages} pageIndex={pageIndex} onSelect={openPage} onAdd={addPage} onDelete={deletePage} />
           </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-ink-muted-light dark:text-ink-muted-dark">
+            <div className="absolute left-2 top-2">{notesMenuButton}</div>
             <h2 className="text-xl font-semibold mb-2">No Note Selected</h2>
             <p className="text-sm max-w-sm mb-6">
               Create a new note or select an existing one from the sidebar to begin typing or drawing.
