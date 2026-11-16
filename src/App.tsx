@@ -41,12 +41,8 @@ export default function App() {
   const [textEditing, setTextEditing] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   
-  // The note page is one surface. This mirrors its active tool so the typed
-  // text only accepts the caret while the Text tool is selected; touch hardware
-  // starts on the pen, a keyboard/mouse desktop on the text sheet.
-  const [surfaceTool, setSurfaceTool] = useState<PenTool>(
-    navigator.maxTouchPoints > 0 ? 'fountain' : 'text'
-  );
+  // Mirror the canvas tool so the text sheet can enable the caret in Text mode.
+  const [surfaceTool, setSurfaceTool] = useState<PenTool>('text');
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 1024);
   const [isScribbleModalOpen, setIsScribbleModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);

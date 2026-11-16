@@ -8,6 +8,7 @@ interface SelectionOverlayProps {
   bounds: Bounds;
   /** Live move / resize / rotate being dragged, or null at rest. */
   transform: InkTransform | null;
+  hovering?: boolean;
   /** Number of ink objects in the selection. */
   count: number;
   boxCount?: number;
@@ -49,6 +50,7 @@ const CORNERS: { corner: ResizeCorner; className: string; cursor: string }[] = [
 export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
   bounds,
   transform,
+  hovering = false,
   count,
   boxCount = 0,
   tableSelected = false,
@@ -110,7 +112,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
         onPointerDown={onStartRotate}
         title="Rotate selection"
         aria-label="Rotate selection"
-        className="absolute left-1/2 -top-11 -translate-x-1/2 pointer-events-auto p-2 rounded-full bg-surface-light dark:bg-surface-dark border border-violet-500 text-violet-600 dark:text-violet-400 shadow-floating cursor-grab active:cursor-grabbing touch-none"
+        className={`absolute left-1/2 -top-11 -translate-x-1/2 pointer-events-auto p-2 rounded-full bg-surface-light dark:bg-surface-dark border border-violet-500 text-violet-600 dark:text-violet-400 shadow-floating cursor-grab active:cursor-grabbing touch-none ${hovering ? 'before:absolute before:inset-x-0 before:top-full before:h-3' : ''}`}
       >
         <RotateCw className="w-4 h-4" />
       </button>
@@ -133,7 +135,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
       {/* Object actions, pinned under the frame. */}
       <div
         onPointerDown={(e) => e.stopPropagation()}
-        className={`absolute left-1/2 ${tableSelected ? '-bottom-20' : '-bottom-12'} -translate-x-1/2 pointer-events-auto flex items-center gap-1 px-1.5 py-1 rounded-xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] text-ink-light dark:text-ink-dark whitespace-nowrap`}
+        className={`absolute left-1/2 ${tableSelected ? '-bottom-20' : '-bottom-12'} -translate-x-1/2 pointer-events-auto flex items-center gap-1 px-1.5 py-1 rounded-xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] text-ink-light dark:text-ink-dark whitespace-nowrap ${hovering ? `before:absolute before:inset-x-0 before:bottom-full ${tableSelected ? 'before:h-12' : 'before:h-6'}` : ''}`}
       >
         <span
           className="px-1 text-ink-muted-light dark:text-ink-muted-dark"

@@ -9,11 +9,25 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 const onChangeStrokes = vi.fn();
 
+function pointer(target: Element, type: string, x: number, y: number, pointerType = 'touch', buttons = 0) {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, buttons });
+  Object.assign(event, { pointerId: 1, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 });
+  act(() => target.dispatchEvent(event));
+}
+
+function touch(target: Element, type: string, x = 0, y = 0) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  const touches = type === 'touchend' ? [] : [{ clientX: x, clientY: y, identifier: 1, target }];
+  Object.defineProperty(event, 'touches', { value: touches });
+  act(() => target.dispatchEvent(event));
+}
+
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('matchMedia', () => ({ matches: false }));
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+  vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(1024);
   Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 2 });
   onChangeStrokes.mockClear();
   container = document.createElement('div');
@@ -56,48 +70,37 @@ it('pans the sheet with two fingers even with a little drift in finger spacing',
   expect(onChangeStrokes).not.toHaveBeenCalled();
 });
 
-it('pans from the paper with one finger and restores canvas taps in edit mode', () => {
+it('scrolls a blank swipe in Select and preserves taps in Text', () => {
   const onFingerTap = vi.fn();
   act(() => root.render(<InkCanvas noteId="scratch" defaultTool="pen" strokes={[]}
     onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} onFingerTap={onFingerTap} />));
-  const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Pan with touch"]')!;
   const viewport = container.querySelector<HTMLElement>('.note-desk')!;
   const canvas = container.querySelector<HTMLElement>('.ink-canvas')!;
   viewport.scrollLeft = viewport.scrollTop = 100;
 
-  const touchEvent = (type: string, clientX = 0, clientY = 0) => {
-    const event = new Event(type, { bubbles: true, cancelable: true });
-    const touches = type === 'touchend' ? [] : [{ clientX, clientY, identifier: 1, target: canvas }];
-    Object.defineProperty(event, 'touches', { value: touches });
-    act(() => canvas.dispatchEvent(event));
-    return event;
+  const chooseTool = (current: string, next: string) => {
+    act(() => container.querySelector<HTMLButtonElement>(`button[title="Tool: ${current}"]`)!.click());
+    const option = Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Tools"] button'))
+      .find((button) => button.textContent?.startsWith(next))!;
+    act(() => option.click());
   };
-  const pointer = (type: string, clientX: number, clientY: number) => {
-    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
-    Object.assign(event, { pointerId: 1, pointerType: 'touch', isPrimary: true });
-    act(() => canvas.dispatchEvent(event));
-  };
-
-  expect(toggle.getAttribute('aria-pressed')).toBe('false');
-  act(() => toggle.click());
-  expect(toggle.getAttribute('aria-pressed')).toBe('true');
-  pointer('pointerdown', 150, 150);
-  expect(touchEvent('touchstart', 150, 150).defaultPrevented).toBe(true);
-  touchEvent('touchmove', 113, 101);
-  pointer('pointerup', 113, 101);
-  touchEvent('touchend');
+  expect(container.querySelector('[aria-label="Pan with touch"]')).toBeNull();
+  chooseTool('Text', 'Select');
+  pointer(canvas, 'pointerdown', 150, 150);
+  touch(canvas, 'touchstart', 150, 150);
+  touch(canvas, 'touchmove', 113, 101);
+  pointer(canvas, 'pointerup', 113, 101);
+  touch(canvas, 'touchend');
   expect([viewport.scrollLeft, viewport.scrollTop]).toEqual([137, 149]);
-
-  pointer('pointerdown', 140, 140);
-  touchEvent('touchstart', 140, 140);
-  pointer('pointerup', 140, 140);
-  touchEvent('touchend');
+  expect(container.querySelector('.note-paper svg')).toBeNull();
+  pointer(canvas, 'pointerdown', 140, 140);
+  pointer(canvas, 'pointerup', 140, 140);
   expect(onFingerTap).not.toHaveBeenCalled();
   expect(onChangeStrokes).not.toHaveBeenCalled();
 
-  act(() => toggle.click());
-  pointer('pointerdown', 140, 140);
-  pointer('pointerup', 140, 140);
+  chooseTool('Select', 'Text');
+  pointer(canvas, 'pointerdown', 140, 140);
+  pointer(canvas, 'pointerup', 140, 140);
   expect(onFingerTap).toHaveBeenCalledOnce();
 });
 
@@ -161,6 +164,11 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
   pointer('pointerdown', 45, 15);
   pointer('pointerup', 45, 15);
   expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
+  pointer('pointerdown', 45, 15);
+  pointer('pointerup', 45, 15);
+  expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
+  pointer('pointerdown', 45, 15);
+  pointer('pointerup', 45, 15);
   pointer('pointerdown');
   pointer('pointerup');
   expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
@@ -192,13 +200,107 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
   expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
 
   act(() => editorRef.current?.editBox(edited));
-  for (const [type, x, y] of [['pointerdown', 45, 55], ['pointermove', 160, 130], ['pointerup', 160, 130]] as const) {
-    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
-    Object.assign(event, { pointerId: 3, pointerType: 'touch', isPrimary: true, width: 48, height: 44 });
+  const viewport = container.querySelector<HTMLElement>('.note-desk')!;
+  viewport.scrollTop = 100;
+  const originalLeft = edited.style.left;
+  const swipe = (type: string, y: number) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 45, clientY: y });
+    Object.assign(event, { pointerType: 'touch', isPrimary: true, pointerId: 3 });
     act(() => edited.dispatchEvent(event));
-  }
-  expect(edited.hasAttribute('contenteditable')).toBe(false);
-  expect(edited.style.left).not.toBe('0px');
+  };
+  swipe('pointerdown', 55);
+  touch(edited, 'touchstart', 45, 55);
+  touch(edited, 'touchmove', 45, 25);
+  swipe('pointerup', 25);
+  touch(edited, 'touchend');
+  expect(viewport.scrollTop).toBe(130);
+  expect(edited.hasAttribute('contenteditable')).toBe(true);
+  expect(edited.style.left).toBe(originalLeft);
   expect(save).toHaveBeenLastCalledWith(expect.stringContaining('Keep this edit'));
   expect(onChangeStrokes).not.toHaveBeenCalled();
+});
+
+it('shows mouse hover handles, moves the box, and opens it for editing on double-click', () => {
+  const editorRef = createRef<TextEditorRef>();
+  const note = { id: 'scratch', title: 'Scratch', content: '<p>Existing text</p>', inkStrokes: [],
+    tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  act(() => root.render(<InkCanvas noteId={note.id} strokes={[]} onChangeStrokes={onChangeStrokes}
+    onScribbleToText={() => {}} textEditor={editorRef}
+    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
+  const box = container.querySelector<HTMLElement>('[data-note-positioned]')!;
+  Object.defineProperties(box, {
+    offsetWidth: { value: 100 }, offsetHeight: { value: 40 },
+    offsetLeft: { get: () => parseFloat(box.style.left) || 0 },
+    offsetTop: { get: () => parseFloat(box.style.top) || 0 },
+  });
+  const canvas = container.querySelector('.ink-canvas')!;
+  const frame = () => container.querySelector('[data-ink-ui="selection"]');
+  pointer(box, 'pointermove', 40, 20, 'mouse');
+  expect(frame()?.querySelector('[aria-label="Resize selection"]')).not.toBeNull();
+  pointer(canvas, 'pointermove', 150, 150, 'mouse');
+  expect(frame()).toBeNull();
+  pointer(box, 'pointerdown', 40, 20, 'mouse', 1);
+  pointer(box, 'pointermove', 90, 80, 'mouse', 1);
+  pointer(box, 'pointerup', 90, 80, 'mouse');
+  expect(box.style.left).toBe('50px');
+  expect(box.style.top).toBe('60px');
+  act(() => box.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 90, clientY: 80 })));
+  expect(document.activeElement).toBe(box);
+  expect(frame()).toBeNull();
+});
+
+it('switches from Text to Draw on the first pen contact and records that stroke', () => {
+  const editorRef = createRef<TextEditorRef>();
+  act(() => root.render(<InkCanvas noteId="scratch" defaultTool="pen" strokes={[]} textEditor={editorRef}
+    onChangeBackground={() => {}} onScribbleToText={() => {}} onChangeStrokes={onChangeStrokes} />));
+  const canvas = container.querySelector('.ink-canvas')!;
+  const activeTab = () => container.querySelector('[role="tab"][aria-selected="true"]')?.textContent;
+  expect(container.querySelector('[aria-label="Text tool"]')?.getAttribute('aria-pressed')).toBe('true');
+  pointer(canvas, 'pointermove', 30, 30, 'pen');
+  expect(activeTab()).toBe('Insert');
+  pointer(canvas, 'pointerdown', 30, 30, 'pen', 1);
+  expect(activeTab()).toBe('Draw');
+  pointer(canvas, 'pointermove', 60, 60, 'pen', 1);
+  pointer(canvas, 'pointerup', 60, 60, 'pen');
+  expect(onChangeStrokes).toHaveBeenCalledWith([expect.objectContaining({ tool: 'pen' })]);
+});
+
+it('opens Paste image by right-click or a blank long press and places it at the chosen point', async () => {
+  const editorRef = createRef<TextEditorRef>();
+  const note = { id: 'scratch', title: 'Scratch', content: '', inkStrokes: [],
+    tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  let saved!: (content: string) => void;
+  const save = new Promise<string>((resolve) => { saved = resolve; });
+  act(() => root.render(<InkCanvas noteId={note.id} strokes={[]} onChangeStrokes={onChangeStrokes}
+    onScribbleToText={() => {}} textEditor={editorRef}
+    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={saved} embedded />} />));
+  const canvas = container.querySelector('.ink-canvas')!;
+  const menu = () => container.querySelector<HTMLButtonElement>('[data-ink-ui="paste-image"]');
+  act(() => canvas.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, clientX: 100, clientY: 130,
+  })));
+  expect(menu()?.textContent).toContain('Paste image');
+  act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+  expect(menu()).toBeNull();
+  vi.useFakeTimers();
+  try {
+    pointer(canvas, 'pointerdown', 120, 160);
+    act(() => vi.advanceTimersByTime(500));
+    pointer(canvas, 'pointerup', 120, 160);
+    expect(menu()).not.toBeNull();
+    expect(container.querySelector('[contenteditable="true"]')).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+  const read = vi.fn(async () => [{ types: ['image/png'], getType: async () => new Blob(['image'], { type: 'image/png' }) }]);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { read } });
+  try {
+    await act(async () => { menu()!.click(); await save; });
+    expect(read).toHaveBeenCalledOnce();
+    const image = container.querySelector<HTMLImageElement>('[data-note-editor] img')!;
+    expect(image.style.left).toBe('120px');
+    expect(image.style.top).toBe('160px');
+  } finally {
+    Reflect.deleteProperty(navigator, 'clipboard');
+  }
 });

@@ -47,16 +47,13 @@ import {
 import {
   Eraser,
   Sparkles,
-  Feather,
-  Activity,
   ClipboardCopy,
+  ClipboardPaste,
   Download,
   Trash2,
   ZoomIn,
   ZoomOut,
   Maximize2,
-  Hand,
-  MousePointer2,
   RotateCw, Pencil, Image, BringToFront, SendToBack,
   type LucideIcon
 } from 'lucide-react';
@@ -176,6 +173,8 @@ type ObjectHit = {
   cell?: HTMLTableCellElement | null;
 };
 
+type TouchTap = { pointer: number; client: Point; run: () => void; hold?: number };
+
 function inkObjectKey(stroke: Stroke) {
   return stroke.groupId ? `drawing:${stroke.groupId}` : `stroke:${stroke.id}`;
 }
@@ -284,18 +283,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const isPinchingRef = useRef<boolean>(false);
   /** Number of fingers currently touching the page viewport. */
   const touchCountRef = useRef<number>(0);
-  const [touchPan, setTouchPan] = useState(false);
-  const touchPanRef = useRef(false);
 
   // Detect dark mode for initial ink color
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
 
-  // Primary user-selected tool (text, select, a pen, or the eraser).
-  // A keyboard/mouse desktop opens on the text sheet; a pen device opens with
-  // ink already live so the stylus works the moment it touches the page.
-  const [selectedTool, setSelectedTool] = useState<PenTool>(() =>
-    typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 ? defaultTool : 'text'
-  );
+  const [selectedTool, setSelectedTool] = useState<PenTool>('text');
+  const [drawRequest, setDrawRequest] = useState(0);
   const [penColor, setPenColor] = useState<string>(defaultColor || (isDarkMode ? '#ffffff' : '#1e293b'));
   const [penWidth, setPenWidth] = useState<number>(defaultWidth);
   const [eraserWidth, setEraserWidth] = useState<number>(defaultEraserWidth);
@@ -313,7 +306,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const selectionPointerRef = useRef<number | null>(null);
   const selectionStartClient = useRef<Point | null>(null);
   const selectionDragged = useRef(false);
-  const selectionDismissedText = useRef(false);
   const [selectedBoxes, setSelectedBoxes] = useState<HTMLElement[]>([]);
   const selectedBoxesRef = useRef<HTMLElement[]>([]);
   const [tableCell, setTableCell] = useState<HTMLTableCellElement | null>(null);
@@ -330,11 +322,19 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const textBlockLayoutRef = useRef(textBlockLayout);
   textBlockLayoutRef.current = textBlockLayout;
   const [objectSizeVersion, setObjectSizeVersion] = useState(0);
-  const selectPointerTypeRef = useRef<string>('mouse');
   const replacementInput = useRef<HTMLInputElement>(null);
   const stopPanMomentum = useRef<(() => void) | null>(null);
-  const lastPick = useRef<{ point: Point; keys: (string | HTMLElement)[] } | null>(null);
+  const [hovering, setHovering] = useState(false);
+  const hoverKey = useRef<ObjectHit['key'] | null>(null);
   const editingTap = useRef<{ box: HTMLElement; point: Point; time: number } | null>(null);
+  const touchTap = useRef<TouchTap | null>(null);
+  const [pasteMenu, setPasteMenu] = useState<{ point: Point; client: Point; noteId: string } | null>(null);
+  const pasteButton = useRef<HTMLButtonElement>(null);
+  const pastePending = useRef(false);
+  const clearTouchTap = useCallback(() => {
+    window.clearTimeout(touchTap.current?.hold);
+    touchTap.current = null;
+  }, []);
 
   const getEditor = useCallback(() =>
     textLayerRef.current?.querySelector<HTMLElement>('[data-note-editor]') ?? null, []);
@@ -352,7 +352,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       .map((image) => measurePicture(image, editor, layer, textBlockLayoutRef.current));
   }, [getEditor]);
 
-  const setSelection = useCallback((ids: string[], boxes: HTMLElement[] = [], pictures: HTMLImageElement[] = []) => {
+  const setSelection = useCallback((
+    ids: string[], boxes: HTMLElement[] = [], pictures: HTMLImageElement[] = [], hover: ObjectHit['key'] | null = null,
+  ) => {
+    hoverKey.current = hover;
+    setHovering(hover !== null);
     selectedPicturesRef.current = pictures;
     setSelectedPictures(pictures);
     selectedIdsRef.current = ids;
@@ -362,6 +366,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setEditActions(false);
     setTableCell(null);
   }, []);
+
+  const selectObject = (object: ObjectHit, hover = false) => {
+    setSelection(object.ids, object.box ? [object.box] : [], object.picture ? [object.picture] : [], hover ? object.key : null);
+    selectionBoundsRef.current = object.bounds;
+    if (object.cell) setTableCell(object.cell);
+  };
 
   useEffect(() => {
     const trackCell = () => {
@@ -414,17 +424,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   }, [selectMode]);
 
   useEffect(() => {
-    if (selectionNoteId.current !== noteId && selectedToolRef.current === 'text' && navigator.maxTouchPoints > 0) {
-      selectedToolRef.current = lastWritingToolRef.current;
-      setSelectedTool(lastWritingToolRef.current);
-    }
     if (selectionNoteId.current !== noteId && scrollRef.current) {
       scrollRef.current.scrollTop = 0;
       scrollRef.current.scrollLeft = 0;
     }
     selectionNoteId.current = noteId;
-    lastPick.current = null;
     editingTap.current = null;
+    clearTouchTap();
+    setPasteMenu(null);
     transformCleanupRef.current?.();
     stopPanMomentum.current?.();
     setSelection([]);
@@ -432,13 +439,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     marqueeRef.current = null;
     setMarquee(null);
     setPictureError('');
-  }, [noteId, setSelection]);
+  }, [noteId, setSelection, clearTouchTap]);
 
   useLayoutEffect(() => {
     onToolChange?.(activeTool);
   }, [activeTool, onToolChange]);
 
-  useEffect(() => () => transformCleanupRef.current?.(), []);
+  useEffect(() => () => {
+    transformCleanupRef.current?.();
+    clearTouchTap();
+  }, [clearTouchTap]);
 
   // Undo, erasing or sync can remove selected strokes: drop them from the frame.
   useEffect(() => {
@@ -476,16 +486,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
   }, [getEditor, selectedBoxes, selectedPictures, setSelection, tableCell]);
 
-  // Keep the canvas in sync when stylus defaults change in Settings. These only
-  // fire on actual prop changes, so in-canvas tool picks are never clobbered.
-  // The first run is skipped so the opening tool above survives mount.
-  const defaultToolAppliedRef = useRef(false);
+  const previousDefaultTool = useRef(defaultTool);
   useEffect(() => {
-    if (!defaultToolAppliedRef.current) {
-      defaultToolAppliedRef.current = true;
-      return;
+    if (previousDefaultTool.current === defaultTool) return;
+    previousDefaultTool.current = defaultTool;
+    if (defaultTool !== 'text' && defaultTool !== 'select' && defaultTool !== 'eraser') {
+      lastWritingToolRef.current = defaultTool;
     }
-    setSelectedTool(defaultTool);
+    if (selectedToolRef.current !== 'text') setSelectedTool(defaultTool);
   }, [defaultTool]);
 
   useEffect(() => {
@@ -527,22 +535,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const [isQuickMenuOpen, setIsQuickMenuOpen] = useState<boolean>(false);
   const [quickMenuPos, setQuickMenuPos] = useState<{ x: number; y: number } | null>(null);
-
-  // Live Stylus Telemetry & Diagnostics (for Galaxy Tab S10 verification)
-  const [diagnosticHUD, setDiagnosticHUD] = useState<boolean>(false);
-  const [stylusTelemetry, setStylusTelemetry] = useState<{
-    status: 'idle' | 'hovering' | 'drawing';
-    buttons: number;
-    button: number;
-    pressure: number;
-    lastTrigger: string;
-  }>({
-    status: 'idle',
-    buttons: 0,
-    button: -1,
-    pressure: 0,
-    lastTrigger: 'None'
-  });
 
   const lastStylusActiveTimeRef = useRef<number>(0);
 
@@ -832,6 +824,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    */
   const abortActiveCanvasDrag = useCallback(() => {
     selectionPointerRef.current = null;
+    clearTouchTap();
     editingTap.current = null;
     currentStrokeRef.current = null;
     isEraserDrawingRef.current = false;
@@ -842,7 +835,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       setMarquee(null);
     }
     redraw();
-  }, [redraw]);
+  }, [clearTouchTap, redraw]);
 
   const handleUndo = useCallback(() => {
     if (currentStrokeRef.current || isEraserDrawingRef.current) return;
@@ -1066,7 +1059,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       let top = node.scrollTop;
       let previousTime = performance.now();
       const step = (time: number) => {
-        if (!touchPanRef.current || isStylusActiveRef.current || spenTipDownRef.current) return;
+        if (isStylusActiveRef.current || spenTipDownRef.current) return;
         const elapsed = Math.min(32, Math.max(0, time - previousTime));
         previousTime = time;
         const decay = Math.exp(-elapsed / 180);
@@ -1121,11 +1114,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       updateGesture(touches);
       if (isPinchingRef.current) {
         event.preventDefault();
-      } else if (touches.length === 1 && selectionPointerRef.current === null && !transformDragRef.current &&
+      } else if (touches.length === 1 && !transformDragRef.current &&
         !isStylusActiveRef.current && !spenTipDownRef.current &&
-        (touchPanRef.current || !(event.target as Element).closest('.ink-canvas, [data-note-editor], [data-ink-ui=selection]'))) {
-        // Pan mode lets a finger scroll starting anywhere on the sheet.
-        if (touchPanRef.current) event.preventDefault();
+        !findInkUiControl(event.target)) {
         const [touch] = touches;
         const point = { x: touch.clientX, y: touch.clientY };
         single = { id: touch.identifier, start: point, last: point, scrolling: false,
@@ -1145,8 +1136,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         const touch = touches.find(({ identifier }) => identifier === single?.id);
         if (!touch) return;
         const point = { x: touch.clientX, y: touch.clientY };
-        if (!single.scrolling && Math.hypot(point.x - single.start.x, point.y - single.start.y) < 8) return;
+        if (!single.scrolling && Math.hypot(point.x - single.start.x, point.y - single.start.y) < SELECTION_TAP_SLOP) return;
         event.preventDefault();
+        clearTouchTap();
+        editingTap.current = null;
         const now = performance.now();
         const elapsed = Math.max(8, now - single.time);
         const left = node.scrollLeft;
@@ -1191,7 +1184,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       updateGesture(touches);
       if (single && !touches.some(({ identifier }) => identifier === single?.id)) {
         const idle = performance.now() - single.time;
-        if (event.type === 'touchend' && touches.length === 0 && single.scrolling && touchPanRef.current && idle < 90) {
+        if (event.type === 'touchend' && touches.length === 0 && single.scrolling && idle < 90) {
           const factor = Math.exp(-idle / 75);
           coast({ x: single.velocity.x * factor, y: single.velocity.y * factor });
         }
@@ -1228,7 +1221,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       stopCoast();
       stopPanMomentum.current = null;
     };
-  }, [abortActiveCanvasDrag, applyZoom]);
+  }, [abortActiveCanvasDrag, applyZoom, clearTouchTap]);
 
   /**
    * Rotates the sheet. Ink drawn on a wider page is scaled down so switching
@@ -1345,7 +1338,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         }
         playToggleAudioFeedback(armed);
         logSpenSample('tool', { note: armed ? 'Hold: eraser' : 'Release: selected tool' });
-        setStylusTelemetry((prev) => ({ ...prev, lastTrigger: armed ? 'HOLD: ERASER' : 'RELEASE: SELECTED TOOL' }));
       },
       onDoublePress: () => {
         if (!spenDoublePressOpensMenuRef.current) return;
@@ -1363,13 +1355,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       gesture.pointer(kind, e, !onControl);
       spenTipDownRef.current = gesture.tipDown;
       const contact = gesture.tipDown;
-      setStylusTelemetry((prev) => ({
-        ...prev,
-        status: contact ? 'drawing' : 'hovering',
-        buttons: e.buttons,
-        button: e.button,
-        pressure: e.pressure
-      }));
       const last = lastLoggedMoveRef.current;
       const now = Date.now();
       if (kind !== 'move' || e.buttons !== last.buttons || contact !== last.contact || now - last.time >= 60) {
@@ -1501,29 +1486,24 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const beginTransform = useCallback((
     kind: TransformKind, corner: ResizeCorner | null, e: React.PointerEvent,
     click?: { tap: () => void; hold?: () => void },
-    editing?: { box: HTMLElement; cell: HTMLTableCellElement | null | undefined },
   ) => {
     const editor = getEditor();
     const layer = textLayerRef.current;
     const baseLayout = textBlockLayoutRef.current;
-    const bounds = editing && layer ? measureBox(editing.box, layer, baseLayout) : selectionBoundsRef.current;
-    if (!bounds || transformDragRef.current || e.button !== 0 ||
-      (e.pointerType === 'touch' && touchPanRef.current)) return;
-    if (!editing) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    const bounds = selectionBoundsRef.current;
+    if (!bounds || transformDragRef.current || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
 
     const startClient = { x: e.clientX, y: e.clientY };
     const start = getPagePoint(startClient.x, startClient.y);
     const startZoom = zoomRef.current;
     const baseStrokes = strokesRef.current;
-    const ids = new Set(editing ? [] : selectedIdsRef.current);
+    const ids = new Set(selectedIdsRef.current);
     transformDragRef.current = true;
-    const pictures = editing ? [] : getPictures(selectedPicturesRef.current);
+    const pictures = getPictures(selectedPicturesRef.current);
     const editorOffset = editor && layer ? offsetWithin(editor, layer) : { x: 0, y: 0 };
-    const movingBoxes = editing ? [editing.box] : selectedBoxesRef.current;
-    const boxes = layer ? movingBoxes.map((box) => ({
+    const boxes = layer ? selectedBoxesRef.current.map((box) => ({
       box, placement: boxPlacement(box, layer), pagePlacement: pageBoxPlacement(box, layer, baseLayout),
       width: box.offsetWidth, height: box.offsetHeight,
       previousWidth: box.style.width, previousHeight: box.style.minHeight,
@@ -1537,7 +1517,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       ...Array.from(inkObjects(baseStrokes).values(), (group) =>
         group.some((stroke) => ids.has(stroke.id)) ? null : getStrokesBounds(group)),
       ...getPictures().filter(({ image }) => !pictures.some((picture) => picture.image === image)).map(({ bounds }) => bounds),
-      ...(layer ? getTextBoxes().filter((box) => !movingBoxes.includes(box))
+      ...(layer ? getTextBoxes().filter((box) => !boxes.some((moving) => moving.box === box))
         .map((box) => measureBox(box, layer, baseLayout)) : []),
     ].filter((box): box is Bounds => !!box);
     let neighbors: Bounds[] | undefined;
@@ -1571,18 +1551,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (event.pointerId !== pointerId || isPinchingRef.current) return;
       const dx = event.clientX - startClient.x;
       const dy = event.clientY - startClient.y;
-      if (!moved && Math.hypot(dx, dy) < (editing ? 9 : 5)) return;
+      if (!moved && Math.hypot(dx, dy) < 5) return;
       event.preventDefault();
-      if (!moved && editing) {
-        editingTap.current = null;
-        textEditor?.current?.finishEditing(true);
-        setSelection([], [editing.box]);
-        if (editing.cell) setTableCell(editing.cell);
-        const container = containerRef.current;
-        if (container?.setPointerCapture && event.buttons) {
-          try { container.setPointerCapture(pointerId); } catch { /* The pointer already ended. */ }
-        }
-      }
       const point = { x: start.x + dx / startZoom, y: start.y + dy / startZoom };
       moved = true;
       window.clearTimeout(holdTimer);
@@ -1664,7 +1634,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         redraw();
       }
       if (commit && !moved) click?.tap();
-      if (moved) lastPick.current = null;
     };
 
     const onUp = (event: PointerEvent) => {
@@ -1679,10 +1648,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     transformCleanupRef.current = () => finish(false);
     if (click?.hold) holdTimer = window.setTimeout(() => {
       finish(false);
-      lastPick.current = null;
       click.hold?.();
     }, OBJECT_HOLD_MS);
-  }, [commitStrokes, getEditor, getPagePoint, getPictures, getTextBoxes, redraw, setSelection, textEditor]);
+  }, [commitStrokes, getEditor, getPagePoint, getPictures, getTextBoxes, redraw, textEditor]);
 
   const enableText = () => {
     if (selectedToolRef.current === 'text') return;
@@ -1701,24 +1669,23 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     textEditor?.current?.editBox(box, cell ?? undefined);
   };
 
-  const handlePictureDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    const files = Array.from(e.dataTransfer.files).filter((file) => file.type.startsWith('image/'));
-    if (!files.length) return;
-    const point = pointInEditor(getPagePoint(e.clientX, e.clientY));
+  const placePictures = async (files: File[], point: Point, pageId = noteId) => {
+    if (selectionNoteId.current !== pageId) return;
     setPictureError('');
     try {
-      const images = await textEditor?.current?.dropPictures(files, point);
-      if (!images?.length || !images.every((image) => getEditor()?.contains(image))) return;
+      const images = await textEditor?.current?.dropPictures(files, pointInEditor(point));
+      if (selectionNoteId.current !== pageId || !images?.length || !images.every((image) => getEditor()?.contains(image))) return;
       textEditor?.current?.finishEditing();
-      if (selectedToolRef.current === 'text') {
-        selectedToolRef.current = lastWritingToolRef.current;
-        setSelectedTool(lastWritingToolRef.current);
-      }
       setSelection([], [], images);
     } catch (error) {
-      setPictureError(error instanceof Error ? error.message : 'Could not add the pictures.');
+      if (selectionNoteId.current === pageId) setPictureError(error instanceof Error ? error.message : 'Could not add the pictures.');
     }
+  };
+
+  const handlePictureDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files).filter((file) => file.type.startsWith('image/'));
+    if (files.length) void placePictures(files, getPagePoint(e.clientX, e.clientY));
   };
 
   const pointInEditor = (point: Point) => {
@@ -1731,7 +1698,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const startTextBox = (point?: Point) => {
-    lastPick.current = null;
     setSelection([]);
     enableText();
     if (!point) textEditor?.current?.insertTextBox();
@@ -1785,60 +1751,55 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     return hits.length ? hits : nearby;
   };
 
-  const handleSelectPointerDown = (e: React.PointerEvent, dismissedEditor: boolean) => {
-    const pointerType = e.pointerType;
-    selectPointerTypeRef.current = pointerType;
-    const client = { x: e.clientX, y: e.clientY };
-    const point = getPagePoint(client.x, client.y);
-    const hits = pickObjects(point, client, (pointerType === 'touch' ? 10 : 6) / zoomRef.current);
-    const dismissText = pointerType === 'touch' && !hits.length &&
-      (dismissedEditor || selectedBoxesRef.current.some((box) => !box.matches(tableBoxSelector)));
-    const selectedHit = hits.find(({ box, picture, ids }) =>
+  const isSelectedObject = ({ box, picture, ids }: ObjectHit) =>
+    !hoverKey.current && (
       (box && selectedBoxesRef.current.includes(box)) ||
       (picture && selectedPicturesRef.current.includes(picture)) ||
       (ids.length > 0 && ids.every((id) => selectedIdsRef.current.includes(id))));
-    const hit = selectedHit ?? hits[0];
-    const previousBounds = selectionBoundsRef.current;
-    const insideFrame = previousBounds && pointInBounds(point, previousBounds);
-    const selectHit = (object: ObjectHit) => {
-      setSelection(object.ids, object.box ? [object.box] : [], object.picture ? [object.picture] : []);
-      selectionBoundsRef.current = object.bounds;
-      if (object.cell) setTableCell(object.cell);
-    };
 
-    if (!dismissText && (hit || insideFrame)) {
-      if (hit && (!selectedHit || hit.box || hit.picture)) selectHit(hit);
-      beginTransform('move', null, e, {
-        tap: () => {
-          if (!hits.length) {
-            if (pointerType === 'touch') startTextBox(point);
-            return;
-          }
-          const keys = hits.map(({ key }) => key);
-          const previous = lastPick.current;
-          const close = previous && Math.hypot(point.x - previous.point.x, point.y - previous.point.y)
-            * zoomRef.current <= SELECTION_TAP_SLOP;
-          const same = close && keys.length === previous.keys.length && keys.every((key, index) => key === previous.keys[index]);
-          const index = same && selectedHit ? (hits.indexOf(selectedHit) + 1) % hits.length : 0;
-          selectHit(hits[index]);
-          lastPick.current = { point, keys };
-        },
-        hold: hit && (() => {
-          selectHit(hit);
-          if (hit.box) editSelectedText(hit.box, hit.cell ?? null);
-          else setEditActions(true);
-        }),
-      });
+  const beginObjectMove = (e: React.PointerEvent, hit: ObjectHit | undefined) => {
+    const selected = hit && isSelectedObject(hit);
+    const mouse = e.pointerType === 'mouse';
+    // A mouse hover exposes the same handles without pinning a selection.
+    if (hit && !selected) selectObject(hit, mouse);
+    beginTransform('move', null, e, {
+      tap: () => {
+        if (selected) setSelection([]);
+        else if (mouse && hit && selectedToolRef.current === 'select') selectObject(hit);
+      },
+      hold: !mouse && hit ? () => {
+        selectObject(hit);
+        if (hit.box) editSelectedText(hit.box, hit.cell ?? null);
+        else setEditActions(true);
+      } : undefined,
+    });
+  };
+
+  const handleHover = (e: React.PointerEvent) => {
+    if (transformDragRef.current || e.buttons || pasteMenu) return;
+    if (!hoverKey.current && (selectedIdsRef.current.length || selectedBoxesRef.current.length || selectedPicturesRef.current.length)) return;
+    const target = e.target as Element;
+    if (target.closest('[data-ink-ui="selection"], .table-resize-handle')) return;
+    const client = { x: e.clientX, y: e.clientY };
+    const point = getPagePoint(client.x, client.y);
+    if (target.closest('[contenteditable="true"]')) {
+      if (hoverKey.current) setSelection([]);
       return;
     }
+    const hit = pickObjects(point, client, 4 / zoomRef.current)[0];
+    if (hit) {
+      if (hoverKey.current !== hit.key) selectObject(hit, true);
+    } else if (hoverKey.current && (!selectionBoundsRef.current || !pointInBounds(point, selectionBoundsRef.current))) {
+      setSelection([]);
+    }
+  };
 
-    lastPick.current = null;
+  const startMarquee = (e: React.PointerEvent, point: Point, client: Point) => {
     setSelection([]);
     const geometry: MarqueeGeometry = { mode: selectModeRef.current, start: point, end: point, points: [point] };
     selectionPointerRef.current = e.pointerId;
     selectionStartClient.current = client;
     selectionDragged.current = false;
-    selectionDismissedText.current = dismissText;
     marqueeRef.current = geometry;
   };
 
@@ -1871,10 +1832,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const isTap = !selectionDragged.current && selectionTravel(clientX, clientY) < SELECTION_TAP_SLOP;
     if (isTap) {
-      if (!selectionDismissedText.current &&
-        (selectPointerTypeRef.current === 'touch' || selectedToolRef.current === 'text')) {
-        startTextBox(geometry.start);
-      }
+      if (selectedToolRef.current === 'text') startTextBox(geometry.start);
       return;
     }
 
@@ -1892,78 +1850,162 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   };
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    if (e.pointerType === 'touch' && touchPanRef.current) {
-      e.preventDefault();
+  const openPasteMenu = (point: Point, client: Point) => {
+    clearTouchTap();
+    setPictureError('');
+    if (hoverKey.current) setSelection([]);
+    setPasteMenu({ point, client, noteId });
+  };
+
+  useEffect(() => {
+    if (!pasteMenu) return;
+    pasteButton.current?.focus({ preventScroll: true });
+    const closeOutside = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || !pasteButton.current?.contains(event.target)) setPasteMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPasteMenu(null);
+    };
+    const closeOnScroll = () => setPasteMenu(null);
+    const viewport = scrollRef.current;
+    window.addEventListener('pointerdown', closeOutside, true);
+    window.addEventListener('keydown', closeOnEscape);
+    viewport?.addEventListener('scroll', closeOnScroll);
+    return () => {
+      window.removeEventListener('pointerdown', closeOutside, true);
+      window.removeEventListener('keydown', closeOnEscape);
+      viewport?.removeEventListener('scroll', closeOnScroll);
+    };
+  }, [pasteMenu]);
+
+  const pasteImage = async () => {
+    if (!pasteMenu || pastePending.current) return;
+    const { point, noteId: pageId } = pasteMenu;
+    pastePending.current = true;
+    try {
+      if (!navigator.clipboard?.read) throw new Error('Use your device’s Paste command to paste a copied image.');
+      const items = await navigator.clipboard.read();
+      const files: File[] = [];
+      for (const item of items) {
+        const type = item.types.find((mime) => /^image\/(png|jpeg|gif|webp|avif|bmp)$/i.test(mime));
+        if (type) files.push(new File([await item.getType(type)], 'Clipboard image', { type }));
+      }
+      if (!files.length) throw new Error('Copy an image before pasting.');
+      if (selectionNoteId.current === pageId) {
+        setPasteMenu((current) => current === pasteMenu ? null : current);
+        await placePictures(files, point, pageId);
+      }
+    } catch (error) {
+      if (selectionNoteId.current === pageId) setPictureError(error instanceof DOMException
+        ? 'Clipboard access was blocked. Use your device’s Paste command.'
+        : error instanceof Error ? error.message : 'Could not read the clipboard.');
+    } finally {
+      pastePending.current = false;
+    }
+  };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    const target = e.target as Element;
+    if (isInkUiTarget(target) || target.closest('[contenteditable="true"]')) return;
+    e.preventDefault();
+    const client = { x: e.clientX, y: e.clientY };
+    const point = getPagePoint(client.x, client.y);
+    if ((e.nativeEvent as PointerEvent).pointerType === 'pen') return;
+    if (textEditor && !pickObjects(point, client, 4 / zoomRef.current).length) openPasteMenu(point, client);
+  };
+
+  const handleTouchDown = (e: React.PointerEvent, point: Point, client: Point, target: Element) => {
+    const editor = getEditor();
+    const editing = editor?.querySelector('[contenteditable="true"]');
+    const activeBox = editing?.closest<HTMLElement>(boxSelector);
+    const editingBox = activeBox && target.closest(boxSelector) === activeBox ? activeBox : null;
+    const cell = target.closest<HTMLTableCellElement>('td, th');
+    const hits = editingBox ? [] : pickObjects(point, client, 10 / zoomRef.current);
+    const hit = hits.find(isSelectedObject) ?? hits[0];
+    if (hit && !editing) {
+      beginObjectMove(e, hit);
       return;
     }
-    if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
-    if (e.pointerType === 'pen' && !spenTipDownRef.current) return;
-    dragSawPressureRef.current = false;
-    zeroPressureSamplesRef.current = 0;
 
-    const touch = e.pointerType === 'touch';
-    const mousePicture = e.pointerType === 'mouse' && activeTool !== 'text' && activeTool !== 'select' &&
-      getPictures().some(({ bounds }) => pointInBounds(getPagePoint(e.clientX, e.clientY), bounds));
-    const selecting = touch || mousePicture || activeTool === 'select' || activeTool === 'text';
-    if (!selecting && isStylusOnly && e.pointerType !== 'pen') return;
-    if (touch && (!e.isPrimary || touchCountRef.current > 1 || isStylusActiveRef.current || spenTipDownRef.current)) return;
-
-    let dismissedEditor = false;
-    if (activeTool === 'text') {
-      const target = e.target instanceof Element ? e.target : null;
-      if (target?.closest('a[download]')) return;
-      const box = target?.closest<HTMLElement>(boxSelector);
-      const cell = target?.closest<HTMLTableCellElement>('td, th');
-      const editingTable = cell?.closest<HTMLElement>(tableBoxSelector);
-      const editingBox = box && (box.hasAttribute('contenteditable') ||
-        editingTable?.querySelector('[contenteditable="true"]'));
-      if (editingBox && box) {
-        const previous = editingTap.current;
-        const time = performance.now();
-        const point = { x: e.clientX, y: e.clientY };
-        const doubleTap = previous?.box === box && time - previous.time <= 350 &&
-          Math.hypot(point.x - previous.point.x, point.y - previous.point.y) <= 24;
-        const selectEditedBox = () => {
-          editingTap.current = null;
-          lastPick.current = null;
-          textEditor?.current?.finishEditing(true);
-          if (getEditor()?.contains(box)) {
+    clearTouchTap();
+    const tap: TouchTap = {
+      pointer: e.pointerId, client, run: () => {
+        if (editingBox) {
+          const previous = editingTap.current;
+          const time = performance.now();
+          if (previous?.box === editingBox && time - previous.time <= 350 &&
+            Math.hypot(client.x - previous.point.x, client.y - previous.point.y) <= 24) {
+            editingTap.current = null;
+            textEditor?.current?.finishEditing(true);
             textEditor?.current?.savePageObjects();
-            setSelection([], [box]);
+            setSelection([], [editingBox]);
             if (cell) setTableCell(cell);
+          } else {
+            editingTap.current = { box: editingBox, point: client, time };
+            if (cell && !cell.isContentEditable) textEditor?.current?.editBox(editingBox, cell);
           }
-        };
-        if (doubleTap) {
-          e.preventDefault();
-          if (!touch) {
-            selectEditedBox();
-            return;
-          }
+          return;
         }
-        if (cell && editingTable) {
-          if (!cell.isContentEditable) textEditor?.current?.editBox(editingTable, cell);
-          setTableCell(cell);
+        editingTap.current = null;
+        const hadSelection = !hoverKey.current &&
+          !!(selectedBoxesRef.current.length || selectedPicturesRef.current.length || selectedIdsRef.current.length);
+        if (editing) {
+          textEditor?.current?.finishEditing();
+          textEditor?.current?.savePageObjects();
         }
-        if (touch) {
-          beginTransform('move', null, e, {
-            tap: doubleTap ? selectEditedBox : () => {
-              editingTap.current = { box, point, time: performance.now() };
-            },
-          }, { box, cell });
-        } else {
-          editingTap.current = { box, point, time };
-        }
+        if (hit) selectObject(hit);
+        else if (hadSelection || editing || selectedToolRef.current === 'select') setSelection([]);
+        else startTextBox(point);
+      },
+    };
+    if (!editingBox) {
+      e.preventDefault();
+      if (textEditor && !hit) tap.hold = window.setTimeout(() => openPasteMenu(point, client), OBJECT_HOLD_MS);
+    }
+    touchTap.current = tap;
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
+    const pen = e.pointerType === 'pen';
+    if (pen && !spenTipDownRef.current) return;
+    const target = e.target as Element;
+    if (isInkUiTarget(target) || (!pen && target.closest('a[download]'))) return;
+
+    const client = { x: e.clientX, y: e.clientY };
+    const point = getPagePoint(client.x, client.y);
+    if (e.pointerType === 'touch') {
+      if (e.isPrimary && touchCountRef.current < 2 && !isStylusActiveRef.current && !spenTipDownRef.current) {
+        handleTouchDown(e, point, client, target);
+      }
+      return;
+    }
+
+    if (pen && selectedToolRef.current === 'text') {
+      textEditor?.current?.finishEditing();
+      selectedToolRef.current = lastWritingToolRef.current;
+      setSelectedTool(lastWritingToolRef.current);
+      setDrawRequest((request) => request + 1);
+    }
+    if (!pen && selectedToolRef.current === 'text') {
+      if (target.closest('[contenteditable="true"]')) return;
+      const cell = target.closest<HTMLTableCellElement>('td, th');
+      const table = cell?.closest<HTMLElement>(tableBoxSelector);
+      if (cell && table?.querySelector('[contenteditable="true"]')) {
+        textEditor?.current?.editBox(table, cell);
+        setTableCell(cell);
         return;
       }
       editingTap.current = null;
-      if (target?.closest('[contenteditable="true"]')) return;
-      dismissedEditor = touch && !!getEditor()?.querySelector(
-        `:scope > ${boxSelector}:not(${tableBoxSelector})[contenteditable="true"]`,
-      );
       textEditor?.current?.finishEditing();
-      if (dismissedEditor) textEditor?.current?.savePageObjects();
     }
+
+    const selecting = !isSpenEraserArmedRef.current &&
+      (selectedToolRef.current === 'select' || selectedToolRef.current === 'text');
+    const hits = selecting || !pen ? pickObjects(point, client, 6 / zoomRef.current) : [];
+    const hit = hits.find(isSelectedObject) ?? hits[0];
+    const withinFrame = selectionBoundsRef.current && pointInBounds(point, selectionBoundsRef.current);
+    if (!selecting && !hit && isStylusOnly && !pen) return;
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -1971,13 +2013,19 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       // A synthetic pointer may have no active capture.
     }
 
+    if (hit || ((selecting || !pen) && withinFrame)) {
+      beginObjectMove(e, hit);
+      return;
+    }
     if (selecting) {
       e.preventDefault();
-      handleSelectPointerDown(e, dismissedEditor);
+      startMarquee(e, point, client);
       return;
     }
 
-    if (e.pointerType === 'pen') isStylusActiveRef.current = true;
+    dragSawPressureRef.current = false;
+    zeroPressureSamplesRef.current = 0;
+    if (pen) isStylusActiveRef.current = true;
     if (selectedIdsRef.current.length || selectedPicturesRef.current.length || selectedBoxesRef.current.length) setSelection([]);
 
     const isEraserNow = isSpenEraserArmedRef.current || selectedToolRef.current === 'eraser';
@@ -2001,11 +2049,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Move (coalesced 120Hz events loop)
   const handlePointerMove = (e: React.PointerEvent) => {
-    const tap = editingTap.current;
-    if (tap && e.buttons && Math.hypot(e.clientX - tap.point.x, e.clientY - tap.point.y) > 24) {
-      editingTap.current = null;
+    if (e.pointerType === 'touch') {
+      const tap = touchTap.current;
+      if (tap?.pointer === e.pointerId && Math.hypot(e.clientX - tap.client.x, e.clientY - tap.client.y) >= SELECTION_TAP_SLOP) {
+        clearTouchTap();
+        editingTap.current = null;
+      }
+      return;
     }
-    if (isPinchingRef.current || (e.pointerType === 'touch' && !e.isPrimary)) return;
+    if (isPinchingRef.current) return;
     if (selectionPointerRef.current === e.pointerId) {
       if (selectionTravel(e.clientX, e.clientY) >= SELECTION_TAP_SLOP) selectionDragged.current = true;
       if (selectionDragged.current) {
@@ -2013,7 +2065,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       }
       return;
     }
-    if (e.pointerType === 'touch' || transformDragRef.current || activeTool === 'select' || activeTool === 'text') return;
+    if (e.pointerType === 'mouse' && !e.buttons) handleHover(e);
+    if (transformDragRef.current || activeTool === 'select' || activeTool === 'text') return;
     if (isStylusOnly && e.pointerType !== 'pen') return;
 
     if (e.pointerType === 'pen' && !spenTipDownRef.current) {
@@ -2110,18 +2163,27 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   // End the drag without changing the independent side-button state.
   const handlePointerUp = (e: React.PointerEvent) => {
     if (isPinchingRef.current) return;
+    if (e.pointerType === 'touch') {
+      const tap = touchTap.current;
+      if (tap?.pointer === e.pointerId) {
+        clearTouchTap();
+        if (Math.hypot(e.clientX - tap.client.x, e.clientY - tap.client.y) < SELECTION_TAP_SLOP) tap.run();
+      }
+      return;
+    }
     if (selectionPointerRef.current === e.pointerId) {
       updateMarquee(getPagePoint(e.clientX, e.clientY));
       finalizeSelection(e.clientX, e.clientY);
       return;
     }
-    if (e.pointerType === 'touch' || (e.pointerType === 'pen' && spenTipDownRef.current)) return;
+    if (e.pointerType === 'pen' && spenTipDownRef.current) return;
     if (e.pointerType === 'pen') isStylusActiveRef.current = false;
     commitActiveDrag();
   };
 
   const handlePointerCancel = (e: React.PointerEvent) => {
     editingTap.current = null;
+    if (touchTap.current?.pointer === e.pointerId) clearTouchTap();
     if (selectionPointerRef.current === e.pointerId) {
       selectionPointerRef.current = null;
       marqueeRef.current = null;
@@ -2131,11 +2193,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (e.pointerType !== 'touch') handlePointerUp(e);
   };
 
-  // Keeps the browser's own context menu off the canvas. S Pen button presses
-  // are handled by the global capture listeners, which run first.
-  const suppressCanvasMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    const target = e.target as Element;
+    if (isInkUiTarget(target) || target.closest('[contenteditable="true"], a[download]')) return;
+    const client = { x: e.clientX, y: e.clientY };
+    const hit = pickObjects(getPagePoint(client.x, client.y), client, 0).find(({ box }) => box);
+    if (hit?.box) {
+      e.preventDefault();
+      editSelectedText(hit.box, hit.cell ?? null);
+    }
   };
 
   // History controls
@@ -2158,7 +2224,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     } else {
       textEditor?.current?.finishEditing();
     }
-    lastPick.current = null;
+    if (hoverKey.current) setSelection([]);
     if (tool !== 'select') {
       setSelection([]);
       marqueeRef.current = null;
@@ -2241,30 +2307,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         transform: `translate(${textBlockLayout.x}px, ${textBlockLayout.y}px) rotate(${textBlockLayout.rotation}rad) scale(${textBlockLayout.scale})`
       };
 
-  const toggleTouchPan = () => {
-    const next = !touchPanRef.current;
-    touchPanRef.current = next;
-    setTouchPan(next);
-    stopPanMomentum.current?.();
-    if (!next) return;
-    if (!isStylusActiveRef.current && !spenTipDownRef.current) abortActiveCanvasDrag();
-    if (getEditor()?.querySelector('[contenteditable="true"]')) {
-      textEditor?.current?.finishEditing();
-      textEditor?.current?.savePageObjects();
-    }
-    setSelection([]);
-    lastPick.current = null;
-  };
-
-  const touchModeControl = (
-    <button type="button" className="ribbon-command" aria-label="Pan with touch" aria-pressed={touchPan}
-      title={touchPan ? 'Touch pans the page. Switch to touch editing.' : 'Touch selects and edits. Switch to touch panning.'}
-      onClick={toggleTouchPan}>
-      {touchPan ? <Hand size={16} /> : <MousePointer2 size={16} />}
-      <span className="hidden sm:inline">{touchPan ? 'Touch pan' : 'Touch edit'}</span>
-    </button>
-  );
-
   const saveObjects = () => {
     textEditor?.current?.savePageObjects();
     setObjectSizeVersion((version) => version + 1);
@@ -2274,7 +2316,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     event: React.PointerEvent, cell: HTMLTableCellElement, axis: TableResizeAxis,
   ) => {
     if (!selectedTable || !tablePlacement || transformDragRef.current || isPinchingRef.current ||
-        event.button !== 0 || !event.isPrimary || (event.pointerType === 'touch' && touchPanRef.current)) return;
+        event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
     event.stopPropagation();
     const pointer = event.pointerId;
@@ -2338,6 +2380,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const selectedStroke = strokes.find((stroke) => selectedIdSet.has(stroke.id));
   const hasSelection = selectedIds.length > 0 || selectedBoxes.length > 0 || selectedPictures.length > 0;
   const useRibbon = !!textEditor && !!onChangeBackground;
+  const pasteViewport = pasteMenu && scrollRef.current?.getBoundingClientRect();
   const tableTools = tableCell && selectedTable && (
     <TableToolbar cell={tableCell} onChangeCell={(cell) => {
       setTableCell(cell);
@@ -2460,17 +2503,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
               setTableCell(box.querySelector<HTMLTableCellElement>('td, th'));
             }}
             drawingTools={drawingTools}
-            touchModeControl={touchModeControl}
+            drawRequest={drawRequest}
             orientation={pageLayout}
             background={background}
             onOrientationChange={changePageLayout}
             onBackgroundChange={onChangeBackground}
-            selection={selectionTools}
+            selection={hovering ? undefined : selectionTools}
             keyboardOpen={keyboardOpen}
             textEditing={textEditing}
           />
         ) : (
-          <div className="flex justify-center items-center gap-2 px-4 py-2">{touchModeControl}{drawingTools}</div>
+          <div className="flex justify-center items-center gap-2 px-4 py-2">{drawingTools}</div>
         )}
         {!useRibbon && tableTools}
         {pictureError && <p role="alert" className="px-4 py-1 text-sm text-rose-600 dark:text-rose-400">{pictureError}</p>}
@@ -2483,6 +2526,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           ref={scrollRef}
           className="note-desk absolute inset-0 overflow-auto"
           data-ink-ui="page-viewport"
+          onScroll={() => {
+            if (hoverKey.current && !transformDragRef.current) setSelection([]);
+          }}
         >
           <div className="note-desk-inner px-3 py-4 sm:px-6 sm:py-8">
             <div
@@ -2508,12 +2554,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                   onPointerMove={handlePointerMove}
                   onPointerUp={handlePointerUp}
                   onPointerCancel={handlePointerCancel}
-                  onContextMenu={(event) => {
-                    if (!(event.target instanceof Element) || !event.target.closest('[contenteditable="true"]')) {
-                      suppressCanvasMenu(event);
-                    }
-                  }}
+                  onContextMenu={handleContextMenu}
+                  onDoubleClick={handleDoubleClick}
                   onPointerLeave={(event) => {
+                    if (event.pointerType === 'mouse' && hoverKey.current && !transformDragRef.current) setSelection([]);
                     if (activeTool !== 'select' && event.pointerType !== 'touch') handlePointerCancel(event);
                   }}
                   onDragOver={(event) => {
@@ -2548,8 +2592,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
                   <canvas
                     ref={canvasRef}
-                    onContextMenu={suppressCanvasMenu}
-                    onAuxClick={suppressCanvasMenu}
                     className={`ink-canvas absolute inset-0 z-30 block ${activeTool === 'text' ? 'pointer-events-none' : ''}`}
                     style={{
                       cursor: activeTool === 'select' ? 'default' : 'crosshair',
@@ -2567,6 +2609,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                     <SelectionOverlay
                       bounds={selectionBounds}
                       transform={liveTransform}
+                      hovering={hovering}
                       count={selectedDrawings.size}
                       boxCount={selectedBoxes.length}
                       tableSelected={selectedBoxes.length === 1 && selectedBoxes[0].matches(tableBoxSelector)}
@@ -2603,23 +2646,32 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           </div>
         </div>
 
+        {pasteMenu && pasteViewport && (
+          <button
+            ref={pasteButton}
+            type="button"
+            className="absolute z-50 flex items-center gap-2 rounded-lg border border-surface-subtle-light bg-surface-light px-3 py-2 text-sm text-ink-light shadow-floating dark:border-surface-subtle-dark dark:bg-surface-dark dark:text-ink-dark"
+            data-ink-ui="paste-image"
+            style={{
+              left: Math.max(4, Math.min(pasteMenu.client.x - pasteViewport.left, pasteViewport.width - 148)),
+              top: Math.max(4, Math.min(pasteMenu.client.y - pasteViewport.top + 10, pasteViewport.height - 48)),
+            }}
+            onClick={() => void pasteImage()}
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith('image/'));
+              if (!files.length) return;
+              event.preventDefault();
+              setPasteMenu(null);
+              void placePictures(files, pasteMenu.point, pasteMenu.noteId);
+            }}
+          >
+            <ClipboardPaste size={16} /> Paste image
+          </button>
+        )}
+
         {/* Overlays that stay put while the page scrolls. */}
         <div className="pointer-events-none absolute inset-0 z-40">
-        {/* Bottom Left: S Pen Live Telemetry / Diagnostic Badge */}
         <div className="pointer-events-auto absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1" data-ink-ui="stylus-status">
-          <button
-            type="button"
-            onClick={() => setDiagnosticHUD(!diagnosticHUD)}
-            title="Click to toggle S Pen Live Diagnostic HUD"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-surface-light/80 dark:bg-surface-dark/80 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] font-medium text-ink-muted-light dark:text-ink-muted-dark shadow-subtle hover:text-ink-light dark:hover:text-ink-dark transition"
-          >
-            <span className={`w-2 h-2 rounded-full ${isSpenEraserArmed ? 'bg-rose-500 animate-pulse' : stylusTelemetry.status === 'hovering' ? 'bg-emerald-500' : stylusTelemetry.status === 'drawing' ? 'bg-violet-500' : 'bg-slate-400'}`} />
-            <span>
-              S Pen: {isSpenEraserArmed ? `Eraser (${eraserMode === 'pixel' ? 'Pixel' : 'Object'}, ${eraserWidth}px)` : stylusTelemetry.status === 'hovering' ? `Hovering (${penWidth}px Pen)` : stylusTelemetry.status === 'drawing' ? 'Inking' : 'Ready'}
-            </span>
-            <Activity className="w-3 h-3 ml-0.5 opacity-60" />
-          </button>
-
           <button
             type="button"
             onClick={() => {
@@ -2634,15 +2686,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             <ClipboardCopy className="w-3 h-3" />
             <span>Log{spenLogRef.current.length > 0 ? ` · ${spenLogRef.current.length}` : ''}</span>
           </button>
-
-          {diagnosticHUD && (
-            <div className="p-2.5 rounded-xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating text-[10px] font-mono text-ink-light dark:text-ink-dark space-y-1 animate-in fade-in">
-              <div>Eraser Active: <span className={isSpenEraserArmed ? "font-bold text-rose-500" : "text-emerald-500"}>{isSpenEraserArmed ? `YES (${eraserMode === 'pixel' ? 'Pixel' : 'Object'}, ${eraserWidth}px)` : `NO (${penWidth}px Pen)`}</span></div>
-              <div>Buttons: <span className="font-semibold text-violet-500">{stylusTelemetry.buttons}</span> (button: {stylusTelemetry.button})</div>
-              <div>Pressure: <span className="font-semibold">{stylusTelemetry.pressure.toFixed(2)}</span></div>
-              <div>Last Event: <span className="text-emerald-500">{stylusTelemetry.lastTrigger}</span></div>
-            </div>
-          )}
 
           {isSpenLogOpen && (
             <div
@@ -2755,32 +2798,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
         {/* Bottom Right: Quick S Pen Floating Trigger Badge */}
         <div className="pointer-events-auto absolute bottom-4 right-4 z-10 flex items-center gap-2" data-ink-ui="floating-tools">
-          {/* 1-Tap Quick Tool Flip Pill */}
-          <button
-            type="button"
-            onClick={() => {
-              if (activeTool === 'eraser') {
-                handleManualToolSelect('fountain');
-              } else {
-                handleManualToolSelect('eraser');
-              }
-            }}
-            title="Toggle between Pen and Eraser (or hold S Pen button)"
-            className="flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-surface-light/95 dark:bg-surface-dark/95 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating text-xs font-semibold text-ink-light dark:text-ink-dark hover:scale-105 active:scale-95 transition"
-          >
-            {activeTool === 'eraser' ? (
-              <>
-                <Feather className="w-3.5 h-3.5 text-violet-500" />
-                <span>Switch to Pen</span>
-              </>
-            ) : (
-              <>
-                <Eraser className="w-3.5 h-3.5 text-rose-500" />
-                <span>Switch to Eraser</span>
-              </>
-            )}
-          </button>
-
           <button
             type="button"
             onClick={() => {

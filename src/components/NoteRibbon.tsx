@@ -29,8 +29,8 @@ interface NoteRibbonProps {
   onInsertTextBox: () => void;
   onInsertTable: (box: HTMLElement) => void;
   textActive: boolean;
+  drawRequest: number;
   drawingTools: ReactNode;
-  touchModeControl: ReactNode;
   orientation: PageLayout;
   background: InkBackground;
   onOrientationChange: (layout: PageLayout) => void;
@@ -41,17 +41,20 @@ interface NoteRibbonProps {
 }
 
 export function NoteRibbon({
-  editor, enableText, onInsertTextBox, onInsertTable, textActive, drawingTools, touchModeControl, orientation, background, onOrientationChange, onBackgroundChange, selection, keyboardOpen = false, textEditing = false,
+  editor, enableText, onInsertTextBox, onInsertTable, textActive, drawRequest, drawingTools, orientation, background, onOrientationChange, onBackgroundChange, selection, keyboardOpen = false, textEditing = false,
 }: NoteRibbonProps) {
   const id = useId();
   const [standardTab, setStandardTab] = useState<StandardTab>('Insert');
   const target = selection?.target;
   const [previousTarget, setPreviousTarget] = useState(target);
   const [previousEditing, setPreviousEditing] = useState(textEditing);
+  const [previousDrawRequest, setPreviousDrawRequest] = useState(drawRequest);
   const [tabOverride, setTabOverride] = useState<RibbonTab>();
-  if (target !== previousTarget || textEditing !== previousEditing) {
+  if (target !== previousTarget || textEditing !== previousEditing || drawRequest !== previousDrawRequest) {
     setPreviousTarget(target);
     setPreviousEditing(textEditing);
+    setPreviousDrawRequest(drawRequest);
+    if (drawRequest !== previousDrawRequest) setStandardTab('Draw');
     setTabOverride(undefined);
   }
   const tabs: readonly RibbonTab[] = selection ? [...TABS, selection.tab] : TABS;
@@ -125,7 +128,6 @@ export function NoteRibbon({
           ))}
         </div>
         <div className="ribbon-header-tools">
-          {touchModeControl}
           <button type="button" className="ribbon-command"
             aria-label="Text tool" title="Text tool" aria-pressed={textActive}
             onMouseDown={(event) => event.preventDefault()} onClick={() => {

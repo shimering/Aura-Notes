@@ -148,7 +148,10 @@ canvas.ink-canvas {
     0 18px 44px -20px rgba(15, 23, 42, 0.4);
   transform-origin: top left;
   will-change: transform;
+  -webkit-touch-callout: none;
 }
+
+.note-paper [contenteditable="true"] { -webkit-touch-callout: default; }
 
 .dark .note-paper {
   background-color: #1c1c1f;
@@ -489,6 +492,16 @@ canvas.ink-canvas {
   background: #f8fafc;
   color: #334155;
   font-size: 12px;
+}
+
+#root[data-keyboard-open="true"] .note-page-bar { display: none; }
+
+@supports (-webkit-touch-callout: none) {
+  #root:not([data-keyboard-open="true"]) { height: 100dvh; }
+  .note-page-bar {
+    padding-bottom: 2px;
+    margin-bottom: env(safe-area-inset-bottom, 0px);
+  }
 }
 
 .dark .note-page-bar { border-color: #3a4758; background: #242d3b; color: #e6edf7; }
