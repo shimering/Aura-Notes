@@ -325,6 +325,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
 
   const [selectedTool, setSelectedTool] = useState<PenTool>('text');
+  const [phonePanning, setPhonePanning] = useState(false);
   const [drawRequest, setDrawRequest] = useState(0);
   const [penColor, setPenColor] = useState<string>(defaultColor || (isDarkMode ? '#ffffff' : '#1e293b'));
   /** A tinted sheet stays pastel for dark ink and deepens for light ink. */
@@ -1893,6 +1894,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   }, [commitStrokes, getEditor, getPagePoint, getPictures, getTextBoxes, redraw, textEditor]);
 
   const enableText = () => {
+    setPhonePanning(false);
     if (selectedToolRef.current === 'text') return;
     flushSync(() => {
       setSelection([]);
@@ -1979,6 +1981,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   /** Arms the arrow tool from the Insert tab; the next drag draws one arrow. */
   const toggleArrowMode = (kind: ArrowKind) => {
+    setPhonePanning(false);
     const next = arrowModeRef.current === kind ? null : kind;
     arrowModeRef.current = next;
     setArrowMode(next);
@@ -2386,6 +2389,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
+    if (isPhone && isCanvas && phonePanning) return;
     const pen = e.pointerType === 'pen';
     if (pen && !spenTipDownRef.current) return;
     const target = e.target as Element;
@@ -2653,6 +2657,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handleManualToolSelect = (tool: PenTool) => {
+    setPhonePanning(false);
     setSelectedTool(tool);
     selectedToolRef.current = tool;
     // A pending arrow drag never survives a tool change.
@@ -2945,8 +2950,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const selectionTools = arrowTools ?? objectTools;
 
+  const toggleSpenLog = () => {
+    const next = !isSpenLogOpenRef.current;
+    isSpenLogOpenRef.current = next;
+    setIsSpenLogOpen(next);
+    setSpenLogVersion((version) => version + 1);
+  };
+
   const drawingTools = (
     <PenToolbar
+      phone={isPhone && !!textEditor && !!onChangeBackground}
       activeTool={activeTool}
       onSelectTool={handleManualToolSelect}
       color={penColor}
@@ -2967,6 +2980,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       isStylusOnly={isStylusOnly}
       onToggleStylusOnly={() => setIsStylusOnly(!isStylusOnly)}
       onOpenSPenMenu={() => openQuickMenu(null)}
+      onToggleSPenLog={toggleSpenLog}
       lastWritingTool={lastWritingToolRef.current}
       selectMode={selectMode}
       onChangeSelectMode={setSelectMode}
@@ -3003,9 +3017,19 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             }}
             onFinishText={() => textEditor.current?.finishEditing()}
             onStartDrawing={() => {
-              if (activeTool === 'text' || activeTool === 'select' || arrowMode) handleManualToolSelect(lastWritingToolRef.current);
+              if (phonePanning || activeTool === 'text' || activeTool === 'select' || arrowMode) handleManualToolSelect(lastWritingToolRef.current);
+            }}
+            phoneCanvasMode={isPhone && isCanvas ? (phonePanning && !arrowMode ? 'pan' : activeTool) : undefined}
+            onPhoneCanvasMode={(mode) => {
+              handleManualToolSelect('select');
+              setPhonePanning(mode === 'pan');
+              if (mode === 'pan') {
+                setSelection([]);
+                setSelectedArrowId(null);
+              }
             }}
             onFitWidth={fitPageWidth}
+            onZoom={(direction) => zoomBy(direction === 'in' ? 1 + PAGE_ZOOM_STEP : 1 / (1 + PAGE_ZOOM_STEP))}
             onInsertTextBox={insertTextBox}
             onInsertTable={insertTable}
             onInsertPicture={(file) => {
@@ -3266,15 +3290,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             {pageControls}
           </div>
         )}
-        <div className="pointer-events-auto absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1" data-ink-ui="stylus-status">
+        {(!isPhone || isSpenLogOpen) && <div className="pointer-events-auto absolute bottom-4 left-4 z-10 flex flex-col items-start gap-1" data-ink-ui="stylus-status">
           <button
             type="button"
-            onClick={() => {
-              const next = !isSpenLogOpenRef.current;
-              isSpenLogOpenRef.current = next;
-              setIsSpenLogOpen(next);
-              setSpenLogVersion((v) => v + 1);
-            }}
+            onClick={toggleSpenLog}
+            aria-label={isSpenLogOpen ? 'Close S Pen log' : 'Open S Pen log'}
             title="S Pen sample log — button, pressure and tool changes, copyable for bug reports"
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-surface-light/80 dark:bg-surface-dark/80 backdrop-blur-md border border-surface-subtle-light dark:border-surface-subtle-dark text-[11px] font-medium text-ink-muted-light dark:text-ink-muted-dark shadow-subtle hover:text-ink-light dark:hover:text-ink-dark transition"
           >
@@ -3346,7 +3366,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Bottom Center: page zoom. Pinch and trackpad pinch do the same. */}
         <div
@@ -3392,7 +3412,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         </div>
 
         {/* Bottom Right: Quick S Pen Floating Trigger Badge */}
-        <div className="pointer-events-auto absolute bottom-4 right-4 z-10 flex items-center gap-2" data-ink-ui="floating-tools">
+        {!isPhone && <div className="pointer-events-auto absolute bottom-4 right-4 z-10 flex items-center gap-2" data-ink-ui="floating-tools">
           <button
             type="button"
             onClick={() => {
@@ -3404,7 +3424,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           >
             <Sparkles className="w-4 h-4" />
           </button>
-        </div>
+        </div>}
         </div>
       </div>
 

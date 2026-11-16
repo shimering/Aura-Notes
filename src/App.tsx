@@ -441,8 +441,7 @@ export default function App() {
    * rapid edits (transforming ink and text together) must not each spread a
    * stale `activeNote`, or the second would drop the first one's change.
    */
-  const updateActiveNote = useCallback((updater: (note: Note) => Note) => {
-    const id = activeNoteIdRef.current;
+  const updateActiveNote = useCallback((updater: (note: Note) => Note, id = activeNoteIdRef.current) => {
     if (!id) return;
     const current = notesRef.current.find((note) => note.id === id);
     if (!current) return;
@@ -605,8 +604,8 @@ export default function App() {
   };
 
   // Update Note Tags
-  const handleUpdateTags = (tags: string[]) => {
-    updateActiveNote((current) => ({ ...current, tags }));
+  const handleUpdateTags = (tags: string[], noteId?: string) => {
+    updateActiveNote((current) => ({ ...current, tags }), noteId);
   };
 
   // Update Ink Page Background
@@ -694,9 +693,11 @@ export default function App() {
   };
 
   // Export Note as Markdown file
-  const handleExport = () => {
-    if (!activeNote) return;
+  const handleExport = (noteId = activeNoteIdRef.current) => {
+    const note = notesRef.current.find(({ id }) => id === noteId);
+    if (!note) return;
 
+    const pages = notePages(note);
     const div = document.createElement('div');
     const plainText = pages.map((page, index) => {
       div.innerHTML = sanitizeNoteHtml(page.content);
@@ -704,12 +705,12 @@ export default function App() {
       return pages.length > 1 ? `## Page ${index + 1}\n\n${content}` : content;
     }).join('\n\n');
 
-    const mdContent = `# ${activeNote.title || 'Untitled Note'}\n\n${plainText}\n\n---\n*Created with Aura Notes Studio on ${new Date(activeNote.createdAt).toLocaleString()}*`;
+    const mdContent = `# ${note.title || 'Untitled Note'}\n\n${plainText}\n\n---\n*Created with Aura Notes Studio on ${new Date(note.createdAt).toLocaleString()}*`;
     const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${(activeNote.title || 'note').replace(/[^a-zA-Z0-9_-]/g, '_')}.md`;
+    link.download = `${(note.title || 'note').replace(/[^a-zA-Z0-9_-]/g, '_')}.md`;
     link.click();
     URL.revokeObjectURL(url);
   };

@@ -29,11 +29,13 @@ export function useKeyboardViewport() {
       if (next) {
         root.style.setProperty('--app-height', `${viewport.height}px`);
         root.style.setProperty('--app-top', `${viewport.offsetTop}px`);
+        root.style.setProperty('--app-bottom', `${Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)}px`);
         root.dataset.keyboardOpen = 'true';
       } else if (open) {
         delete root.dataset.keyboardOpen;
         root.style.removeProperty('--app-height');
         root.style.removeProperty('--app-top');
+        root.style.removeProperty('--app-bottom');
         if (touchWebKit) {
           cancelAnimationFrame(layoutFrame);
           layoutFrame = requestAnimationFrame(() => {
@@ -46,7 +48,12 @@ export function useKeyboardViewport() {
         open = next;
         setKeyboardOpen(next);
       }
-      if (!next || !(focused instanceof HTMLElement) || !focused.isContentEditable) return;
+      if (next) revealCaret();
+    };
+
+    const revealCaret = () => {
+      const focused = document.activeElement;
+      if (!open || !(focused instanceof HTMLElement) || !focused.isContentEditable) return;
       const desk = focused.closest<HTMLElement>('.note-desk');
       if (!desk) return;
       cancelAnimationFrame(layoutFrame);
@@ -54,9 +61,10 @@ export function useKeyboardViewport() {
         const selection = window.getSelection();
         if (document.activeElement !== focused || !selection?.rangeCount || !focused.contains(selection.anchorNode)) return;
         const caret = selection.getRangeAt(0).getBoundingClientRect();
+        if (!caret.height) return;
         const bounds = desk.getBoundingClientRect();
         if (caret.bottom > bounds.bottom - 12) desk.scrollTop += caret.bottom - bounds.bottom + 12;
-        else if (caret.height && caret.top < bounds.top + 12) desk.scrollTop -= bounds.top + 12 - caret.top;
+        else if (caret.top < bounds.top + 12) desk.scrollTop -= bounds.top + 12 - caret.top;
       });
     };
 
@@ -69,6 +77,8 @@ export function useKeyboardViewport() {
     viewport.addEventListener('resize', onViewportChange);
     viewport.addEventListener('scroll', onViewportChange);
     document.addEventListener('focusin', onViewportChange);
+    document.addEventListener('input', revealCaret);
+    document.addEventListener('selectionchange', revealCaret);
     update();
     return () => {
       cancelAnimationFrame(viewportFrame);
@@ -77,9 +87,12 @@ export function useKeyboardViewport() {
       viewport.removeEventListener('resize', onViewportChange);
       viewport.removeEventListener('scroll', onViewportChange);
       document.removeEventListener('focusin', onViewportChange);
+      document.removeEventListener('input', revealCaret);
+      document.removeEventListener('selectionchange', revealCaret);
       delete root.dataset.keyboardOpen;
       root.style.removeProperty('--app-height');
       root.style.removeProperty('--app-top');
+      root.style.removeProperty('--app-bottom');
     };
   }, []);
 

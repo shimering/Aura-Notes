@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Note } from '../types/note';
 import { 
   Plus, 
@@ -13,6 +13,7 @@ import {
   Download,
   Cloud,
   ChevronDown,
+  Ellipsis,
   Sparkles
 } from 'lucide-react';
 import { NOTE_TEMPLATES } from '../utils/templates';
@@ -28,8 +29,8 @@ interface SidebarProps {
   onDeleteNote: (id: string) => void;
   onTogglePin: (id: string) => void;
   onUpdateTitle: (title: string) => void;
-  onUpdateTags: (tags: string[]) => void;
-  onExport: () => void;
+  onUpdateTags: (tags: string[], noteId?: string) => void;
+  onExport: (noteId?: string) => void;
   onOpenSettings: () => void;
   isSaving: boolean;
   isSyncing: boolean;
@@ -70,7 +71,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [isTemplateMenuOpen, setIsTemplateMenuOpen] = useState(false);
   const [tagEditorNoteId, setTagEditorNoteId] = useState<string>();
   const templateMenuRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const listPosition = useRef(0);
+  const returnToNote = useRef<HTMLButtonElement>(null);
+  const actionsDialog = useRef<HTMLDialogElement>(null);
+  const actionsTitle = useId();
+  const [actionsNoteId, setActionsNoteId] = useState<string>();
+  const actionsNote = notes.find(({ id }) => id === actionsNoteId);
   const activeNote = notes.find(({ id }) => id === activeNoteId);
+
+  useLayoutEffect(() => {
+    if (isPhone && isOpen && listRef.current) {
+      listRef.current.scrollTop = listPosition.current;
+      returnToNote.current?.focus({ preventScroll: true });
+    }
+  }, [isPhone, isOpen]);
+
+  useEffect(() => {
+    if ((!actionsNote || !isPhone || !isOpen) && actionsDialog.current?.open) actionsDialog.current.close();
+  }, [actionsNote, isPhone, isOpen]);
 
   useEffect(() => {
     if (!isTemplateMenuOpen) return;
@@ -173,16 +192,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={() => setIsTemplateMenuOpen((open) => !open)}
                 title="New note from template"
-                aria-haspopup="menu"
+                aria-label={isPhone ? 'Templates' : 'New note from template'}
+                aria-haspopup={isPhone ? undefined : 'menu'}
                 aria-expanded={isTemplateMenuOpen}
-                className="p-2 pr-2.5 rounded-r-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition active:scale-95 border-l border-white/25"
+                className="notes-template-trigger p-2 pr-2.5 rounded-r-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition active:scale-95 border-l border-white/25"
               >
-                <ChevronDown className="w-3.5 h-3.5" />
+                {isPhone ? 'Templates' : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
 
               {isTemplateMenuOpen && (
                 <div
-                  role="menu"
+                  role={isPhone ? 'group' : 'menu'}
+                  aria-label="Note templates"
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Escape') return;
+                    setIsTemplateMenuOpen(false);
+                    templateMenuRef.current?.querySelector<HTMLButtonElement>('.notes-template-trigger')?.focus();
+                  }}
                   className="notes-template-menu absolute top-full right-0 mt-2 z-50 w-64 p-1.5 rounded-2xl bg-surface-light dark:bg-surface-dark border border-surface-subtle-light dark:border-surface-subtle-dark shadow-floating animate-in fade-in"
                 >
                   <p className="px-2 py-1 text-[10px] uppercase tracking-wider text-ink-muted-light dark:text-ink-muted-dark">
@@ -191,7 +217,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   {NOTE_TEMPLATES.map((template) => (
                     <button
                       key={template.id}
-                      role="menuitem"
+                      role={isPhone ? undefined : 'menuitem'}
                       onClick={() => {
                         setIsTemplateMenuOpen(false);
                         onCreateNote(template.id);
@@ -222,7 +248,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {isOpen && activeNote && (
+        {!isPhone && isOpen && activeNote && (
           <details key={activeNote.id}
             className="notes-list-actions mx-3 mb-2 rounded-xl bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60"
             onToggle={(event) => {
@@ -242,7 +268,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onClick={() => setTagEditorNoteId(tagEditorNoteId === activeNote.id ? undefined : activeNote.id)}>
                   <Tag size={14} /> Tags
                 </button>
-                <button type="button" className="ribbon-command" onClick={onExport}>
+                <button type="button" className="ribbon-command" onClick={() => onExport()}>
                   <FileDown size={14} /> Export note
                 </button>
               </div>
@@ -262,7 +288,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               ref={searchInputRef}
               type="search"
               aria-label="Search notes"
-              placeholder={isPhone ? 'Search notes or scribbles' : 'Search notes or scribbles... (Ctrl+K)'}
+              placeholder={isPhone ? 'Search notes or scribbles…' : 'Search notes or scribbles... (Ctrl+K)'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-surface-subtle-light dark:bg-surface-subtle-dark border-none outline-none focus:ring-2 focus:ring-violet-500 text-ink-light dark:text-ink-dark placeholder-ink-muted-light dark:placeholder-ink-muted-dark transition"
@@ -301,7 +327,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Notes List */}
-        <div className="flex-1 overflow-y-auto px-2 space-y-1.5 pb-4">
+        <div ref={listRef} className="notes-list-items min-h-0 flex-1 overflow-y-auto px-2 space-y-1.5 pb-4">
           {filteredNotes.length === 0 ? (
             <div className="py-12 text-center text-sm text-ink-muted-light dark:text-ink-muted-dark">
               {notes.length ? 'No notes found' : 'No notes yet'}
@@ -309,8 +335,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ) : (
             filteredNotes.map((note, index) => {
               const isActive = note.id === activeNoteId;
-              const preview = stripHtml(note.content).trim();
-              const hasInk = notePages(note).some((page) => page.inkStrokes?.length);
+              const pages = notePages(note);
+              const preview = isPhone
+                ? pages.map((page) => stripHtml(page.content).trim() || page.recognizedText?.trim()).find(Boolean)
+                : stripHtml(note.content).trim();
+              const hasInk = pages.some((page) => page.inkStrokes?.length);
+              const title = note.title || 'Untitled Note';
 
               return (
                 <React.Fragment key={note.id}>
@@ -319,6 +349,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     {note.pinned ? 'Pinned' : 'Recent'}
                   </p>
                 )}
+                {isPhone ? (
+                  <div className="phone-note-row" data-current={isActive}>
+                    <button type="button" className="phone-note-open" aria-current={isActive ? 'true' : undefined}
+                      aria-label={title} onClick={(event) => {
+                        listPosition.current = listRef.current?.scrollTop ?? 0;
+                        returnToNote.current = event.currentTarget;
+                        onSelectNote(note.id);
+                      }}>
+                      <span className="phone-note-title">{title}</span>
+                      <span className="phone-note-preview">{preview || (hasInk ? 'Handwritten note' : 'Empty note')}</span>
+                    </button>
+                    <div className="phone-note-meta">
+                      <button type="button" className="phone-editor-action" aria-label={`Actions for ${title}`}
+                        aria-haspopup="dialog" onClick={() => {
+                          setActionsNoteId(note.id);
+                          actionsDialog.current?.showModal();
+                        }}><Ellipsis size={20} aria-hidden="true" /></button>
+                      <time dateTime={new Date(note.updatedAt).toISOString()}>{formatDate(note.updatedAt)}</time>
+                    </div>
+                  </div>
+                ) : (
                 <div
                   className={`group relative p-3 rounded-xl cursor-pointer transition-all ${
                     isActive
@@ -382,14 +433,49 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   </div>
                 </div>
+                )}
                 </React.Fragment>
               );
             })
           )}
         </div>
 
+        {isPhone && <dialog ref={actionsDialog} className="phone-pages phone-note-actions" aria-labelledby={actionsTitle}
+          onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}
+          onClose={() => { setActionsNoteId(undefined); setTagEditorNoteId(undefined); }}>
+          <div className="phone-pages-content">
+            <header>
+              <h2 id={actionsTitle}>{actionsNote?.title || 'Note actions'}</h2>
+              <button type="button" className="phone-editor-action" aria-label="Close note actions"
+                onClick={() => actionsDialog.current?.close()}><X size={20} aria-hidden="true" /></button>
+            </header>
+            {actionsNote && <div className="phone-note-action-list">
+              <button type="button" onClick={() => {
+                actionsDialog.current?.close();
+                onTogglePin(actionsNote.id);
+              }}><Pin size={17} aria-hidden="true" /> {actionsNote.pinned ? 'Unpin note' : 'Pin note'}</button>
+              <button type="button" aria-expanded={tagEditorNoteId === actionsNote.id}
+                onClick={() => setTagEditorNoteId(tagEditorNoteId === actionsNote.id ? undefined : actionsNote.id)}>
+                <Tag size={17} aria-hidden="true" /> Edit tags
+              </button>
+              {tagEditorNoteId === actionsNote.id && <TagEditor tags={actionsNote.tags ?? []} allTags={allTags}
+                dismissOnOutsideClick={false} onChange={(tags) => onUpdateTags(tags, actionsNote.id)}
+                onClose={() => setTagEditorNoteId(undefined)} />}
+              <button type="button" onClick={() => {
+                actionsDialog.current?.close();
+                onExport(actionsNote.id);
+              }}><FileDown size={17} aria-hidden="true" /> Export note</button>
+              <button type="button" className="phone-delete-note" onClick={() => {
+                if (!window.confirm(`Delete “${actionsNote.title || 'Untitled Note'}”?`)) return;
+                actionsDialog.current?.close();
+                onDeleteNote(actionsNote.id);
+              }}><Trash2 size={17} aria-hidden="true" /> Delete note</button>
+            </div>}
+          </div>
+        </dialog>}
+
         {/* App shortcuts */}
-        <div className="notes-list-shortcuts p-3 border-t border-surface-subtle-light dark:border-surface-subtle-dark flex-shrink-0 space-y-1.5">
+        <div className={`notes-list-shortcuts p-3 border-t border-surface-subtle-light dark:border-surface-subtle-dark flex-shrink-0${isPhone ? '' : ' space-y-1.5'}`}>
           <button type="button" onClick={onOpenSettings} aria-label="Open settings"
             className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-xl bg-surface-subtle-light/60 dark:bg-surface-subtle-dark/60 text-ink-light dark:text-ink-dark hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark border border-surface-subtle-light dark:border-surface-subtle-dark transition active:scale-95">
             <Settings size={14} />

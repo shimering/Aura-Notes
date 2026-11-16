@@ -1,5 +1,5 @@
 import { useId, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Files, Plus, Trash2, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Files, Plus, Trash2, X } from 'lucide-react';
 import type { NotePage } from '../types/note';
 
 interface NotePageBarProps {
@@ -40,7 +40,7 @@ export function PhonePagePicker({ pages, pageIndex, onSelect, onAdd, onDelete }:
     <>
       <button type="button" className="phone-editor-action phone-pages-trigger" aria-haspopup="dialog"
         aria-label={`Pages, ${pageIndex + 1} of ${pages.length}`} onClick={() => dialog.current?.showModal()}>
-        <Files size={17} /> <span>{pageIndex + 1}/{pages.length}</span>
+        <span>Pages</span> <span className="phone-page-number">{pageIndex + 1}/{pages.length}</span>
       </button>
       <dialog ref={dialog} className="phone-pages" aria-labelledby={titleId}
         onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
@@ -56,7 +56,7 @@ export function PhonePagePicker({ pages, pageIndex, onSelect, onAdd, onDelete }:
                 <button type="button" aria-current={index === pageIndex ? 'page' : undefined} onClick={() => {
                   onSelect(id);
                   dialog.current?.close();
-                }}>Page {index + 1}</button>
+                }}>Page {index + 1}{index === pageIndex && <Check size={17} aria-hidden="true" />}</button>
               </li>
             ))}
           </ol>

@@ -6,12 +6,13 @@ interface TagEditorProps {
   allTags: string[];
   onChange: (tags: string[]) => void;
   onClose: () => void;
+  dismissOnOutsideClick?: boolean;
 }
 
 const MAX_TAGS = 12;
 const MAX_TAG_LENGTH = 24;
 
-export const TagEditor: React.FC<TagEditorProps> = ({ tags, allTags, onChange, onClose }) => {
+export const TagEditor: React.FC<TagEditorProps> = ({ tags, allTags, onChange, onClose, dismissOnOutsideClick = true }) => {
   const [input, setInput] = useState('');
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -29,13 +30,13 @@ export const TagEditor: React.FC<TagEditorProps> = ({ tags, allTags, onChange, o
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
-    document.addEventListener('mousedown', handlePointerDown);
+    if (dismissOnOutsideClick) document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('keydown', handleKey);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKey);
     };
-  }, [onClose]);
+  }, [dismissOnOutsideClick, onClose]);
 
   const normalizedTags = useMemo(
     () => new Set(tags.map((t) => t.toLowerCase())),
@@ -118,7 +119,8 @@ export const TagEditor: React.FC<TagEditorProps> = ({ tags, allTags, onChange, o
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Add a tag..."
+          aria-label="New tag"
+          placeholder="Add a tag…"
           maxLength={MAX_TAG_LENGTH}
           className="min-w-0 flex-1 px-2.5 py-1.5 rounded-lg bg-surface-subtle-light dark:bg-surface-subtle-dark border-none outline-none focus:ring-2 focus:ring-violet-500 text-xs text-ink-light dark:text-ink-dark"
         />
@@ -126,6 +128,7 @@ export const TagEditor: React.FC<TagEditorProps> = ({ tags, allTags, onChange, o
           type="submit"
           disabled={!input.trim() || tags.length >= MAX_TAGS}
           title="Add tag"
+          aria-label="Add tag"
           className="p-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 transition"
         >
           <Plus className="w-3.5 h-3.5" />

@@ -1,9 +1,9 @@
 import { useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import {
-  AlignJustify, ArrowRight, ChevronDown, ChevronUp, Circle, Ellipsis, FileText, Grid3x3, Image, Infinity as InfinityIcon,
-  Maximize2, Pencil, Plus, RectangleHorizontal, RectangleVertical, Spline, Square, Table2, Type,
+  AlignJustify, ArrowRight, ChevronDown, ChevronUp, Circle, Ellipsis, FileText, Grid3x3, Hand, Image, Infinity as InfinityIcon,
+  Maximize2, MousePointer2, Pencil, Plus, RectangleHorizontal, RectangleVertical, Spline, Square, Table2, Type, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
-import { ArrowKind, InkBackground, PageLayout } from '../types/note';
+import type { ArrowKind, InkBackground, PageLayout, PenTool } from '../types/note';
 import { INK_BACKGROUNDS, PAGE_COLORS } from '../utils/inkBackground';
 import { FormatToolbar } from './FormatToolbar';
 import type { TextEditorRef } from './TextEditor';
@@ -33,6 +33,7 @@ interface NoteRibbonProps {
   onFinishText: () => void;
   onStartDrawing: () => void;
   onFitWidth: () => void;
+  onZoom?: (direction: 'in' | 'out') => void;
   onInsertTextBox: () => void;
   onInsertTable: (rows: number, columns: number) => void;
   onInsertPicture: (file: File) => void;
@@ -52,13 +53,15 @@ interface NoteRibbonProps {
   selection?: RibbonSelection;
   keyboardOpen?: boolean;
   textEditing?: boolean;
+  phoneCanvasMode?: 'pan' | PenTool;
+  onPhoneCanvasMode?: (mode: 'pan' | 'select') => void;
 }
 
 export function NoteRibbon({
-  editor, isPhone = false, notesMenuButton, enableText, onFocusText, onFinishText, onStartDrawing, onFitWidth,
+  editor, isPhone = false, notesMenuButton, enableText, onFocusText, onFinishText, onStartDrawing, onFitWidth, onZoom,
   onInsertTextBox, onInsertTable, onInsertPicture, arrowMode, onArrowMode, textActive, drawRequest, drawingTools,
   orientation, background, pageColor, onOrientationChange, onBackgroundChange, onPageColorChange,
-  selection, keyboardOpen = false, textEditing = false,
+  selection, keyboardOpen = false, textEditing = false, phoneCanvasMode, onPhoneCanvasMode,
 }: NoteRibbonProps) {
   const id = useId();
   const [standardTab, setStandardTab] = useState<StandardTab>('Insert');
@@ -101,6 +104,20 @@ export function NoteRibbon({
   const [message, setMessage] = useState('');
   const pictureInput = useRef<HTMLInputElement>(null);
   const pdfInput = useRef<HTMLInputElement>(null);
+  const insertTrigger = useRef<HTMLButtonElement>(null);
+  const insertHeading = useRef<HTMLHeadingElement>(null);
+  const insertOpen = isPhone && phonePanel === 'tools' && tab === 'Insert';
+
+  useLayoutEffect(() => {
+    if (insertOpen) insertHeading.current?.focus({ preventScroll: true });
+  }, [insertOpen]);
+
+  const closeInsert = (restoreFocus = false) => {
+    if (!isPhone) return;
+    setPhonePanel(undefined);
+    setShowTable(false);
+    if (restoreFocus) insertTrigger.current?.focus();
+  };
 
   const edit = async (action: (editor: TextEditorRef) => void | Promise<void>) => {
     setMessage('');
@@ -116,6 +133,7 @@ export function NoteRibbon({
     event.preventDefault();
     const values = new FormData(event.currentTarget);
     setShowTable(false);
+    closeInsert();
     onInsertTable(Number(values.get('rows')), Number(values.get('columns')));
   };
 
@@ -182,9 +200,18 @@ export function NoteRibbon({
           ))}
         </div>
         <div className="ribbon-header-tools">
-          {isPhone ? <button type="button" className="phone-editor-action" title={orientation === 'canvas' ? 'Fit canvas content' : 'Fit page width'}
-            aria-label={orientation === 'canvas' ? 'Fit canvas content' : 'Fit page width'}
-            onClick={onFitWidth}><Maximize2 size={17} /></button> : <button type="button" className="ribbon-command"
+          {isPhone && !typingOnPhone && <div className="phone-zoom-actions" role="group" aria-label="Page zoom">
+            <button type="button" className="phone-editor-action" aria-label="Zoom out" onClick={() => onZoom?.('out')}>
+              <ZoomOut size={16} aria-hidden="true" />
+            </button>
+            <button type="button" className="phone-editor-action" aria-label="Zoom in" onClick={() => onZoom?.('in')}>
+              <ZoomIn size={16} aria-hidden="true" />
+            </button>
+            <button type="button" className="phone-editor-action" onClick={onFitWidth}>
+              <Maximize2 size={16} aria-hidden="true" /> {orientation === 'canvas' ? 'Fit content' : 'Fit page'}
+            </button>
+          </div>}
+          {!isPhone && <button type="button" className="ribbon-command"
             aria-label="Text tool" title="Text tool" aria-pressed={textActive}
             onMouseDown={(event) => event.preventDefault()} onClick={onFocusText}>
             <Type size={16} />
@@ -198,10 +225,12 @@ export function NoteRibbon({
         </div>
       </div>}
 
-      {showPanel && <div role="tabpanel" id={`${id}-panel`} aria-labelledby={showHeader ? `${id}-tab-${tabs.indexOf(tab)}` : undefined}
+      {showPanel && <div role={showHeader ? 'tabpanel' : 'region'} id={`${id}-panel`} aria-labelledby={showHeader ? `${id}-tab-${tabs.indexOf(tab)}` : undefined}
         aria-label={showHeader ? undefined : tab}
-        className="ribbon-panel" onKeyDown={(event) => {
-          if (event.key === 'Escape') setShowTable(false);
+        className={`ribbon-panel${insertOpen ? ' phone-insert-panel' : ''}`} onKeyDown={(event) => {
+          if (event.key !== 'Escape') return;
+          if (insertOpen && !showTable) closeInsert(true);
+          else setShowTable(false);
         }}>
         {tab === 'Home' && (
           <FormatToolbar compact={compact} quickActions={quickFormat ? <>{phoneMoreButton}{phoneDoneButton}</> : undefined}
@@ -209,6 +238,12 @@ export function NoteRibbon({
             void edit((current) => current.applyFormat(command, value))} />
         )}
         {tab === 'Insert' && (
+          <>
+          {insertOpen && <header className="phone-panel-heading">
+            <h2 ref={insertHeading} tabIndex={-1}>Insert</h2>
+            <button type="button" className="phone-editor-action" aria-label="Close insert tools"
+              onClick={() => closeInsert(true)}><X size={18} aria-hidden="true" /></button>
+          </header>}
           <div className="ribbon-groups">
             <div className="ribbon-group">
               <div className="ribbon-row">
@@ -216,6 +251,7 @@ export function NoteRibbon({
                   onMouseDown={(event) => event.preventDefault()} onClick={() => {
                     setShowTable(false);
                     setMessage('');
+                    closeInsert();
                     onInsertTextBox();
                   }}>
                   <Type size={21} /> Text Box
@@ -244,12 +280,12 @@ export function NoteRibbon({
               <div className="ribbon-row">
                 <button type="button" className="ribbon-command ribbon-large-command"
                   aria-pressed={arrowMode === 'straight'} title="Straight arrow: drag between elements"
-                  onMouseDown={(event) => event.preventDefault()} onClick={() => onArrowMode('straight')}>
+                  onMouseDown={(event) => event.preventDefault()} onClick={() => { onArrowMode('straight'); closeInsert(true); }}>
                   <ArrowRight size={21} /> Straight arrow
                 </button>
                 <button type="button" className="ribbon-command ribbon-large-command"
                   aria-pressed={arrowMode === 'curved'} title="Curved arrow: drag a bend to reshape it"
-                  onMouseDown={(event) => event.preventDefault()} onClick={() => onArrowMode('curved')}>
+                  onMouseDown={(event) => event.preventDefault()} onClick={() => { onArrowMode('curved'); closeInsert(true); }}>
                   <Spline size={21} /> Curved arrow
                 </button>
               </div>
@@ -257,12 +293,13 @@ export function NoteRibbon({
             </div>
             {showTable && (
               <form className="ribbon-popover ribbon-table-form" onSubmit={addTable}>
-                <label>Rows<input autoFocus name="rows" type="number" min="1" max="20" defaultValue="3" required /></label>
+                <label>Rows<input autoFocus={!isPhone} name="rows" type="number" min="1" max="20" defaultValue="3" required /></label>
                 <label>Columns<input name="columns" type="number" min="1" max="10" defaultValue="3" required /></label>
                 <button type="submit">Insert table</button>
               </form>
             )}
           </div>
+          </>
         )}
         {tab === 'Page Layout' && (
           <div className="ribbon-groups">
@@ -316,34 +353,47 @@ export function NoteRibbon({
       </div>}
 
       {isPhone && !quickFormat && (
+        <>
+        {!keyboardOpen && phoneCanvasMode && (
+          <div className="phone-view-actions" role="group" aria-label="Canvas interaction">
+            <button type="button" className="phone-editor-action" aria-pressed={phoneCanvasMode === 'pan'}
+              onClick={() => { closeInsert(); onPhoneCanvasMode?.('pan'); }}><Hand size={16} aria-hidden="true" /> Pan</button>
+            <button type="button" className="phone-editor-action" aria-pressed={phoneCanvasMode === 'select'}
+              onClick={() => { closeInsert(); onPhoneCanvasMode?.('select'); }}><MousePointer2 size={16} aria-hidden="true" /> Select</button>
+          </div>
+        )}
         <div className="phone-editor-tools" role="group" aria-label="Editor tools">
           {typingOnPhone ? <>{phoneMoreButton}{phoneDoneButton}</> : <>
-            <button type="button" className="phone-editor-action" onMouseDown={(event) => event.preventDefault()}
+            <button type="button" className="phone-editor-action" aria-pressed={textEditing} onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
                 setPhonePanel(undefined);
                 selectTab('Home');
                 onFocusText();
               }}><Type size={19} /> Type</button>
             <button type="button" className="phone-editor-action" aria-expanded={showPanel && tab === 'Draw'}
+              data-active={!textActive && phoneCanvasMode !== 'pan' && phoneCanvasMode !== 'select' && !arrowMode}
               onClick={() => togglePhoneTools('Draw')}><Pencil size={18} /> Draw</button>
-            <button type="button" className="phone-editor-action" aria-expanded={showPanel && tab === 'Insert'}
+            <button ref={insertTrigger} type="button" className="phone-editor-action" aria-expanded={showPanel && tab === 'Insert'}
+              data-active={!!arrowMode}
+              aria-controls={showPanel && tab === 'Insert' ? `${id}-panel` : undefined}
               onMouseDown={(event) => event.preventDefault()} onClick={() => togglePhoneTools('Insert')}><Plus size={21} /> Insert</button>
             {phoneMoreButton}
           </>}
         </div>
+        </>
       )}
 
       <input hidden ref={pictureInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp"
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = '';
-          if (file) onInsertPicture(file);
+          if (file) { closeInsert(); onInsertPicture(file); }
         }} />
       <input hidden ref={pdfInput} type="file" accept=".pdf,application/pdf"
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = '';
-          if (file) void edit((current) => current.insertPdf(file));
+          if (file) { closeInsert(); void edit((current) => current.insertPdf(file)); }
         }} />
       {message && <div className="ribbon-message" role="alert">{message}</div>}
     </section>

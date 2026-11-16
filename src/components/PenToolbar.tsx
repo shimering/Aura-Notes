@@ -5,6 +5,7 @@ import {
   Highlighter,
   Eraser,
   ChevronDown,
+  Ellipsis,
   Undo2,
   Redo2,
   Trash2,
@@ -13,6 +14,7 @@ import {
   ShieldAlert,
   Sparkles,
   Circle,
+  ClipboardCopy,
   Square,
   Type,
   MousePointer2,
@@ -43,6 +45,7 @@ export const HIGHLIGHTER_PALETTE = [
 ];
 
 interface PenToolbarProps {
+  phone?: boolean;
   activeTool: PenTool;
   onSelectTool: (tool: PenTool) => void;
   color: string;
@@ -63,6 +66,7 @@ interface PenToolbarProps {
   isStylusOnly: boolean;
   onToggleStylusOnly: () => void;
   onOpenSPenMenu?: () => void;
+  onToggleSPenLog?: () => void;
   lastWritingTool?: PenTool;
   selectMode?: SelectMode;
   onChangeSelectMode?: (mode: SelectMode) => void;
@@ -187,6 +191,7 @@ const MenuHeading: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 );
 
 export const PenToolbar: React.FC<PenToolbarProps> = ({
+  phone = false,
   activeTool,
   onSelectTool,
   color,
@@ -207,11 +212,13 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
   isStylusOnly,
   onToggleStylusOnly,
   onOpenSPenMenu,
+  onToggleSPenLog,
   lastWritingTool,
   selectMode = 'rect',
   onChangeSelectMode
 }) => {
   const [openMenu, setOpenMenu] = useState<ToolbarMenu>(null);
+  const [showDrawingOptions, setShowDrawingOptions] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const activeToolOption = TOOL_OPTIONS.find((tool) => tool.id === activeTool) ?? TOOL_OPTIONS[2];
   const currentPalette = activeTool === 'highlighter' ? HIGHLIGHTER_PALETTE : INK_PALETTE;
@@ -257,23 +264,33 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
     <div
       ref={toolbarRef}
       data-ink-ui="pen-toolbar"
+      data-phone-drawing={phone ? (showDrawingOptions ? 'all' : 'quick') : undefined}
       className="relative rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark select-none"
     >
       <div className="pen-toolbar-controls flex flex-wrap items-center justify-center gap-1 p-1.5">
+        {phone && !showDrawingOptions && <>
+          <button type="button" className="phone-editor-action" aria-label="Pen"
+            aria-pressed={activeTool === lastWritingTool} onClick={() => pickTool(lastWritingTool || 'fountain')}>
+            <Pen size={18} aria-hidden="true" />
+          </button>
+          <button type="button" className="phone-editor-action" aria-label="Eraser" aria-pressed={isEraser}
+            onClick={() => pickTool('eraser')}><Eraser size={18} aria-hidden="true" /></button>
+        </>}
         {/* Active tool — the menu holds every tool and its options. */}
         <button
           type="button"
           onClick={() => toggleMenu('tool')}
           title={`Tool: ${activeToolOption.label}`}
+          aria-label={`Drawing tool: ${activeToolOption.label}`}
           aria-haspopup="menu"
           aria-expanded={openMenu === 'tool'}
           className={`flex h-10 w-12 shrink-0 items-center justify-center gap-1 rounded-xl px-2 transition active:scale-95 sm:w-36 sm:justify-start ${
             openMenu === 'tool' ? 'ring-2 ring-violet-400/70' : ''
-          } ${activeToolOption.accent}`}
+          } ${phone && !showDrawingOptions ? 'phone-editor-action' : activeToolOption.accent}`}
         >
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+          {(!phone || showDrawingOptions) && <span className="flex h-4 w-4 shrink-0 items-center justify-center">
             {activeToolOption.icon}
-          </span>
+          </span>}
           <span className="hidden min-w-0 flex-1 truncate text-left text-xs font-semibold sm:inline">
             {activeToolOption.label}
           </span>
@@ -287,6 +304,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           type="button"
           onClick={() => toggleMenu('color')}
           title={`Ink color ${color}`}
+          aria-label="Ink color"
           aria-haspopup="menu"
           aria-expanded={openMenu === 'color'}
           className={triggerClass('color', 'w-12 gap-1')}
@@ -305,7 +323,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           title={isEraser ? `Eraser size: ${currentEraserWidth}px` : `Pen width: ${width}px`}
           aria-haspopup="menu"
           aria-expanded={openMenu === 'size'}
-          className={triggerClass('size', 'w-12 gap-1')}
+          className={triggerClass('size', 'w-12 gap-1 pen-secondary')}
         >
           <span
             className="rounded-full bg-current"
@@ -326,7 +344,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
               : 'Limit ink input to the stylus'
           }
           aria-pressed={isStylusOnly}
-          className={`${TRIGGER} w-10 ${
+          className={`${TRIGGER} w-10 pen-secondary ${
             isStylusOnly
               ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
               : 'text-ink-muted-light dark:text-ink-muted-dark'
@@ -341,7 +359,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
           onClick={onScribbleToText}
           disabled={!hasStrokes}
           title="Convert handwritten scribbles to text"
-          className={`${TRIGGER} w-10 ${
+          className={`${TRIGGER} w-10 pen-secondary ${
             hasStrokes
               ? 'bg-gradient-to-r from-violet-600 via-indigo-600 to-pink-600 text-white hover:opacity-90'
               : 'disabled:opacity-30 disabled:cursor-not-allowed'
@@ -355,10 +373,14 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
             type="button"
             onClick={onOpenSPenMenu}
             title="S Pen Quick Menu"
-            className={`${TRIGGER} w-10 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40`}
+            className={`${TRIGGER} w-10 pen-secondary text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40`}
           >
             <Sparkles className="w-4 h-4" />
           </button>
+        )}
+        {phone && showDrawingOptions && onToggleSPenLog && (
+          <button type="button" className="phone-editor-action" aria-label="S Pen log" title="S Pen log"
+            onClick={() => { closeMenu(); onToggleSPenLog(); }}><ClipboardCopy size={16} aria-hidden="true" /></button>
         )}
 
         <span className={DIVIDER} aria-hidden="true" />
@@ -370,6 +392,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
             onClick={onUndo}
             disabled={!canUndo}
             title="Undo stroke"
+            aria-label="Undo stroke"
             className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Undo2 className="w-4 h-4" />
@@ -379,7 +402,7 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
             onClick={onRedo}
             disabled={!canRedo}
             title="Redo stroke"
-            className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
+            className="pen-secondary flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Redo2 className="w-4 h-4" />
           </button>
@@ -388,11 +411,16 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
             onClick={onClear}
             disabled={!hasStrokes}
             title="Clear all inking"
-            className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-muted-light transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30 disabled:opacity-30 disabled:cursor-not-allowed"
+            className="pen-secondary flex h-9 w-8 items-center justify-center rounded-xl text-ink-muted-light transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30 disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Trash2 className="w-4 h-4" />
           </button>
         </div>
+        {phone && <button type="button" className="phone-editor-action phone-drawing-options"
+          aria-label="Drawing options" aria-expanded={showDrawingOptions} onClick={() => {
+            closeMenu();
+            setShowDrawingOptions((open) => !open);
+          }}><Ellipsis size={18} aria-hidden="true" /></button>}
       </div>
 
       {/* ---------- Dropdown panels ---------- */}

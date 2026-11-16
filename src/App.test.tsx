@@ -69,12 +69,23 @@ describe('note persistence in the workspace', () => {
     expect(list.hidden).toBe(false);
     expect(container.querySelector('main')?.hasAttribute('inert')).toBe(true);
 
-    await act(async () => button('Existing note').click());
+    const openNote = list.querySelector<HTMLButtonElement>('[aria-label="Existing note"]')!;
+    const search = list.querySelector<HTMLInputElement>('[aria-label="Search notes"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'existing');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const noteList = list.querySelector<HTMLElement>('.notes-list-items')!;
+    noteList.scrollTop = 150;
+    await act(async () => openNote.click());
     expect(list.hidden).toBe(true);
     expect(container.querySelector<HTMLInputElement>('main [aria-label="Note title"]')?.value).toBe('Existing note');
 
     await act(async () => button('Notes').click());
     expect(list.hidden).toBe(false);
+    expect(noteList.scrollTop).toBe(150);
+    expect(document.activeElement).toBe(openNote);
+    expect(search.value).toBe('existing');
     await act(async () => button('New note').click());
     const title = container.querySelector<HTMLInputElement>('main [aria-label="Note title"]')!;
     expect(list.hidden).toBe(true);
