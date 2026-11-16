@@ -171,6 +171,18 @@ canvas.ink-canvas {
 
 .note-paper [contenteditable="true"] { -webkit-touch-callout: default; }
 
+.canvas-paste-target {
+  min-height: 40px;
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.canvas-paste-target:empty::before {
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
 .dark .note-paper {
   background-color: #1c1c1f;
   outline-color: rgba(255, 255, 255, 0.08);

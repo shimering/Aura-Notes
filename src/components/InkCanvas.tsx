@@ -178,6 +178,8 @@ type ObjectHit = {
 
 type TouchTap = { pointer: number; client: Point; run: () => void; hold?: number };
 
+type PasteMenu = { point: Point; client: Point; noteId: string; useSystemPaste?: boolean };
+
 function inkObjectKey(stroke: Stroke) {
   return stroke.groupId ? `drawing:${stroke.groupId}` : `stroke:${stroke.id}`;
 }
@@ -333,9 +335,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const hoverKey = useRef<ObjectHit['key'] | null>(null);
   const editingTap = useRef<{ box: HTMLElement; point: Point; time: number } | null>(null);
   const touchTap = useRef<TouchTap | null>(null);
-  const [pasteMenu, setPasteMenu] = useState<{ point: Point; client: Point; noteId: string } | null>(null);
+  const [pasteMenu, setPasteMenu] = useState<PasteMenu | null>(null);
+  const pasteMenuRef = useRef(pasteMenu);
+  pasteMenuRef.current = pasteMenu;
+  const pasteOverlay = useRef<HTMLDivElement>(null);
   const pasteButton = useRef<HTMLButtonElement>(null);
-  const pastePending = useRef(false);
+  const pasteTarget = useRef<HTMLDivElement>(null);
+  const pastePending = useRef<PasteMenu | null>(null);
   const clearTouchTap = useCallback(() => {
     window.clearTimeout(touchTap.current?.hold);
     touchTap.current = null;
@@ -1864,14 +1870,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   useEffect(() => {
     if (!pasteMenu) return;
-    pasteButton.current?.focus({ preventScroll: true });
+    const control = pasteMenu.useSystemPaste ? pasteTarget.current : pasteButton.current;
+    if (document.activeElement !== control) control?.focus({ preventScroll: true });
     const closeOutside = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || !pasteButton.current?.contains(event.target)) setPasteMenu(null);
+      if (!(event.target instanceof Node) || !pasteOverlay.current?.contains(event.target)) setPasteMenu(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setPasteMenu(null);
     };
-    const closeOnScroll = () => setPasteMenu(null);
+    const closeOnScroll = () => {
+      if (!pasteMenu.useSystemPaste) setPasteMenu(null);
+    };
     const viewport = scrollRef.current;
     window.addEventListener('pointerdown', closeOutside, true);
     window.addEventListener('keydown', closeOnEscape);
@@ -1883,29 +1892,65 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     };
   }, [pasteMenu]);
 
+  const handleImagePaste = (event: React.ClipboardEvent) => {
+    if (!pasteMenu) return;
+    event.preventDefault();
+    const { files, items } = event.clipboardData;
+    const images = Array.from(files).filter((file) => file.type.startsWith('image/'));
+    if (!images.length) {
+      for (const item of Array.from(items)) {
+        if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+        const file = item.getAsFile();
+        if (file) images.push(file);
+      }
+    }
+    if (!images.length) {
+      setPictureError('Copy an image before pasting.');
+      return;
+    }
+    setPasteMenu(null);
+    void placePictures(images, pasteMenu.point, pasteMenu.noteId);
+  };
+
   const pasteImage = async () => {
-    if (!pasteMenu || pastePending.current) return;
+    if (!pasteMenu || pastePending.current === pasteMenu) return;
+    const systemPaste = { ...pasteMenu, useSystemPaste: true };
+    const touchWebKit = navigator.maxTouchPoints > 0 && window.CSS?.supports('-webkit-touch-callout', 'none');
+    if (touchWebKit) {
+      // WebKit's system Paste prompt needs the focused editor and the original tap.
+      flushSync(() => setPasteMenu(systemPaste));
+      pasteTarget.current?.focus({ preventScroll: true });
+      try {
+        document.execCommand?.('paste');
+      } catch {
+        // The editable field also accepts Paste from the system menu.
+      }
+      return;
+    }
+    if (!navigator.clipboard?.read) {
+      setPasteMenu(systemPaste);
+      return;
+    }
     const { point, noteId: pageId } = pasteMenu;
-    pastePending.current = true;
+    pastePending.current = pasteMenu;
     try {
-      if (!navigator.clipboard?.read) throw new Error('Use your device’s Paste command to paste a copied image.');
       const items = await navigator.clipboard.read();
       const files: File[] = [];
       for (const item of items) {
         const type = item.types.find((mime) => /^image\/(png|jpeg|gif|webp|avif|bmp)$/i.test(mime));
         if (type) files.push(new File([await item.getType(type)], 'Clipboard image', { type }));
       }
-      if (!files.length) throw new Error('Copy an image before pasting.');
-      if (selectionNoteId.current === pageId) {
-        setPasteMenu((current) => current === pasteMenu ? null : current);
-        await placePictures(files, point, pageId);
+      if (pasteMenuRef.current !== pasteMenu || selectionNoteId.current !== pageId) return;
+      if (!files.length) {
+        setPictureError('Copy an image before pasting.');
+        return;
       }
-    } catch (error) {
-      if (selectionNoteId.current === pageId) setPictureError(error instanceof DOMException
-        ? 'Clipboard access was blocked. Use your device’s Paste command.'
-        : error instanceof Error ? error.message : 'Could not read the clipboard.');
+      setPasteMenu(null);
+      await placePictures(files, point, pageId);
+    } catch {
+      setPasteMenu((current) => current === pasteMenu ? systemPaste : current);
     } finally {
-      pastePending.current = false;
+      if (pastePending.current === pasteMenu) pastePending.current = null;
     }
   };
 
@@ -2386,6 +2431,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const hasSelection = selectedIds.length > 0 || selectedBoxes.length > 0 || selectedPictures.length > 0;
   const useRibbon = !!textEditor && !!onChangeBackground;
   const pasteViewport = pasteMenu && scrollRef.current?.getBoundingClientRect();
+  const pasteMenuWidth = pasteMenu?.useSystemPaste ? 264 : 148;
   const tableTools = tableCell && selectedTable && (
     <TableToolbar cell={tableCell} onChangeCell={(cell) => {
       setTableCell(cell);
@@ -2658,26 +2704,41 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         </div>
 
         {pasteMenu && pasteViewport && (
-          <button
-            ref={pasteButton}
-            type="button"
-            className="absolute z-50 flex items-center gap-2 rounded-lg border border-surface-subtle-light bg-surface-light px-3 py-2 text-sm text-ink-light shadow-floating dark:border-surface-subtle-dark dark:bg-surface-dark dark:text-ink-dark"
-            data-ink-ui="paste-image"
+          <div
+            ref={pasteOverlay}
+            className="absolute z-50"
             style={{
-              left: Math.max(4, Math.min(pasteMenu.client.x - pasteViewport.left, pasteViewport.width - 148)),
-              top: Math.max(4, Math.min(pasteMenu.client.y - pasteViewport.top + 10, pasteViewport.height - 48)),
-            }}
-            onClick={() => void pasteImage()}
-            onPaste={(event) => {
-              const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith('image/'));
-              if (!files.length) return;
-              event.preventDefault();
-              setPasteMenu(null);
-              void placePictures(files, pasteMenu.point, pasteMenu.noteId);
+              left: Math.max(4, Math.min(pasteMenu.client.x - pasteViewport.left, pasteViewport.width - pasteMenuWidth - 4)),
+              top: Math.max(4, Math.min(pasteMenu.client.y - pasteViewport.top + 10, pasteViewport.height - 60)),
             }}
           >
-            <ClipboardPaste size={16} /> Paste image
-          </button>
+            {pasteMenu.useSystemPaste ? (
+              <div
+                ref={pasteTarget}
+                role="textbox"
+                aria-label="Paste image here"
+                contentEditable
+                inputMode="none"
+                spellCheck={false}
+                className="canvas-paste-target rounded-lg border border-violet-400 bg-surface-light px-3 py-2 text-sm text-ink-light shadow-floating outline-none focus:ring-2 focus:ring-violet-400 dark:bg-surface-dark dark:text-ink-dark"
+                style={{ width: Math.min(pasteMenuWidth, Math.max(0, pasteViewport.width - 8)) }}
+                data-placeholder={navigator.maxTouchPoints > 0 ? 'Touch and hold here, then tap Paste' : 'Press Ctrl+V or ⌘V here'}
+                onBeforeInput={(event) => event.preventDefault()}
+                onPaste={handleImagePaste}
+              />
+            ) : (
+              <button
+                ref={pasteButton}
+                type="button"
+                className="flex items-center gap-2 rounded-lg border border-surface-subtle-light bg-surface-light px-3 py-2 text-sm text-ink-light shadow-floating dark:border-surface-subtle-dark dark:bg-surface-dark dark:text-ink-dark"
+                data-ink-ui="paste-image"
+                onClick={() => void pasteImage()}
+                onPaste={handleImagePaste}
+              >
+                <ClipboardPaste size={16} /> Paste image
+              </button>
+            )}
+          </div>
         )}
 
         {/* Overlays that stay put while the page scrolls. */}

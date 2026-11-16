@@ -265,7 +265,7 @@ it('switches from Text to Draw on the first pen contact and records that stroke'
   expect(onChangeStrokes).toHaveBeenCalledWith([expect.objectContaining({ tool: 'pen' })]);
 });
 
-it('opens Paste image by right-click or a blank long press and places it at the chosen point', async () => {
+it.each(['clipboard API', 'iPad system Paste', 'blocked clipboard fallback'])('places a pasted image at the chosen point via %s', async (method) => {
   const editorRef = createRef<TextEditorRef>();
   const note = { id: 'scratch', title: 'Scratch', content: '', inkStrokes: [],
     tags: [], color: '', createdAt: 0, updatedAt: 0 };
@@ -292,15 +292,45 @@ it('opens Paste image by right-click or a blank long press and places it at the 
   } finally {
     vi.useRealTimers();
   }
-  const read = vi.fn(async () => [{ types: ['image/png'], getType: async () => new Blob(['image'], { type: 'image/png' }) }]);
+  const webKit = method === 'iPad system Paste';
+  vi.stubGlobal('CSS', { supports: (property: string) => webKit && property === '-webkit-touch-callout' });
+  const filename = 'clipboard.png';
+  const imageFile = new File(['image'], filename, { type: 'image/png' });
+  const read = vi.fn(async () => {
+    if (method === 'blocked clipboard fallback') throw new DOMException('Blocked', 'NotAllowedError');
+    return [{ types: [imageFile.type], getType: async () => imageFile }];
+  });
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { read } });
+  const execCommand = vi.fn(() => {
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Paste image here');
+    return false;
+  });
+  Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand });
   try {
-    await act(async () => { menu()!.click(); await save; });
-    expect(read).toHaveBeenCalledOnce();
+    if (method === 'clipboard API') {
+      await act(async () => { menu()!.click(); await save; });
+    } else {
+      await act(async () => menu()!.click());
+      const target = container.querySelector('[aria-label="Paste image here"]')!;
+      expect(target).toBe(document.activeElement);
+      const paste = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, 'clipboardData', {
+        value: webKit
+          ? { files: [], items: [{ kind: 'file', type: imageFile.type, getAsFile: () => imageFile }] }
+          : { files: [imageFile], items: [] },
+      });
+      await act(async () => { target.dispatchEvent(paste); await save; });
+      expect(paste.defaultPrevented).toBe(true);
+      expect(target.isConnected).toBe(false);
+    }
+    expect(read).toHaveBeenCalledTimes(webKit ? 0 : 1);
+    if (webKit) expect(execCommand).toHaveBeenCalledWith('paste');
+    else expect(execCommand).not.toHaveBeenCalled();
     const image = container.querySelector<HTMLImageElement>('[data-note-editor] img')!;
     expect(image.style.left).toBe('120px');
     expect(image.style.top).toBe('160px');
   } finally {
     Reflect.deleteProperty(navigator, 'clipboard');
+    Reflect.deleteProperty(document, 'execCommand');
   }
 });
