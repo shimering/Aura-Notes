@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { NoteArrow } from '../types/note';
 import type { Point } from '../utils/inkSelection';
 import {
@@ -24,6 +24,8 @@ interface NoteArrowLayerProps {
   onChange: (arrow: NoteArrow) => void;
   /** Saves any object ids assigned while snapping. */
   onObjectsChanged: () => void;
+  /** Reports a running drag so the page does not pan under the arrow. */
+  onDragChange?: (dragging: boolean) => void;
 }
 
 type DragMode = 'move' | 'start' | 'end' | 'bend';
@@ -39,10 +41,14 @@ const DRAFT_ID = 'arrow-draft';
  */
 export const NoteArrowLayer: React.FC<NoteArrowLayerProps> = ({
   arrows, targets, draft, selectedId, pageWidth, pageHeight, zoom, toPage, snap,
-  onSelect, onChange, onObjectsChanged,
+  onSelect, onChange, onObjectsChanged, onDragChange,
 }) => {
   const [live, setLive] = useState<NoteArrow | null>(null);
   const dragRef = useRef<{ mode: DragMode; base: NoteArrow; start: Point } | null>(null);
+  const onDragChangeRef = useRef(onDragChange);
+  onDragChangeRef.current = onDragChange;
+  // An unmount mid-drag must not leave the page's pan suppression armed.
+  useEffect(() => () => onDragChangeRef.current?.(false), []);
   const selected = live ?? arrows.find((arrow) => arrow.id === selectedId) ?? null;
   const selectedGeometry = selected ? arrowGeometry(selected, targets) : null;
 
@@ -57,6 +63,7 @@ export const NoteArrowLayer: React.FC<NoteArrowLayerProps> = ({
     event.preventDefault();
     event.stopPropagation();
     onSelect(arrow.id);
+    onDragChangeRef.current?.(true);
     const geometry = arrowGeometry(arrow, targets);
     dragRef.current = {
       mode,
@@ -94,6 +101,7 @@ export const NoteArrowLayer: React.FC<NoteArrowLayerProps> = ({
       window.removeEventListener('pointercancel', onUp);
       dragRef.current = null;
       setLive(null);
+      onDragChangeRef.current?.(false);
       if (commit && settled && JSON.stringify(arrow) !== JSON.stringify(settled)) {
         onChange(settled);
         onObjectsChanged();
@@ -149,7 +157,7 @@ export const NoteArrowLayer: React.FC<NoteArrowLayerProps> = ({
                   stroke="transparent"
                   strokeWidth={Math.max(hitSlop, arrow.width + 14)}
                   strokeLinecap="round"
-                  style={{ pointerEvents: 'stroke', cursor: 'move' }}
+                  style={{ pointerEvents: 'stroke', cursor: 'move', touchAction: 'none' }}
                   onPointerDown={(event) => beginDrag(event, arrow, 'move')}
                 />
               )}

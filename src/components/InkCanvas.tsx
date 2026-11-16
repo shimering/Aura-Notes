@@ -349,6 +349,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const [liveTransform, setLiveTransform] = useState<InkTransform | null>(null);
   const liveTransformRef = useRef<InkTransform | null>(null);
   const transformDragRef = useRef(false);
+  // Arrow editing lives in its own layer, so it reports its drag here to keep
+  // one finger moving the arrow from also panning the desk underneath it.
+  const arrowDragRef = useRef(false);
+  const setArrowDragging = useCallback((dragging: boolean) => {
+    arrowDragRef.current = dragging;
+  }, []);
   const transformingObjects = useRef(new Set<HTMLElement>());
   const transformingHover = useRef(false);
   const transformCleanupRef = useRef<(() => void) | null>(null);
@@ -1333,7 +1339,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       updateGesture(touches);
       if (isPinchingRef.current) {
         event.preventDefault();
-      } else if (touches.length === 1 && !transformDragRef.current &&
+      } else if (touches.length === 1 && !transformDragRef.current && !arrowDragRef.current &&
         !isStylusActiveRef.current && !spenTipDownRef.current &&
         !findInkUiControl(event.target)) {
         const [touch] = touches;
@@ -1348,6 +1354,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       updateGesture(touches);
       if (!isPinchingRef.current) {
         if (transformDragRef.current) {
+          event.preventDefault();
+          return;
+        }
+        // Moving an arrow owns the finger: the desk must not pan with it.
+        if (arrowDragRef.current) {
+          single = null;
           event.preventDefault();
           return;
         }
@@ -3093,6 +3105,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                     onChange={(arrow) => onChangeArrows?.(
                       arrowsRef.current.map((current) => current.id === arrow.id ? arrow : current))}
                     onObjectsChanged={() => textEditor?.current?.savePageObjects()}
+                    onDragChange={setArrowDragging}
                   />}
 
                   <div
