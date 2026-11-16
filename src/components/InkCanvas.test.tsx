@@ -70,10 +70,7 @@ it('pans the sheet with two fingers even with a little drift in finger spacing',
   expect(onChangeStrokes).not.toHaveBeenCalled();
 });
 
-it('scrolls a blank swipe in Select and preserves taps in Text', () => {
-  const onFingerTap = vi.fn();
-  act(() => root.render(<InkCanvas noteId="scratch" defaultTool="pen" strokes={[]}
-    onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} onFingerTap={onFingerTap} />));
+it('scrolls a blank swipe and only sets the insertion point on a tap', () => {
   const viewport = container.querySelector<HTMLElement>('.note-desk')!;
   const canvas = container.querySelector<HTMLElement>('.ink-canvas')!;
   viewport.scrollLeft = viewport.scrollTop = 100;
@@ -93,15 +90,16 @@ it('scrolls a blank swipe in Select and preserves taps in Text', () => {
   touch(canvas, 'touchend');
   expect([viewport.scrollLeft, viewport.scrollTop]).toEqual([137, 149]);
   expect(container.querySelector('.note-paper svg')).toBeNull();
+  expect(container.querySelector('.note-insertion-point')).toBeNull();
   pointer(canvas, 'pointerdown', 140, 140);
   pointer(canvas, 'pointerup', 140, 140);
-  expect(onFingerTap).not.toHaveBeenCalled();
+  expect(container.querySelector<HTMLElement>('.note-insertion-point')?.style.left).toBe('140px');
   expect(onChangeStrokes).not.toHaveBeenCalled();
 
   chooseTool('Select', 'Text');
-  pointer(canvas, 'pointerdown', 140, 140);
-  pointer(canvas, 'pointerup', 140, 140);
-  expect(onFingerTap).toHaveBeenCalledOnce();
+  pointer(canvas, 'pointerdown', 160, 170);
+  pointer(canvas, 'pointerup', 160, 170);
+  expect(container.querySelector<HTMLElement>('.note-insertion-point')?.style.left).toBe('160px');
 });
 
 it('dismisses the quick palette by tapping outside, closing it, or choosing a tool', () => {
@@ -130,7 +128,7 @@ it('dismisses the quick palette by tapping outside, closing it, or choosing a to
   expect(onChangeStrokes).not.toHaveBeenCalled();
 });
 
-it('opens Insert and focuses a new box from the ribbon or a blank touch at its original page coordinates', () => {
+it('opens Insert and places a new box only when requested at the marked canvas coordinates', () => {
   const editorRef = createRef<TextEditorRef>();
   const save = vi.fn();
   const note = { id: 'scratch', title: 'Scratch', content: '<p>Existing text</p>', inkStrokes: [],
@@ -141,8 +139,11 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
     textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={save} embedded />} />));
 
   expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Insert');
-  const textBoxButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Text Box');
-  act(() => textBoxButton?.click());
+  const clickTextBox = () => {
+    const button = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Text Box')!;
+    act(() => button.click());
+  };
+  clickTextBox();
   expect(container.querySelectorAll('[data-note-positioned]')).toHaveLength(2);
   expect(document.activeElement).toBe(container.querySelector('[data-note-positioned]:last-child'));
   const edited = document.activeElement as HTMLElement;
@@ -178,10 +179,15 @@ it('opens Insert and focuses a new box from the ribbon or a blank touch at its o
   // Dismissing contextual controls can shift the sheet before the finger lifts.
   vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 40, 0, 0));
   pointer('pointerup');
+  expect(container.querySelectorAll('[data-note-positioned]')).toHaveLength(2);
+  expect(container.querySelector('[contenteditable="true"]')).toBeNull();
+  expect(container.querySelector<HTMLElement>('.note-insertion-point')?.style.top).toBe('81px');
+  clickTextBox();
   const inserted = document.activeElement as HTMLElement;
   expect(inserted.dataset.notePositioned).toBe('true');
   expect(inserted.style.left).toBe('132px');
   expect(inserted.style.top).toBe('81px');
+  expect(container.querySelector('.note-insertion-point')).toBeNull();
 
   for (let tap = 0; tap < 2; tap++) {
     for (const type of ['pointerdown', 'pointerup']) {
@@ -247,6 +253,52 @@ it('shows mouse hover handles, moves the box, and opens it for editing on double
   act(() => box.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 90, clientY: 80 })));
   expect(document.activeElement).toBe(box);
   expect(frame()).toBeNull();
+});
+
+it.each([
+  ['Table', true, '132px', '81px'],
+  ['Table', false, '277px', '542px'],
+  ['Picture', true, '132px', '81px'],
+  ['Picture', false, '257px', '492px'],
+] as const)('inserts %s at the marked point when marked is %s', async (kind, marked, left, top) => {
+  const editorRef = createRef<TextEditorRef>();
+  const note = { id: 'scratch', title: 'Scratch', content: '', inkStrokes: [],
+    tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  let onSave!: (content: string) => void;
+  const saved = new Promise<string>((resolve) => { onSave = resolve; });
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.matches('[data-note-table]') ? 240 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.matches('[data-note-table]') ? 40 : 0;
+  });
+  vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(200);
+  vi.spyOn(HTMLImageElement.prototype, 'naturalHeight', 'get').mockReturnValue(100);
+  act(() => root.render(<InkCanvas noteId={note.id} strokes={[]} onChangeStrokes={onChangeStrokes}
+    onScribbleToText={() => {}} onChangeBackground={() => {}} textEditor={editorRef}
+    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={onSave} embedded />} />));
+
+  if (marked) {
+    const canvas = container.querySelector('.ink-canvas')!;
+    pointer(canvas, 'pointerdown', 132, 81, 'mouse', 1);
+    pointer(canvas, 'pointerup', 132, 81, 'mouse');
+    expect(container.querySelector('.note-insertion-point')).not.toBeNull();
+    expect(container.querySelector('[contenteditable="true"]')).toBeNull();
+  }
+  if (kind === 'Table') {
+    const tableButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Table')!;
+    act(() => tableButton.click());
+    const form = container.querySelector('form.ribbon-table-form')!;
+    await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await saved; });
+  } else {
+    const input = container.querySelector<HTMLInputElement>('.note-ribbon input[accept^="image/"]')!;
+    Object.defineProperty(input, 'files', { value: [new File(['image'], 'image.png', { type: 'image/png' })] });
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); await saved; });
+  }
+  const object = container.querySelector<HTMLElement>(kind === 'Table' ? '[data-note-table]' : '[data-note-editor] img')!;
+  expect(object.style.left).toBe(left);
+  expect(object.style.top).toBe(top);
+  expect(container.querySelector('.note-insertion-point')).toBeNull();
 });
 
 it('switches from Text to Draw on the first pen contact and records that stroke', () => {

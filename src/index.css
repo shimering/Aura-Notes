@@ -171,6 +171,29 @@ canvas.ink-canvas {
 
 .note-paper [contenteditable="true"] { -webkit-touch-callout: default; }
 
+.note-insertion-point {
+  width: 2px;
+  height: 18px;
+  background: #7c3aed;
+  border-radius: 1px;
+  transform-origin: top left;
+}
+
+.note-insertion-point::before,
+.note-insertion-point::after {
+  content: '';
+  position: absolute;
+  left: -3px;
+  width: 8px;
+  height: 2px;
+  background: inherit;
+  border-radius: inherit;
+}
+
+.note-insertion-point::before { top: 0; }
+.note-insertion-point::after { bottom: 0; }
+.dark .note-insertion-point { background: #c4b5fd; }
+
 .canvas-paste-target {
   min-height: 40px;
   -webkit-touch-callout: default;

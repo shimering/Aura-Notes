@@ -6,19 +6,20 @@ import type { Point } from '../utils/inkSelection';
 import { boxSelector, offsetWithin, placePicture } from '../utils/pageObjects';
 import { createNoteTable, ensureTableColumns, recalculateTable, tableBoxSelector } from '../utils/noteTable';
 
+export type InsertionPosition = Point & { centered?: boolean };
+
 export interface TextEditorRef {
   focusEditor: () => void;
-  focusAt: (point: Point) => void;
-  insertTextBox: () => void;
+  insertTextBox: (position: InsertionPosition) => void;
   editBox: (box: HTMLElement, cell?: HTMLTableCellElement) => void;
   finishEditing: (keepEmpty?: boolean) => void;
   appendTextBox: (markup: string) => void;
   replacePicture: (image: HTMLImageElement, file: File) => Promise<void>;
   savePageObjects: () => void;
-  dropPictures: (files: File[], point: Point) => Promise<HTMLImageElement[]>;
+  dropPictures: (files: File[], position: InsertionPosition) => Promise<HTMLImageElement[]>;
   applyFormat: (command: string, value?: string) => Promise<void>;
-  insertTable: (rows: number, columns: number) => HTMLElement | undefined;
-  insertFile: (file: File, kind: 'picture' | 'pdf') => Promise<void>;
+  insertTable: (rows: number, columns: number, position: InsertionPosition) => HTMLElement | undefined;
+  insertPdf: (file: File) => Promise<void>;
 }
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -112,6 +113,11 @@ function createTextBox(point: Point, width: number | null, markup: string) {
   if (width !== null) box.style.width = `${Math.round(width)}px`;
   box.innerHTML = markup;
   return box;
+}
+
+function centerBox(box: HTMLElement, point: Point) {
+  box.style.left = `${Math.round(point.x - box.offsetWidth / 2)}px`;
+  box.style.top = `${Math.round(point.y - box.offsetHeight / 2)}px`;
 }
 
 function boxHasContent(box: HTMLElement) {
@@ -335,11 +341,13 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     focusRange(host, getEditorRange(host));
   };
 
-  const addBox = (point: Point, markup = '<p><br></p>') => {
+  const addBox = (point: InsertionPosition, markup = '<p><br></p>') => {
     const editor = editorRef.current;
     if (!editor) return;
-    const box = createTextBox(point, Math.max(96, Math.min(320, editor.clientWidth - point.x)), markup);
+    const availableWidth = editor.clientWidth - (point.centered ? 0 : point.x);
+    const box = createTextBox(point, Math.max(96, Math.min(320, availableWidth)), markup);
     editor.append(box);
+    if (point.centered) centerBox(box, point);
     return box;
   };
 
@@ -351,9 +359,9 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     })) + 16,
   });
 
-  const focusAt = (point?: Point) => {
+  const focusAt = (point: InsertionPosition) => {
     finishEditing();
-    const box = addBox(point ?? nextBoxPoint());
+    const box = addBox(point);
     if (box) editBox(box);
     return box;
   };
@@ -368,7 +376,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     return activeHost.current ?? undefined;
   };
 
-  const dropPictures = async (files: File[], point: Point) => {
+  const dropPictures = async (files: File[], point: InsertionPosition) => {
     const editor = editorRef.current;
     if (!editor) return [];
     const noteId = latestNote.current.id;
@@ -385,8 +393,15 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       const image = document.createElement('img');
       image.src = await readDataUrl(file);
       image.alt = file.name;
-      const width = Math.max(48, Math.min(280, editor.clientWidth - point.x));
-      placePicture(image, { x: point.x + index * 16, y: point.y + index * 16 }, width);
+      const availableWidth = editor.clientWidth - (point.centered ? 0 : point.x);
+      const width = Math.max(48, Math.min(280, availableWidth));
+      if (point.centered) await image.decode?.().catch(() => undefined);
+      const height = image.naturalWidth ? width * image.naturalHeight / image.naturalWidth : 0;
+      const offset = index * 16;
+      placePicture(image, {
+        x: point.x + offset - (point.centered ? width / 2 : 0),
+        y: point.y + offset - (point.centered ? height / 2 : 0),
+      }, width);
       return image;
     }));
     if (editor !== editorRef.current || noteId !== latestNote.current.id) return [];
@@ -454,13 +469,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     handleInput();
   };
 
-  const insertFile = async (file: File, kind: 'picture' | 'pdf') => {
-    if (kind === 'picture') {
-      const box = activeBox.current;
-      const point = box ? { x: box.offsetLeft, y: box.offsetTop + box.offsetHeight + 16 } : nextBoxPoint();
-      await dropPictures([file], point);
-      return;
-    }
+  const insertPdf = async (file: File) => {
     const noteId = note.id;
     if (!file.size || file.size > MAX_FILE_BYTES) throw new Error('Choose a file between 1 byte and 5 MB.');
     if (!(await file.slice(0, 5).text()).startsWith('%PDF-')) throw new Error('The selected file is not a PDF.');
@@ -484,9 +493,8 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       const box = getWritingBox();
       if (box) focusRange(box, getEditorRange(box));
     },
-    focusAt,
-    insertTextBox: () => {
-      focusAt()?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    insertTextBox: (point) => {
+      focusAt(point)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     },
     editBox,
     finishEditing,
@@ -498,19 +506,20 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     dropPictures,
     replacePicture,
     applyFormat: handleFormat,
-    insertTable: (rows, columns) => {
+    insertTable: (rows, columns, point) => {
       const editor = editorRef.current;
       if (!editor) return;
-      const box = createTextBox(nextBoxPoint(), null, '');
+      const box = createTextBox(point, null, '');
       box.dataset.noteTable = 'true';
       const table = createNoteTable(rows, columns);
       box.append(table);
       editor.append(box);
+      if (point.centered) centerBox(box, point);
       finishEditing();
       handleInput();
       return box;
     },
-    insertFile,
+    insertPdf,
   }));
 
   const handlePaste = (e: React.ClipboardEvent) => {

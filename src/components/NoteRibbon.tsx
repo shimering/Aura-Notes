@@ -27,8 +27,10 @@ interface NoteRibbonProps {
   editor: RefObject<TextEditorRef | null>;
   notesMenuButton?: ReactNode;
   enableText: () => void;
+  onFocusText: () => void;
   onInsertTextBox: () => void;
-  onInsertTable: (box: HTMLElement) => void;
+  onInsertTable: (rows: number, columns: number) => void;
+  onInsertPicture: (file: File) => void;
   textActive: boolean;
   drawRequest: number;
   drawingTools: ReactNode;
@@ -42,7 +44,7 @@ interface NoteRibbonProps {
 }
 
 export function NoteRibbon({
-  editor, notesMenuButton, enableText, onInsertTextBox, onInsertTable, textActive, drawRequest, drawingTools, orientation, background, onOrientationChange, onBackgroundChange, selection, keyboardOpen = false, textEditing = false,
+  editor, notesMenuButton, enableText, onFocusText, onInsertTextBox, onInsertTable, onInsertPicture, textActive, drawRequest, drawingTools, orientation, background, onOrientationChange, onBackgroundChange, selection, keyboardOpen = false, textEditing = false,
 }: NoteRibbonProps) {
   const id = useId();
   const [standardTab, setStandardTab] = useState<StandardTab>('Insert');
@@ -92,8 +94,7 @@ export function NoteRibbon({
     event.preventDefault();
     const values = new FormData(event.currentTarget);
     setShowTable(false);
-    const box = editor.current?.insertTable(Number(values.get('rows')), Number(values.get('columns')));
-    if (box) onInsertTable(box);
+    onInsertTable(Number(values.get('rows')), Number(values.get('columns')));
   };
 
   const selectTab = (next: RibbonTab) => {
@@ -132,10 +133,7 @@ export function NoteRibbon({
         <div className="ribbon-header-tools">
           <button type="button" className="ribbon-command"
             aria-label="Text tool" title="Text tool" aria-pressed={textActive}
-            onMouseDown={(event) => event.preventDefault()} onClick={() => {
-              enableText();
-              editor.current?.focusEditor();
-            }}>
+            onMouseDown={(event) => event.preventDefault()} onClick={onFocusText}>
             <Type size={16} />
           </button>
           {!keyboardOpen && <button type="button" className="ribbon-command ribbon-toggle"
@@ -233,13 +231,13 @@ export function NoteRibbon({
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = '';
-          if (file) void edit((current) => current.insertFile(file, 'picture'));
+          if (file) onInsertPicture(file);
         }} />
       <input hidden ref={pdfInput} type="file" accept=".pdf,application/pdf"
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = '';
-          if (file) void edit((current) => current.insertFile(file, 'pdf'));
+          if (file) void edit((current) => current.insertPdf(file));
         }} />
       {message && <div className="ribbon-message" role="alert">{message}</div>}
     </section>

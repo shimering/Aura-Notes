@@ -29,7 +29,7 @@ import { isSpenHardwareKeyEvent } from '../utils/spenDetection';
 import { createSpenGesture } from '../utils/spenGesture';
 import { PenToolbar } from './PenToolbar';
 import { NoteRibbon, type RibbonSelection } from './NoteRibbon';
-import type { TextEditorRef } from './TextEditor';
+import type { InsertionPosition, TextEditorRef } from './TextEditor';
 import {
   boxPlacement, boxSelector, measureBox, measurePicture, offsetWithin, pageBoxPlacement,
   pointInTextLayer, snapObjectMove, transformBox, transformPicture,
@@ -74,8 +74,6 @@ interface InkCanvasProps {
   strokes: Stroke[];
   onChangeStrokes: (strokes: Stroke[]) => void;
   onScribbleToText: () => void;
-  /** A finger tap that never travelled: the note sheet should take the caret. */
-  onFingerTap?: () => void;
   /** Asks the page to focus the text caret (Text tool, finger tap). */
   onRequestTextFocus?: () => void;
   /** Reports the active tool so the host can reflect it in the text sheet. */
@@ -240,7 +238,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   strokes,
   onChangeStrokes,
   onScribbleToText,
-  onFingerTap,
   onRequestTextFocus,
   onToolChange,
   onCanvasInteraction,
@@ -335,6 +332,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const hoverKey = useRef<ObjectHit['key'] | null>(null);
   const editingTap = useRef<{ box: HTMLElement; point: Point; time: number } | null>(null);
   const touchTap = useRef<TouchTap | null>(null);
+  const [insertionPoint, setInsertionPoint] = useState<Point | null>(null);
   const [pasteMenu, setPasteMenu] = useState<PasteMenu | null>(null);
   const pasteMenuRef = useRef(pasteMenu);
   pasteMenuRef.current = pasteMenu;
@@ -443,6 +441,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     editingTap.current = null;
     clearTouchTap();
     setPasteMenu(null);
+    setInsertionPoint(null);
     transformCleanupRef.current?.();
     stopPanMomentum.current?.();
     setSelection([]);
@@ -1674,20 +1673,23 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const editSelectedText = (box = selectedBoxesRef.current[0], cell = tableCell) => {
     if (!box) return;
+    setInsertionPoint(null);
     enableText();
     setSelection([]);
     setTableCell(cell);
     textEditor?.current?.editBox(box, cell ?? undefined);
   };
 
-  const placePictures = async (files: File[], point: Point, pageId = noteId) => {
+  const placePictures = async (files: File[], point: InsertionPosition, pageId = noteId, reveal = false) => {
     if (selectionNoteId.current !== pageId) return;
     setPictureError('');
     try {
       const images = await textEditor?.current?.dropPictures(files, pointInEditor(point));
       if (selectionNoteId.current !== pageId || !images?.length || !images.every((image) => getEditor()?.contains(image))) return;
       textEditor?.current?.finishEditing();
+      setInsertionPoint((current) => current === insertionPoint ? null : current);
       setSelection([], [], images);
+      if (reveal) images[0].scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     } catch (error) {
       if (selectionNoteId.current === pageId) setPictureError(error instanceof Error ? error.message : 'Could not add the pictures.');
     }
@@ -1699,21 +1701,45 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (files.length) void placePictures(files, getPagePoint(e.clientX, e.clientY));
   };
 
-  const pointInEditor = (point: Point) => {
+  const pointInEditor = (point: InsertionPosition): InsertionPosition => {
     const editor = getEditor();
     const layer = textLayerRef.current;
     if (!editor || !layer) return point;
     const local = pointInTextLayer(point, textBlockLayoutRef.current);
     const offset = offsetWithin(editor, layer);
-    return { x: local.x - offset.x, y: local.y - offset.y };
+    return { ...point, x: local.x - offset.x, y: local.y - offset.y };
   };
 
-  const startTextBox = (point?: Point) => {
+  const getInsertionPosition = (): InsertionPosition => insertionPoint ?? {
+    x: pageSize.width / 2,
+    y: Math.max(pageHeight, pageSize.height) / 2,
+    centered: true,
+  };
+
+  const insertTextBox = () => {
     setSelection([]);
     enableText();
-    if (!point) textEditor?.current?.insertTextBox();
-    else if (textEditor?.current) textEditor.current.focusAt(pointInEditor(point));
-    else onFingerTap?.();
+    textEditor?.current?.insertTextBox(pointInEditor(getInsertionPosition()));
+    setInsertionPoint(null);
+  };
+
+  const focusText = () => {
+    if (insertionPoint) {
+      insertTextBox();
+      return;
+    }
+    enableText();
+    textEditor?.current?.focusEditor();
+    if (!textEditor?.current) onRequestTextFocus?.();
+  };
+
+  const insertTable = (rows: number, columns: number) => {
+    const box = textEditor?.current?.insertTable(rows, columns, pointInEditor(getInsertionPosition()));
+    if (!box) return;
+    setInsertionPoint(null);
+    setSelection([], [box]);
+    setTableCell(box.querySelector<HTMLTableCellElement>('td, th'));
+    box.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   };
 
   const pickObjects = (point: Point, client: Point, tolerance: number): ObjectHit[] => {
@@ -1769,6 +1795,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       (ids.length > 0 && ids.every((id) => selectedIdsRef.current.includes(id))));
 
   const beginObjectMove = (e: React.PointerEvent, hit: ObjectHit | undefined) => {
+    setInsertionPoint(null);
     const selected = hit && isSelectedObject(hit);
     const mouse = e.pointerType === 'mouse';
     // A mouse hover exposes the same handles without pinning a selection.
@@ -1843,7 +1870,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const isTap = !selectionDragged.current && selectionTravel(clientX, clientY) < SELECTION_TAP_SLOP;
     if (isTap) {
-      if (selectedToolRef.current === 'text') startTextBox(geometry.start);
+      setInsertionPoint(geometry.start);
       return;
     }
 
@@ -1854,6 +1881,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const boxes = layer ? getTextBoxes().filter((box) =>
       marqueeSelectsTextBlock(geometry, measureBox(box, layer, textBlockLayoutRef.current))) : [];
     const pictures = getPictures().filter(({ bounds }) => marqueeSelectsTextBlock(geometry, bounds));
+    if (groups.size || boxes.length || pictures.length) setInsertionPoint(null);
     setSelection(strokes.filter((stroke) => groups.has(inkObjectKey(stroke))).map(({ id }) => id),
       boxes, pictures.map(({ image }) => image));
     if (boxes.length === 1 && boxes[0].matches(tableBoxSelector)) {
@@ -1997,15 +2025,17 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
           return;
         }
         editingTap.current = null;
-        const hadSelection = !hoverKey.current &&
-          !!(selectedBoxesRef.current.length || selectedPicturesRef.current.length || selectedIdsRef.current.length);
         if (editing) {
           textEditor?.current?.finishEditing();
           textEditor?.current?.savePageObjects();
         }
-        if (hit) selectObject(hit);
-        else if (hadSelection || editing || selectedToolRef.current === 'select') setSelection([]);
-        else startTextBox(point);
+        if (hit) {
+          setInsertionPoint(null);
+          selectObject(hit);
+        } else {
+          setSelection([]);
+          setInsertionPoint(point);
+        }
       },
     };
     if (!editingBox) {
@@ -2075,6 +2105,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     dragSawPressureRef.current = false;
     zeroPressureSamplesRef.current = 0;
+    setInsertionPoint(null);
     if (pen) isStylusActiveRef.current = true;
     if (selectedIdsRef.current.length || selectedPicturesRef.current.length || selectedBoxesRef.current.length) setSelection([]);
 
@@ -2270,7 +2301,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     if (tool === 'text') {
       setSelection([]);
-      onRequestTextFocus?.();
+      focusText();
     } else {
       textEditor?.current?.finishEditing();
     }
@@ -2549,10 +2580,12 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             notesMenuButton={notesMenuButton}
             textActive={activeTool === 'text'}
             enableText={enableText}
-            onInsertTextBox={startTextBox}
-            onInsertTable={(box) => {
-              setSelection([], [box]);
-              setTableCell(box.querySelector<HTMLTableCellElement>('td, th'));
+            onFocusText={focusText}
+            onInsertTextBox={insertTextBox}
+            onInsertTable={insertTable}
+            onInsertPicture={(file) => {
+              enableText();
+              void placePictures([file], getInsertionPosition(), noteId, true);
             }}
             drawingTools={drawingTools}
             drawRequest={drawRequest}
@@ -2654,6 +2687,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                       touchAction: 'none'
                     }}
                   />
+
+                  {insertionPoint && (
+                    <span aria-hidden="true" className="note-insertion-point pointer-events-none absolute z-40"
+                      style={{
+                        left: insertionPoint.x,
+                        top: insertionPoint.y,
+                        transform: `scale(${1 / zoom})`,
+                      }} />
+                  )}
 
                   {marquee && (
                     <svg className="absolute inset-0 z-40 w-full h-full pointer-events-none" aria-hidden="true">
