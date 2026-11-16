@@ -5,7 +5,7 @@ import { notePages, removeNotePage, updateNotePage } from './notePages';
 it('preserves page identity and content when deleting the original first page', () => {
   const note: Note = {
     id: 'note', title: 'Notebook', content: '<p>Original</p>', inkStrokes: [], tags: [],
-    color: '', createdAt: 1, updatedAt: 1, pageLayout: 'landscape',
+    color: '', createdAt: 1, updatedAt: 1, pageLayout: 'landscape', pageColor: '#e6ecdf',
     extraPages: [
       { id: 'next', content: '<p>Second</p>', inkStrokes: [], inkBackground: 'grid' },
       { id: 'last', content: '<p>Third</p>', inkStrokes: [] },
@@ -16,6 +16,7 @@ it('preserves page identity and content when deleting the original first page', 
   const promoted = removeNotePage(edited, 'note');
   expect(promoted).toMatchObject({ id: 'note', firstPageId: 'next', content: '<p>Second</p>',
     inkBackground: 'grid', recognizedText: 'Second-page OCR' });
+  expect(promoted.pageColor).toBeUndefined();
   expect(promoted.pageLayout).toBeUndefined();
   expect(notePages(promoted).map(({ id }) => id)).toEqual(['next', 'last']);
   expect(updateNotePage(promoted, 'note', { content: '<p>Stale edit</p>' })).toBe(promoted);

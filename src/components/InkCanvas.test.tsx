@@ -3,6 +3,7 @@ import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { InkCanvas } from './InkCanvas';
+import type { NoteArrow } from '../types/note';
 import { TextEditor, type TextEditorRef } from './TextEditor';
 import { CANVAS_BASE_SIZE } from '../utils/pageLayout';
 
@@ -399,6 +400,63 @@ it('opens the endless canvas on a workspace larger than the A4 sheet', () => {
   expect(container.querySelector('.note-page-footer')).toBeNull();
 });
 
+it('tints the page surface on every page layout', () => {
+  const render = (pageLayout: 'canvas' | 'portrait' | 'landscape') => act(() => root.render(
+    <InkCanvas noteId="scratch" pageLayout={pageLayout} defaultTool="pen"
+      strokes={[]} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}}
+      background="dotted" pageColor="#e6ecdf" />));
+
+  for (const pageLayout of ['canvas', 'portrait', 'landscape'] as const) {
+    render(pageLayout);
+    const paper = container.querySelector<HTMLElement>('.note-paper')!;
+    expect(paper.dataset.background).toBe('dotted');
+    expect(paper.dataset.layout).toBe(pageLayout);
+    // The tint feeds CSS so dark mode can deepen it for light ink and text.
+    expect(paper.getAttribute('data-page-color')).toBe('');
+    expect(paper.style.getPropertyValue('--page-color')).toBe('#e6ecdf');
+  }
+});
+
+it('leaves the surface untinted without a page colour', () => {
+  const paper = container.querySelector<HTMLElement>('.note-paper')!;
+  expect(paper.hasAttribute('data-page-color')).toBe(false);
+  expect(paper.style.getPropertyValue('--page-color')).toBe('');
+});
+
+it('offers page colours on the endless canvas and on A4 sheets', () => {
+  const editorRef = createRef<TextEditorRef>();
+  const note = { id: 'scratch', title: 'Scratch', content: '<p>Text</p>', inkStrokes: [],
+    tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  const render = (pageLayout: 'canvas' | 'portrait' | 'landscape') => act(() => root.render(
+    <InkCanvas noteId={note.id} pageLayout={pageLayout} strokes={[]}
+      onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}}
+      textEditor={editorRef} background="none" pageColor="#e6ecdf"
+      onChangeBackground={() => {}} onPageColorChange={() => {}}
+      textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
+  const swatches = (space: 'Canvas' | 'Page') =>
+    container.querySelectorAll(`button[aria-label^="${space} color:"]`);
+  const chooseTab = () => {
+    const tab = Array.from(container.querySelectorAll<HTMLButtonElement>('button[role="tab"]'))
+      .find((button) => button.textContent?.trim() === 'Page Layout')!;
+    act(() => tab.click());
+  };
+
+  render('canvas');
+  chooseTab();
+  expect(swatches('Canvas')).toHaveLength(9);
+  expect(container.querySelector('[aria-label="Canvas color: Sage"]')?.getAttribute('aria-pressed')).toBe('true');
+
+  render('portrait');
+  chooseTab();
+  expect(swatches('Page')).toHaveLength(9);
+  expect(container.querySelector('[aria-label="Page color: Paper (default)"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Page color: Sage"]')?.getAttribute('aria-pressed')).toBe('true');
+
+  render('landscape');
+  chooseTab();
+  expect(swatches('Page')).toHaveLength(9);
+});
+
 it('zooms the endless canvas with a plain mouse wheel', () => {
   act(() => root.render(<InkCanvas noteId="scratch" pageLayout="canvas" defaultTool="pen"
     strokes={[]} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />));
@@ -415,6 +473,63 @@ it('zooms the endless canvas with a plain mouse wheel', () => {
   const zoomOut = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 100, clientX: 200, clientY: 200 });
   act(() => viewport.dispatchEvent(zoomOut));
   expect(scaleTransform()).not.toBe(zoomed);
+});
+
+it('draws a straight arrow from the Insert tab and shows its handles', () => {
+  const onChangeArrows = vi.fn();
+  const editorRef = createRef<TextEditorRef>();
+  const note = { id: 'scratch', title: 'Scratch', content: '<p>Text</p>', inkStrokes: [],
+    tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  const render = (arrows: NoteArrow[] = []) => act(() => root.render(
+    <InkCanvas noteId={note.id} strokes={[]} onChangeStrokes={onChangeStrokes}
+      onChangeArrows={onChangeArrows} arrows={arrows}
+      onScribbleToText={() => {}} textEditor={editorRef}
+      background="none" onChangeBackground={() => {}}
+      textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
+
+  render();
+  const straight = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    .find((button) => button.textContent?.includes('Straight arrow'))!;
+  act(() => straight.click());
+  expect(straight.getAttribute('aria-pressed')).toBe('true');
+
+  const canvas = container.querySelector<HTMLElement>('.ink-canvas')!;
+  pointer(canvas, 'pointerdown', 100, 120);
+  pointer(canvas, 'pointermove', 260, 200);
+  pointer(canvas, 'pointerup', 260, 200);
+
+  expect(onChangeArrows).toHaveBeenCalledTimes(1);
+  const [arrow] = onChangeArrows.mock.calls[0][0];
+  expect(arrow.kind).toBe('straight');
+  expect([arrow.start.x, arrow.start.y]).toEqual([100, 120]);
+  expect([arrow.end.x, arrow.end.y]).toEqual([260, 200]);
+  // The tool turns itself off after one arrow.
+  expect(straight.getAttribute('aria-pressed')).not.toBe('true');
+
+  render([arrow]);
+  expect(container.querySelector('[data-note-arrow] path')).not.toBeNull();
+
+  const hitPath = container.querySelectorAll('[data-note-arrow] path')[1];
+  pointer(hitPath, 'pointerdown', 180, 160, 'mouse', 1);
+  expect(container.querySelector('[aria-label="Move arrowhead"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Move tail"]')).not.toBeNull();
+  // The arrow's tools are in the ribbon, not floating over its handles.
+  expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Arrow Tools');
+  expect(container.querySelector('[aria-label="Arrow color"]')).not.toBeNull();
+  expect(container.querySelector('[data-ink-ui="arrow-selection"] button[title="Delete arrow"]')).toBeNull();
+  pointer(hitPath, 'pointerup', 180, 160, 'mouse');
+
+  // The arrow follows its handles while they are dragged, before it is saved.
+  const shaft = () => container.querySelectorAll('[data-note-arrow] path')[0].getAttribute('d');
+  const before = shaft();
+  onChangeArrows.mockClear();
+  pointer(container.querySelector('[aria-label="Move arrowhead"]')!, 'pointerdown', 260, 200, 'mouse', 1);
+  pointer(window as unknown as Element, 'pointermove', 320, 260, 'mouse', 1);
+  expect(shaft()).not.toBe(before);
+  expect(onChangeArrows).not.toHaveBeenCalled();
+  pointer(window as unknown as Element, 'pointerup', 320, 260, 'mouse');
+  expect(onChangeArrows).toHaveBeenCalledTimes(1);
+  expect([onChangeArrows.mock.calls[0][0][0].end.x, onChangeArrows.mock.calls[0][0][0].end.y]).toEqual([320, 260]);
 });
 
 it('leaves a plain mouse wheel to scroll A4 pages', () => {

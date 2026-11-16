@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Menu } from 'lucide-react';
-import { Note, NotePageData, Stroke, InkBackground, PenTool, PageLayout } from './types/note';
+import { Note, NotePageData, Stroke, InkBackground, PenTool, PageLayout, NoteArrow } from './types/note';
 import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
@@ -466,7 +466,8 @@ export default function App() {
   const addPage = () => {
     if (!activePage || !activeNote) return;
     const page = { id: crypto.randomUUID(), content: '', inkStrokes: [],
-      pageLayout: activePage.pageLayout, inkBackground: activePage.inkBackground };
+      pageLayout: activePage.pageLayout, inkBackground: activePage.inkBackground,
+      pageColor: activePage.pageColor };
     updateActiveNote((current) => ({ ...current, extraPages: [...notePages(current).slice(1), page] }));
     openPage(page.id);
   };
@@ -491,6 +492,11 @@ export default function App() {
   // Update Stylus Ink Strokes with timestamp
   const handleUpdateStrokes = (strokes: Stroke[]) => {
     updateActivePage({ inkStrokes: strokes });
+  };
+
+  // Map-chart arrows: kept with the page so they sync and reload with it.
+  const handleUpdateArrows = (arrows: NoteArrow[]) => {
+    updateActivePage({ arrows });
   };
 
   // Create New Note (optionally from a template)
@@ -583,6 +589,11 @@ export default function App() {
   // Update Ink Page Background
   const handleUpdateBackground = (background: InkBackground) => {
     updateActivePage({ inkBackground: background });
+  };
+
+  // Tint the note surface: the A4 paper or the endless canvas
+  const handleUpdatePageColor = (pageColor?: string) => {
+    updateActivePage({ pageColor });
   };
 
   // Rotate the note's A4 sheet between vertical and horizontal
@@ -869,6 +880,8 @@ export default function App() {
               noteId={surfaceId}
               strokes={activePage.inkStrokes || []}
               onChangeStrokes={handleUpdateStrokes}
+              arrows={activePage.arrows || []}
+              onChangeArrows={handleUpdateArrows}
               onScribbleToText={() => setIsScribbleModalOpen(true)}
               onRequestTextFocus={() => textEditorRef.current?.focusEditor()}
               onToolChange={setSurfaceTool}
@@ -902,6 +915,8 @@ export default function App() {
               spenDoublePressOpensMenu={settings.spenDoublePressOpensMenu}
               background={activePage.inkBackground}
               onChangeBackground={handleUpdateBackground}
+              pageColor={activePage.pageColor}
+              onPageColorChange={handleUpdatePageColor}
               pageLayout={activePage.pageLayout}
               onChangePageLayout={handleUpdatePageLayout}
               textLayout={activePage.textLayout}

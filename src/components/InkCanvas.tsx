@@ -1,9 +1,8 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
 import { flushSync } from 'react-dom';
-import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode, TextBlockLayout, PageLayout } from '../types/note';
+import { Stroke, StrokePoint, PenTool, InkBackground, EraserMode, SelectMode, TextBlockLayout, PageLayout, NoteArrow, ArrowKind } from '../types/note';
 import { renderStroke, eraseStrokesNearPoint, eraseStrokesPartial } from '../utils/inkSmoothing';
 import { InkHistory } from '../utils/inkHistory';
-import { drawInkBackground } from '../utils/inkBackground';
 import {
   applyInkTransform,
   Bounds,
@@ -38,6 +37,14 @@ import { setTableDimension, tableBoxSelector, tableDimensions } from '../utils/n
 import { TableResizeHandles, type TableResizeAxis } from './TableResizeHandles';
 import { TableToolbar } from './TableToolbar';
 import { SPenQuickMenu } from './SPenQuickMenu';
+import { NoteArrowLayer } from './NoteArrowLayer';
+import {
+  ARROW_SNAP_DISTANCE,
+  arrowControlPoint,
+  snapArrowPoint,
+  withArrowKind,
+  type ArrowTarget,
+} from '../utils/noteArrows';
 import {
   CANVAS_CONTENT_MARGIN,
   CANVAS_MAX_BITMAP_SIZE,
@@ -60,7 +67,7 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
-  RotateCw, Pencil, Image, BringToFront, SendToBack,
+  RotateCw, Pencil, Image, BringToFront, SendToBack, MoveRight, Spline,
   type LucideIcon
 } from 'lucide-react';
 
@@ -92,11 +99,17 @@ interface InkCanvasProps {
   textEditor?: React.RefObject<TextEditorRef | null>;
   background?: InkBackground;
   onChangeBackground?: (background: InkBackground) => void;
+  /** Page surface colour; undefined keeps the default paper (A4) or desk (canvas). */
+  pageColor?: string;
+  onPageColorChange?: (color?: string) => void;
   /** A4 orientation of the note sheet. */
   pageLayout?: PageLayout;
   onChangePageLayout?: (layout: PageLayout) => void;
   /** Placement inherited from notes created before independent objects. */
   textLayout?: TextBlockLayout;
+  /** Map-chart arrows drawn over this page's objects. */
+  arrows?: NoteArrow[];
+  onChangeArrows?: (arrows: NoteArrow[]) => void;
   defaultTool?: PenTool;
   defaultColor?: string;
   defaultWidth?: number;
@@ -253,9 +266,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   textEditor,
   background = 'none',
   onChangeBackground,
+  pageColor,
+  onPageColorChange,
   pageLayout = 'portrait',
   onChangePageLayout,
   textLayout,
+  arrows = [],
+  onChangeArrows,
   defaultTool = 'fountain',
   defaultColor,
   defaultWidth = 4,
@@ -266,7 +283,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   spenDoublePressOpensMenu = true
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const backgroundCanvasRef = useRef<HTMLCanvasElement>(null);
   // Ink assigned to the note's back layer is painted on this canvas, behind the text.
   const backCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -347,6 +363,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const editingTap = useRef<{ box: HTMLElement; point: Point; time: number } | null>(null);
   const touchTap = useRef<TouchTap | null>(null);
   const [insertionPoint, setInsertionPoint] = useState<Point | null>(null);
+  // ---- Arrow tool: draft drawing, selection and object snapping ------------
+  const [arrowMode, setArrowMode] = useState<ArrowKind | null>(null);
+  const arrowModeRef = useRef<ArrowKind | null>(null);
+  const [selectedArrowId, setSelectedArrowId] = useState<string | null>(null);
+  const [arrowDraft, setArrowDraft] = useState<NoteArrow | null>(null);
+  const arrowDraftRef = useRef<NoteArrow | null>(null);
+  const arrowsRef = useRef<NoteArrow[]>(arrows);
+  arrowsRef.current = arrows;
+  /** Object ids handed out while snapping, flushed to the page on commit. */
+  const arrowObjectIds = useRef(new Set<string>());
   const [pasteMenu, setPasteMenu] = useState<PasteMenu | null>(null);
   const pasteMenuRef = useRef(pasteMenu);
   pasteMenuRef.current = pasteMenu;
@@ -375,6 +401,70 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       .map((image) => measurePicture(image, editor, layer, textBlockLayoutRef.current));
   }, [getEditor]);
 
+  /** Gives a page object a stable id so an arrow can stay attached to it. */
+  const ensureArrowObjectId = useCallback((element: HTMLElement) => {
+    let id = element.dataset.noteId;
+    if (!id) {
+      id = `obj-${crypto.randomUUID()}`;
+      element.dataset.noteId = id;
+    }
+    arrowObjectIds.current.add(id);
+    return id;
+  }, []);
+
+  /**
+   * Measured page bounds of the page's text boxes, tables and pictures.
+   * Reading client rects also sees a box that is mid-move or mid-scale, so
+   * attached arrows follow their element while it is being dragged.
+   * Drawing snapping also hands ids to objects that do not have one yet.
+   */
+  const measureArrowTargets = useCallback((assignIds = false): ArrowTarget[] => {
+    const editor = getEditor();
+    const sheet = containerRef.current;
+    if (!editor || !sheet) return [];
+    // Page units from client coordinates, so a box mid-drag is measured where
+    // it is drawn rather than at its committed offset.
+    const sheetRect = sheet.getBoundingClientRect();
+    const scale = sheetRect.width ? sheet.offsetWidth / sheetRect.width : 1;
+    const toPage = (x: number, y: number): Point => ({
+      x: (x - sheetRect.left) * scale,
+      y: (y - sheetRect.top) * scale,
+    });
+    const targets: ArrowTarget[] = [];
+    for (const child of Array.from(editor.children)) {
+      if (!(child instanceof HTMLElement)) continue;
+      if (!(child instanceof HTMLImageElement) && !child.matches(boxSelector)) continue;
+      const rect = child.getBoundingClientRect();
+      if (!child.offsetWidth || !child.offsetHeight || !rect.width || !rect.height) continue;
+      const id = child.dataset.noteId || (assignIds ? ensureArrowObjectId(child) : undefined);
+      if (!id) continue;
+      const topLeft = toPage(rect.left, rect.top);
+      const bottomRight = toPage(rect.right, rect.bottom);
+      targets.push({
+        id,
+        bounds: {
+          x: Math.min(topLeft.x, bottomRight.x),
+          y: Math.min(topLeft.y, bottomRight.y),
+          width: Math.abs(bottomRight.x - topLeft.x),
+          height: Math.abs(bottomRight.y - topLeft.y),
+        },
+      });
+    }
+    return targets;
+  }, [ensureArrowObjectId, getEditor]);
+
+  // Re-measured after a page edit so attached arrows follow their objects.
+  const arrowTargets = useMemo(
+    () => measureArrowTargets(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [measureArrowTargets, objectSizeVersion, pageHeight, noteId, textLayout, zoom],
+  );
+
+  const snapArrowObjects = useCallback(
+    (point: Point) => snapArrowPoint(point, measureArrowTargets(true), ARROW_SNAP_DISTANCE),
+    [measureArrowTargets],
+  );
+
   const setSelection = useCallback((
     ids: string[], boxes: HTMLElement[] = [], pictures: HTMLImageElement[] = [], hover: ObjectHit['key'] | null = null,
   ) => {
@@ -391,6 +481,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   }, []);
 
   const selectObject = (object: ObjectHit, hover = false) => {
+    setSelectedArrowId(null);
     setSelection(object.ids, object.box ? [object.box] : [], object.picture ? [object.picture] : [], hover ? object.key : null);
     selectionBoundsRef.current = object.bounds;
     if (object.cell) setTableCell(object.cell);
@@ -463,6 +554,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     marqueeRef.current = null;
     setMarquee(null);
     setPictureError('');
+    arrowModeRef.current = null;
+    arrowDraftRef.current = null;
+    setArrowMode(null);
+    setArrowDraft(null);
+    setSelectedArrowId(null);
   }, [noteId, setSelection, clearTouchTap]);
 
   useLayoutEffect(() => {
@@ -768,22 +864,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     }
   }, []);
 
-  // Page ruling lives on its own layer behind the ink so eraser strokes never
-  // punch holes through the background pattern.
-  const drawBackground = useCallback(() => {
-    const canvas = backgroundCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const scale = renderScaleRef.current || 1;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawInkBackground(ctx, canvas.width, canvas.height, scale, background);
-  }, [background]);
-
-  useEffect(() => {
-    drawBackground();
-  }, [drawBackground]);
-
   /**
    * Atomically commits a stroke change: records an undo snapshot, updates the
    * local authoritative list, pushes it to the note, and repaints.
@@ -911,14 +991,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
 
-    const bgCanvas = backgroundCanvasRef.current;
-    if (bgCanvas) {
-      bgCanvas.width = canvas.width;
-      bgCanvas.height = canvas.height;
-      bgCanvas.style.width = `${width}px`;
-      bgCanvas.style.height = `${height}px`;
-    }
-
     const backCanvas = backCanvasRef.current;
     if (backCanvas) {
       backCanvas.width = canvas.width;
@@ -930,9 +1002,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     // The sheet grows with its text; the viewport spacer must grow with it.
     setPageHeight((current) => (current === height ? current : height));
 
-    drawBackground();
     redraw();
-  }, [drawBackground, isCanvas, redraw]);
+  }, [isCanvas, redraw]);
 
   // Keep the page canvases matched to the sheet as the note grows.
   useEffect(() => {
@@ -1743,6 +1814,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         transformBox(box, placement, editorOffset, width, baseLayout, transform, false));
       liveTransformRef.current = transform;
       setLiveTransform(transform);
+      // Re-measure while the element moves so attached arrows track it live.
+      if (boxes.length || pictures.length) setObjectSizeVersion((version) => version + 1);
       redraw();
     };
 
@@ -1895,6 +1968,104 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     textEditor?.current?.focusEditor();
     if (!textEditor?.current) onRequestTextFocus?.();
   };
+
+  /** Arms the arrow tool from the Insert tab; the next drag draws one arrow. */
+  const toggleArrowMode = (kind: ArrowKind) => {
+    const next = arrowModeRef.current === kind ? null : kind;
+    arrowModeRef.current = next;
+    setArrowMode(next);
+    setSelectedArrowId(null);
+    setSelection([]);
+    setInsertionPoint(null);
+    if (next) textEditor?.current?.finishEditing();
+  };
+
+  const beginArrowDraft = (event: React.PointerEvent, point: Point) => {
+    const kind = arrowModeRef.current;
+    if (!kind) return;
+    event.preventDefault();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // A synthetic pointer may have no active capture.
+    }
+    const start = snapArrowObjects(point);
+    const arrow: NoteArrow = {
+      id: `arrow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind,
+      start: start.point,
+      end: start.point,
+      color: penColor,
+      width: Math.max(2, penWidth),
+      ...(start.objectId ? { startAnchor: { objectId: start.objectId } } : {}),
+      ...(kind === 'curved' ? { bend: arrowControlPoint(start.point, start.point) } : {}),
+    };
+    arrowDraftRef.current = arrow;
+    setArrowDraft(arrow);
+    setSelection([]);
+    setSelectedArrowId(null);
+    setInsertionPoint(null);
+  };
+
+  const updateArrowDraft = (point: Point) => {
+    const draft = arrowDraftRef.current;
+    if (!draft) return;
+    const end = snapArrowObjects(point);
+    const next: NoteArrow = {
+      ...draft,
+      end: end.point,
+      endAnchor: end.objectId ? { objectId: end.objectId } : undefined,
+      ...(draft.kind === 'curved' ? { bend: arrowControlPoint(draft.start, end.point) } : {}),
+    };
+    arrowDraftRef.current = next;
+    setArrowDraft(next);
+  };
+
+  const finishArrowDraft = (commit: boolean) => {
+    const draft = arrowDraftRef.current;
+    arrowDraftRef.current = null;
+    setArrowDraft(null);
+    if (!draft) return;
+    if (!commit || Math.hypot(draft.end.x - draft.start.x, draft.end.y - draft.start.y) < 12) return;
+    // One arrow per activation, then back to the previous tool.
+    arrowModeRef.current = null;
+    setArrowMode(null);
+    const next = [...arrowsRef.current, draft];
+    arrowsRef.current = next;
+    onChangeArrows?.(next);
+    setSelectedArrowId(draft.id);
+    if (arrowObjectIds.current.size) {
+      arrowObjectIds.current.clear();
+      // Persist the ids handed out while snapping so the attachment survives a reload.
+      textEditor?.current?.savePageObjects();
+    }
+  };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (arrowDraftRef.current) {
+          arrowDraftRef.current = null;
+          setArrowDraft(null);
+        }
+        if (arrowModeRef.current) {
+          arrowModeRef.current = null;
+          setArrowMode(null);
+        }
+        setSelectedArrowId(null);
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.isContentEditable || target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedArrowId) {
+        event.preventDefault();
+        onChangeArrows?.(arrowsRef.current.filter((arrow) => arrow.id !== selectedArrowId));
+        setSelectedArrowId(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onChangeArrows, selectedArrowId]);
 
   const insertTable = (rows: number, columns: number) => {
     const box = textEditor?.current?.insertTable(rows, columns, pointInEditor(getInsertionPosition()));
@@ -2217,6 +2388,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
     const client = { x: e.clientX, y: e.clientY };
     const point = getPagePoint(client.x, client.y);
+    if (arrowModeRef.current) {
+      beginArrowDraft(e, point);
+      return;
+    }
+    if (selectedArrowId) setSelectedArrowId(null);
     if (e.pointerType === 'touch') {
       if (e.isPrimary && touchCountRef.current < 2 && !isStylusActiveRef.current && !spenTipDownRef.current) {
         handleTouchDown(e, point, client, target);
@@ -2293,6 +2469,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // Pointer Move (coalesced 120Hz events loop)
   const handlePointerMove = (e: React.PointerEvent) => {
+    if (arrowDraftRef.current) {
+      updateArrowDraft(getPagePoint(e.clientX, e.clientY));
+      return;
+    }
     if (e.pointerType === 'touch') {
       const tap = touchTap.current;
       if (tap?.pointer === e.pointerId && Math.hypot(e.clientX - tap.client.x, e.clientY - tap.client.y) >= SELECTION_TAP_SLOP) {
@@ -2406,6 +2586,10 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   // End the drag without changing the independent side-button state.
   const handlePointerUp = (e: React.PointerEvent) => {
+    if (arrowDraftRef.current) {
+      finishArrowDraft(true);
+      return;
+    }
     if (isPinchingRef.current) return;
     if (e.pointerType === 'touch') {
       const tap = touchTap.current;
@@ -2427,6 +2611,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const handlePointerCancel = (e: React.PointerEvent) => {
     editingTap.current = null;
+    if (arrowDraftRef.current) {
+      arrowDraftRef.current = null;
+      setArrowDraft(null);
+      return;
+    }
     if (touchTap.current?.pointer === e.pointerId) clearTouchTap();
     if (selectionPointerRef.current === e.pointerId) {
       selectionPointerRef.current = null;
@@ -2461,6 +2650,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handleManualToolSelect = (tool: PenTool) => {
     setSelectedTool(tool);
     selectedToolRef.current = tool;
+    // A pending arrow drag never survives a tool change.
+    arrowModeRef.current = null;
+    setArrowMode(null);
+    setArrowDraft(null);
+    arrowDraftRef.current = null;
 
     if (tool === 'text') {
       setSelection([]);
@@ -2641,7 +2835,44 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       if (cell && tableBox && selectedBoxesRef.current.length === 0) textEditor?.current?.editBox(tableBox, cell);
     }} onSave={saveObjects} />
   );
-  const selectionTools: RibbonSelection | undefined = tableTools && tableBox && !selectedIds.length && !selectedPictures.length && selectedBoxes.length <= 1
+  const selectedArrow = selectedArrowId ? arrows.find((arrow) => arrow.id === selectedArrowId) ?? null : null;
+  const updateArrow = (arrow: NoteArrow) => {
+    const next = arrowsRef.current.map((current) => current.id === arrow.id ? arrow : current);
+    arrowsRef.current = next;
+    onChangeArrows?.(next);
+  };
+  // An arrow's tools live in the ribbon, away from its curve handle.
+  const arrowTools: RibbonSelection | undefined = selectedArrow ? {
+    tab: 'Arrow Tools', target: selectedArrow.id, tools: <div className="ribbon-selection-tools">
+      <button type="button" className="ribbon-command" aria-pressed={selectedArrow.kind === 'straight'}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => updateArrow(withArrowKind(selectedArrow, 'straight'))}>
+        <MoveRight size={16} /> Straight arrow
+      </button>
+      <button type="button" className="ribbon-command" aria-pressed={selectedArrow.kind === 'curved'}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => updateArrow(withArrowKind(selectedArrow, 'curved'))}>
+        <Spline size={16} /> Curved arrow
+      </button>
+      <label>Arrow color <input type="color" aria-label="Arrow color"
+        value={/^#[0-9a-f]{6}$/i.test(selectedArrow.color) ? selectedArrow.color : '#1e293b'}
+        onChange={(event) => updateArrow({ ...selectedArrow, color: event.target.value })} /></label>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        updateArrow({ ...selectedArrow, width: Number(new FormData(event.currentTarget).get('width')) });
+      }}>
+        <label>Arrow width <input name="width" type="number" min={1} max={40}
+          key={selectedArrow.id} defaultValue={Math.round(selectedArrow.width)} required /></label>
+        <button type="submit" className="ribbon-command">Apply arrow width</button>
+      </form>
+      {ribbonButton('Delete arrow', Trash2, () => {
+        onChangeArrows?.(arrowsRef.current.filter((arrow) => arrow.id !== selectedArrow.id));
+        setSelectedArrowId(null);
+      })}
+    </div>,
+  } : undefined;
+
+  const objectTools: RibbonSelection | undefined = tableTools && tableBox && !selectedIds.length && !selectedPictures.length && selectedBoxes.length <= 1
     ? {
         tab: 'Table Tools', target: tableBox, tools: <div className="ribbon-context-tools">
           {tableTools}
@@ -2702,6 +2933,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         </div>,
       } : undefined;
 
+  const selectionTools = arrowTools ?? objectTools;
+
   const drawingTools = (
     <PenToolbar
       activeTool={activeTool}
@@ -2759,12 +2992,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
               enableText();
               void placePictures([file], getInsertionPosition(), noteId, true);
             }}
+            arrowMode={arrowMode}
+            onArrowMode={toggleArrowMode}
             drawingTools={drawingTools}
             drawRequest={drawRequest}
             orientation={pageLayout}
             background={background}
+            pageColor={pageColor}
             onOrientationChange={changePageLayout}
             onBackgroundChange={onChangeBackground}
+            onPageColorChange={(color) => onPageColorChange?.(color)}
             selection={hovering ? undefined : selectionTools}
             keyboardOpen={keyboardOpen}
             textEditing={textEditing}
@@ -2830,13 +3067,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                   onDrop={(event) => void handlePictureDrop(event)}
                   className="note-paper relative"
                   data-layout={pageLayout}
-                  style={{ width: `${sheetWidth}px`, minHeight: `${sheetMinHeight}px` }}
+                  data-background={background}
+                  data-page-color={pageColor ? '' : undefined}
+                  style={{
+                    width: `${sheetWidth}px`,
+                    minHeight: `${sheetMinHeight}px`,
+                    ...(pageColor ? { '--page-color': pageColor } as React.CSSProperties : {})
+                  }}
                 >
-                  <canvas
-                    ref={backgroundCanvasRef}
-                    aria-hidden="true"
-                    className="absolute inset-0 z-0 block pointer-events-none"
-                  />
                   <canvas
                     ref={backCanvasRef}
                     aria-hidden="true"
@@ -2845,6 +3083,25 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
                   {/* Typed text lives between the back and front ink layers. Its
                       saved layout moves / scales / rotates the whole block. */}
+                  {(arrows.length > 0 || arrowDraft) && <NoteArrowLayer
+                    arrows={arrows}
+                    targets={arrowTargets}
+                    draft={arrowDraft}
+                    selectedId={selectedArrowId}
+                    pageWidth={sheetWidth}
+                    pageHeight={sheetHeight}
+                    zoom={zoom}
+                    toPage={(x, y) => getPagePoint(x, y)}
+                    snap={(point) => snapArrowObjects(point)}
+                    onSelect={(id) => {
+                      if (id) setSelection([]);
+                      setSelectedArrowId(id);
+                    }}
+                    onChange={(arrow) => onChangeArrows?.(
+                      arrowsRef.current.map((current) => current.id === arrow.id ? arrow : current))}
+                    onObjectsChanged={() => textEditor?.current?.savePageObjects()}
+                  />}
+
                   <div
                     ref={textLayerRef}
                     className={`relative z-20 ${activeTool === 'text' ? '' : 'pointer-events-none'}`}
@@ -2861,6 +3118,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                       touchAction: 'none'
                     }}
                   />
+
+                  {arrowMode && (
+                    <div
+                      data-ink-ui="arrow-hint"
+                      className="pointer-events-none absolute left-1/2 top-3 z-[45] flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-xl glass-panel px-3 py-1.5 text-[11px] font-medium text-ink-light shadow-floating dark:text-ink-dark"
+                    >
+                      {arrowMode === 'curved' ? <Spline className="h-3.5 w-3.5 text-violet-600" /> : <MoveRight className="h-3.5 w-3.5 text-violet-600" />}
+                      Drag from one element to another — ends snap to boxes, tables and pictures · Esc to cancel
+                    </div>
+                  )}
 
                   {insertionPoint && (
                     <span aria-hidden="true" className="note-insertion-point pointer-events-none absolute z-40"

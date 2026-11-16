@@ -60,6 +60,10 @@ export function sanitizeNoteHtml(html: string): string {
         attribute.keepAttr = ['P', 'DIV'].includes(node.nodeName) && attribute.attrValue === 'true';
       } else if (attribute.attrName === 'data-note-table') {
         attribute.keepAttr = node.nodeName === 'DIV' && attribute.attrValue === 'true';
+      } else if (attribute.attrName === 'data-note-id') {
+        // Stable ids let arrows stay attached to the objects they connect.
+        attribute.keepAttr = (node.nodeName === 'DIV' || node.nodeName === 'IMG')
+          && /^[A-Za-z0-9_-]{6,64}$/.test(attribute.attrValue);
       } else if (attribute.attrName === 'data-cell-formula') {
         attribute.keepAttr = ['TD', 'TH'].includes(node.nodeName) && cellFormula.test(attribute.attrValue);
       } else if (attribute.attrName === 'style') {
@@ -86,7 +90,8 @@ export function sanitizeNoteHtml(html: string): string {
     ? purifier.sanitize(html, {
       ALLOWED_TAGS: tags,
       ALLOWED_ATTR: ['style', 'color', 'start', 'reversed', 'value', 'align', 'size', 'face',
-        'src', 'alt', 'href', 'download', 'data-picture-wrap', 'data-note-positioned', 'data-note-table', 'data-cell-formula'],
+        'src', 'alt', 'href', 'download', 'data-picture-wrap', 'data-note-positioned', 'data-note-table',
+        'data-note-id', 'data-cell-formula'],
       ADD_DATA_URI_TAGS: ['a'],
       ALLOW_DATA_ATTR: false,
       ALLOW_ARIA_ATTR: false,

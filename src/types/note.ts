@@ -27,6 +27,29 @@ export type EraserMode = 'object' | 'pixel';
 
 export type InkBackground = 'none' | 'ruled' | 'grid' | 'dotted';
 
+/** Straight connector or a curved one whose bend can be dragged. */
+export type ArrowKind = 'straight' | 'curved';
+
+/**
+ * A map-chart arrow. Positions are page coordinates; when an anchor names a
+ * page object, that end is resolved onto the object's surface at render time
+ * so the arrow stays attached while the object moves.
+ */
+export interface NoteArrow {
+  id: string;
+  kind: ArrowKind;
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+  /** Bezier control point; only used by curved arrows. */
+  bend?: { x: number; y: number };
+  color: string;
+  width: number;
+  /** Object the tail is attached to. */
+  startAnchor?: { objectId: string };
+  /** Object the arrowhead points at. */
+  endAnchor?: { objectId: string };
+}
+
 /**
  * Shape of the note surface. Portrait and landscape are fixed A4 sheets;
  * canvas is an endless workspace that grows as content is added. Portrait is
@@ -64,10 +87,14 @@ export interface NotePageData {
   inkStrokes: Stroke[]; // vector ink strokes for S Pen / Apple Pencil
   inkPreviewUrl?: string; // cached low-res thumbnail
   inkBackground?: InkBackground; // ruled / grid / dotted page style
+  /** Page surface colour. Undefined keeps the default paper (A4) or desk (canvas). */
+  pageColor?: string;
   /** A4 page orientation. Defaults to portrait. */
   pageLayout?: PageLayout;
   /** Legacy placement of the HTML layer, inherited by individual page objects. */
   textLayout?: TextBlockLayout;
+  /** Map-chart arrows drawn over the text objects. */
+  arrows?: NoteArrow[];
   recognizedText?: string; // OCR'd handwriting, included in search
 }
 

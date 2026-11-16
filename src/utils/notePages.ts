@@ -1,7 +1,7 @@
 import type { Note, NotePage, NotePageData } from '../types/note';
 
-function pageData({ content, inkStrokes, inkPreviewUrl, inkBackground, pageLayout, textLayout, recognizedText }: NotePageData): NotePageData {
-  return { content, inkStrokes, inkPreviewUrl, inkBackground, pageLayout, textLayout, recognizedText };
+function pageData({ content, inkStrokes, inkPreviewUrl, inkBackground, pageColor, pageLayout, textLayout, arrows, recognizedText }: NotePageData): NotePageData {
+  return { content, inkStrokes, inkPreviewUrl, inkBackground, pageColor, pageLayout, textLayout, arrows, recognizedText };
 }
 
 export function notePages(note: Note): NotePage[] {

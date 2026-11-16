@@ -1,17 +1,17 @@
 import { useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import {
-  AlignJustify, ChevronDown, ChevronUp, Circle, FileText, Grid3x3, Image, Infinity as InfinityIcon,
-  RectangleHorizontal, RectangleVertical, Square, Table2, Type,
+  AlignJustify, ArrowRight, ChevronDown, ChevronUp, Circle, FileText, Grid3x3, Image, Infinity as InfinityIcon,
+  RectangleHorizontal, RectangleVertical, Spline, Square, Table2, Type,
 } from 'lucide-react';
-import { InkBackground, PageLayout } from '../types/note';
-import { INK_BACKGROUNDS } from '../utils/inkBackground';
+import { ArrowKind, InkBackground, PageLayout } from '../types/note';
+import { INK_BACKGROUNDS, PAGE_COLORS } from '../utils/inkBackground';
 import { FormatToolbar } from './FormatToolbar';
 import type { TextEditorRef } from './TextEditor';
 
 const TABS = ['Home', 'Insert', 'Page Layout', 'Draw'] as const;
 type StandardTab = typeof TABS[number];
 export interface RibbonSelection {
-  tab: 'Picture Tools' | 'Table Tools' | 'Text Box Tools' | 'Ink Tools' | 'Selection Tools';
+  tab: 'Picture Tools' | 'Table Tools' | 'Text Box Tools' | 'Ink Tools' | 'Selection Tools' | 'Arrow Tools';
   target: HTMLElement | string;
   tools: ReactNode;
 }
@@ -32,20 +32,26 @@ interface NoteRibbonProps {
   onInsertTextBox: () => void;
   onInsertTable: (rows: number, columns: number) => void;
   onInsertPicture: (file: File) => void;
+  /** Active arrow tool, if any: the next page drag draws that arrow. */
+  arrowMode?: ArrowKind | null;
+  onArrowMode: (kind: ArrowKind) => void;
   textActive: boolean;
   drawRequest: number;
   drawingTools: ReactNode;
   orientation: PageLayout;
   background: InkBackground;
+  /** Surface colour of the note sheet or the endless canvas. */
+  pageColor?: string;
   onOrientationChange: (layout: PageLayout) => void;
   onBackgroundChange: (background: InkBackground) => void;
+  onPageColorChange: (color?: string) => void;
   selection?: RibbonSelection;
   keyboardOpen?: boolean;
   textEditing?: boolean;
 }
 
 export function NoteRibbon({
-  editor, notesMenuButton, enableText, onFocusText, onInsertTextBox, onInsertTable, onInsertPicture, textActive, drawRequest, drawingTools, orientation, background, onOrientationChange, onBackgroundChange, selection, keyboardOpen = false, textEditing = false,
+  editor, notesMenuButton, enableText, onFocusText, onInsertTextBox, onInsertTable, onInsertPicture, arrowMode, onArrowMode, textActive, drawRequest, drawingTools, orientation, background, pageColor, onOrientationChange, onBackgroundChange, onPageColorChange, selection, keyboardOpen = false, textEditing = false,
 }: NoteRibbonProps) {
   const id = useId();
   const [standardTab, setStandardTab] = useState<StandardTab>('Insert');
@@ -186,6 +192,21 @@ export function NoteRibbon({
               </div>
               {!compact && <span className="ribbon-group-label">Files</span>}
             </div>
+            <div className="ribbon-group">
+              <div className="ribbon-row">
+                <button type="button" className="ribbon-command ribbon-large-command"
+                  aria-pressed={arrowMode === 'straight'} title="Straight arrow: drag between elements"
+                  onMouseDown={(event) => event.preventDefault()} onClick={() => onArrowMode('straight')}>
+                  <ArrowRight size={21} /> Straight arrow
+                </button>
+                <button type="button" className="ribbon-command ribbon-large-command"
+                  aria-pressed={arrowMode === 'curved'} title="Curved arrow: drag a bend to reshape it"
+                  onMouseDown={(event) => event.preventDefault()} onClick={() => onArrowMode('curved')}>
+                  <Spline size={21} /> Curved arrow
+                </button>
+              </div>
+              {!compact && <span className="ribbon-group-label">Arrows</span>}
+            </div>
             {showTable && (
               <form className="ribbon-popover ribbon-table-form" onSubmit={addTable}>
                 <label>Rows<input autoFocus name="rows" type="number" min="1" max="20" defaultValue="3" required /></label>
@@ -207,6 +228,24 @@ export function NoteRibbon({
                 ))}
               </div>
               {!compact && <span className="ribbon-group-label">Page layout</span>}
+            </div>
+            <div className="ribbon-group">
+              <div className="ribbon-row">
+                {PAGE_COLORS.map(({ value, label: colorLabel }) => {
+                  const label = !value && orientation !== 'canvas' ? 'Paper (default)' : colorLabel;
+                  const space = orientation === 'canvas' ? 'Canvas' : 'Page';
+                  return (
+                    <button type="button" key={label} className="ribbon-command canvas-color"
+                      aria-label={`${space} color: ${label}`} title={label}
+                      aria-pressed={(pageColor ?? undefined) === value}
+                      onClick={() => onPageColorChange(value)}>
+                      <span className={`canvas-swatch${value ? '' : orientation === 'canvas' ? ' canvas-swatch-desk' : ' canvas-swatch-paper'}`}
+                        style={value ? { backgroundColor: value } : undefined} />
+                    </button>
+                  );
+                })}
+              </div>
+              {!compact && <span className="ribbon-group-label">{orientation === 'canvas' ? 'Canvas color' : 'Page color'}</span>}
             </div>
             <div className="ribbon-group">
               <div className="ribbon-row">

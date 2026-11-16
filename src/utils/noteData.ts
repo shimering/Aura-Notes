@@ -23,17 +23,36 @@ function isStroke(value: unknown): boolean {
       [point.x, point.y, point.pressure, point.time].every(isFiniteNumber));
 }
 
+function isPoint(value: unknown): boolean {
+  return isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y);
+}
+
+function isArrow(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.id === 'string' && !!value.id.trim()
+    && (value.kind === 'straight' || value.kind === 'curved')
+    && isPoint(value.start) && isPoint(value.end)
+    && (value.bend === undefined || isPoint(value.bend))
+    && typeof value.color === 'string'
+    && isFiniteNumber(value.width) && value.width > 0
+    && [value.startAnchor, value.endAnchor].every((anchor) => anchor === undefined
+      || (isRecord(anchor) && typeof anchor.objectId === 'string' && !!anchor.objectId.trim()));
+}
+
 function isPageData(value: Record<string, unknown>): value is Record<string, unknown> & NotePageData {
   return typeof value.content === 'string'
     && Array.isArray(value.inkStrokes) && value.inkStrokes.every(isStroke)
     && (value.recognizedText === undefined || typeof value.recognizedText === 'string')
     && (value.inkBackground === undefined || value.inkBackground === 'none'
       || value.inkBackground === 'ruled' || value.inkBackground === 'grid' || value.inkBackground === 'dotted')
+    && (value.pageColor === undefined
+      || (typeof value.pageColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.pageColor)))
     && (value.pageLayout === undefined || value.pageLayout === 'portrait'
       || value.pageLayout === 'landscape' || value.pageLayout === 'canvas')
     && (value.textLayout === undefined || (isRecord(value.textLayout)
       && [value.textLayout.x, value.textLayout.y, value.textLayout.rotation].every(isFiniteNumber)
-      && isFiniteNumber(value.textLayout.scale) && value.textLayout.scale > 0));
+      && isFiniteNumber(value.textLayout.scale) && value.textLayout.scale > 0))
+    && (value.arrows === undefined || (Array.isArray(value.arrows) && value.arrows.every(isArrow)));
 }
 
 export function parseNoteData(value: unknown): Note | null {

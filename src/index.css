@@ -271,6 +271,58 @@ canvas.ink-canvas {
   box-shadow: none;
 }
 
+/* Page ruling is painted by CSS so the pattern stays sharp at every zoom. */
+.note-paper[data-page-color] { background-color: var(--page-color); }
+
+/* Dark mode inks are light, so a pastel sheet is deepened to keep them readable. */
+.dark .note-paper[data-page-color] {
+  background-color: #26282c;
+  background-color: color-mix(in srgb, var(--page-color) 30%, #121214);
+}
+
+.note-paper[data-background="ruled"] {
+  background-image: linear-gradient(to bottom, rgba(100, 116, 139, 0.22) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.note-paper[data-background="grid"] {
+  background-image:
+    linear-gradient(to right, rgba(100, 116, 139, 0.22) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(100, 116, 139, 0.22) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.note-paper[data-background="dotted"] {
+  background-image: radial-gradient(circle, rgba(100, 116, 139, 0.38) 1.2px, transparent 1.3px);
+  background-size: 32px 32px;
+}
+
+/* Canvas colour swatches in the Page Layout ribbon. */
+.canvas-color { padding: 4px; }
+
+.canvas-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.18);
+}
+
+.canvas-swatch-desk {
+  background-color: #e8e8e5;
+  background-image: radial-gradient(rgba(15, 23, 42, 0.3) 1px, transparent 1px);
+  background-size: 6px 6px;
+}
+
+.canvas-swatch-paper { background-color: #fffefb; }
+
+.dark .canvas-swatch-paper { background-color: #1c1c1f; }
+
+.canvas-color[aria-pressed="true"] .canvas-swatch {
+  box-shadow: 0 0 0 2px var(--ribbon-panel), 0 0 0 3px var(--ribbon-accent);
+}
+
+.dark .canvas-swatch { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22); }
+
 /* Glassmorphism utility */
 .glass-panel {
   background: rgba(255, 255, 255, 0.75);
