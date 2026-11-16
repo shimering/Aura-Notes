@@ -1,7 +1,9 @@
-import { get, set } from 'idb-keyval';
+import { get, set, update } from 'idb-keyval';
 import { Note } from '../types/note';
-import { notePages } from '../utils/notePages';
 import { AppSettings, DEFAULT_SETTINGS, SyncVaultPayload } from '../types/settings';
+import { parseNoteData } from '../utils/noteData';
+import { sanitizeNoteHtml } from '../utils/noteHtml';
+import { notePages } from '../utils/notePages';
 
 const SETTINGS_KEY = 'aura_app_settings';
 const DELETED_NOTES_KEY = 'aura_deleted_note_ids';
@@ -92,23 +94,7 @@ export async function saveSettings(updates: Partial<AppSettings>): Promise<AppSe
  * Record a deleted note ID for tombstone tracking.
  */
 export async function recordDeletedNoteId(id: string): Promise<void> {
-  try {
-    let deleted: Record<string, number> = {};
-    if (hasIndexedDB()) {
-      deleted = (await get<Record<string, number>>(DELETED_NOTES_KEY)) || {};
-    } else {
-      deleted = memoryStorage[DELETED_NOTES_KEY] || {};
-    }
-    deleted[id] = Date.now();
-    const pruned = pruneTombstones(deleted);
-    if (hasIndexedDB()) {
-      await set(DELETED_NOTES_KEY, pruned);
-    } else {
-      memoryStorage[DELETED_NOTES_KEY] = pruned;
-    }
-  } catch (err) {
-    console.warn('Failed to record deleted note id:', err);
-  }
+  await saveDeletedNoteTombstones({ [id]: Date.now() });
 }
 
 /**
@@ -119,7 +105,7 @@ export function pruneTombstones(
   now: number = Date.now()
 ): Record<string, number> {
   const cutoff = now - TOMBSTONE_MAX_AGE_MS;
-  const pruned: Record<string, number> = {};
+  const pruned: Record<string, number> = Object.create(null);
   for (const [id, deletedAt] of Object.entries(tombstones)) {
     if (typeof deletedAt === 'number' && deletedAt >= cutoff) {
       pruned[id] = deletedAt;
@@ -141,29 +127,27 @@ export async function getDeletedNoteTombstones(): Promise<Record<string, number>
       deleted = memoryStorage[DELETED_NOTES_KEY] || {};
     }
 
-    const pruned = pruneTombstones(deleted);
-    if (Object.keys(pruned).length !== Object.keys(deleted).length) {
-      if (hasIndexedDB()) {
-        await set(DELETED_NOTES_KEY, pruned);
-      } else {
-        memoryStorage[DELETED_NOTES_KEY] = pruned;
-      }
-    }
-    return pruned;
+    return pruneTombstones(deleted);
   } catch {
     return {};
   }
 }
 
 /**
- * Persists the tombstone map (already pruned by the caller).
+ * Merges deletion records atomically so concurrent deletes cannot overwrite each other.
  */
 export async function saveDeletedNoteTombstones(tombstones: Record<string, number>): Promise<void> {
-  const pruned = pruneTombstones(tombstones);
+  const merge = (stored: Record<string, number> = {}) => {
+    const pruned = pruneTombstones(stored);
+    for (const [id, deletedAt] of Object.entries(pruneTombstones(tombstones))) {
+      pruned[id] = Math.max(pruned[id] ?? 0, deletedAt);
+    }
+    return pruned;
+  };
   if (hasIndexedDB()) {
-    await set(DELETED_NOTES_KEY, pruned);
+    await update(DELETED_NOTES_KEY, merge);
   } else {
-    memoryStorage[DELETED_NOTES_KEY] = pruned;
+    memoryStorage[DELETED_NOTES_KEY] = merge(memoryStorage[DELETED_NOTES_KEY]);
   }
 }
 
@@ -280,7 +264,7 @@ export async function syncVaultWithCloud(
   vaultKey: string,
   localNotes: Note[],
   localSettings: AppSettings
-): Promise<{ notes: Note[]; settings: AppSettings; syncedAt: number }> {
+): Promise<{ notes: Note[]; settings: AppSettings; syncedAt: number; deletedIds: string[] }> {
   if (!vaultKey || !vaultKey.trim()) {
     throw new Error('Please provide a valid Sync Vault Key');
   }
@@ -337,15 +321,17 @@ export async function syncVaultWithCloud(
   }
 
   const result = await response.json();
-  const remoteNotes: Note[] = Array.isArray(result.notes) ? result.notes : [];
+  const remoteNotes = parseNotes(result.notes);
   const remoteSettings: Partial<AppSettings> = result.settings || {};
   const remoteDeletedIds: string[] = Array.isArray(result.deletedNoteIds)
-    ? result.deletedNoteIds
+    ? result.deletedNoteIds.filter((id: unknown) => typeof id === 'string')
     : [];
 
   // Deletions made on other devices must remove local copies too. The server
   // does not store per-tombstone timestamps, so treat them as "now".
-  const combinedTombstones: Record<string, number> = { ...tombstones };
+  const combinedTombstones: Record<string, number> = Object.assign(
+    Object.create(null), tombstones, await getDeletedNoteTombstones()
+  );
   for (const id of remoteDeletedIds) {
     if (!combinedTombstones[id]) {
       combinedTombstones[id] = Date.now();
@@ -356,7 +342,9 @@ export async function syncVaultWithCloud(
   }
 
   // Merge notes and settings
-  const mergedNotes = mergeNotes(localNotes, remoteNotes, combinedTombstones);
+  const deletedIdsForMerge = new Set(Object.keys(combinedTombstones));
+  const mergedNotes = mergeNotes(localNotes, remoteNotes, combinedTombstones)
+    .filter((note) => !deletedIdsForMerge.has(note.id));
   const mergedSettings = mergeSettings(localSettings, remoteSettings);
 
   const syncedAt = Date.now();
@@ -372,7 +360,8 @@ export async function syncVaultWithCloud(
   return {
     notes: mergedNotes,
     settings: mergedSettings,
-    syncedAt
+    syncedAt,
+    deletedIds: [...deletedIdsForMerge]
   };
 }
 
@@ -405,22 +394,56 @@ export function exportVaultToJson(notes: Note[], settings: AppSettings): void {
 export function parseVaultJson(jsonString: string): { notes: Note[]; settings?: Partial<AppSettings> } {
   try {
     const parsed = JSON.parse(jsonString);
-    if (!parsed || !Array.isArray(parsed.notes)) {
-      throw new Error('Invalid backup file format: missing notes array');
-    }
     return {
-      notes: parsed.notes,
-      settings: parsed.settings || undefined
+      notes: parseNotes(parsed?.notes),
+      settings: parseBackupSettings(parsed?.settings)
     };
   } catch (err: any) {
     throw new Error(`Failed to parse backup file: ${err.message}`);
   }
 }
 
+function parseNotes(value: unknown): Note[] {
+  if (!Array.isArray(value)) throw new Error('Missing notes array');
+  const ids = new Set<string>();
+  return value.map((entry, index) => {
+    const note = parseNoteData(entry);
+    if (!note || ids.has(note.id)) throw new Error(`Invalid or duplicate note at position ${index + 1}`);
+    ids.add(note.id);
+    return note;
+  });
+}
+
+function parseBackupSettings(value: unknown): Partial<AppSettings> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const settings: Partial<AppSettings> = {};
+  if (input.theme === 'light' || input.theme === 'dark') settings.theme = input.theme;
+  if (input.viewMode === 'ink' || input.viewMode === 'text') settings.viewMode = input.viewMode;
+  if (input.defaultEraserMode === 'object' || input.defaultEraserMode === 'pixel') {
+    settings.defaultEraserMode = input.defaultEraserMode;
+  }
+  if (input.defaultPenTool === 'pen' || input.defaultPenTool === 'fountain' || input.defaultPenTool === 'highlighter'
+    || input.defaultPenTool === 'eraser' || input.defaultPenTool === 'text' || input.defaultPenTool === 'select') {
+    settings.defaultPenTool = input.defaultPenTool;
+  }
+  if (typeof input.defaultPenColor === 'string' && /^#[\da-f]{3,8}$/i.test(input.defaultPenColor)) {
+    settings.defaultPenColor = input.defaultPenColor;
+  }
+  for (const key of ['defaultPenWidth', 'defaultEraserWidth', 'spenHoldEraseMs'] as const) {
+    const number = input[key];
+    if (typeof number === 'number' && Number.isFinite(number) && number > 0) settings[key] = number;
+  }
+  for (const key of ['isSidebarOpen', 'stylusOnly', 'spenDoublePressOpensMenu', 'syncThemeAndLayout', 'syncStylusPrefs'] as const) {
+    if (typeof input[key] === 'boolean') settings[key] = input[key];
+  }
+  return settings;
+}
+
 function htmlToPlainText(html: string): string {
   if (!html) return '';
   const div = document.createElement('div');
-  div.innerHTML = html;
+  div.innerHTML = sanitizeNoteHtml(html);
 
   // Rough Markdown-ish structure for lists and headings.
   div.querySelectorAll('li').forEach((li) => {

@@ -30,6 +30,24 @@ export type AuthActionResult = { ok: true } | { ok: false; message: string };
 
 const AUTH_BASE = '/api/auth';
 const CONFIG_URL = '/api/auth-config';
+const OFFLINE_ACCOUNT_KEY = 'aura_offline_account_id';
+
+export function readOfflineAccountId(): string | null {
+  try {
+    return localStorage.getItem(OFFLINE_ACCOUNT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function rememberOfflineAccount(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(OFFLINE_ACCOUNT_KEY, id);
+    else localStorage.removeItem(OFFLINE_ACCOUNT_KEY);
+  } catch {
+    // Local storage may be disabled. Online account access still works.
+  }
+}
 
 function hasJsonBody(response: Response): boolean {
   return (response.headers.get('content-type') || '').includes('application/json');
@@ -52,28 +70,19 @@ export async function fetchAuthSession(): Promise<AuthSession> {
       method: 'GET',
       credentials: 'same-origin',
       cache: 'no-store',
+      signal: AbortSignal.timeout?.(5000),
       headers: { Accept: 'application/json' }
     });
 
-    // In `vite dev` there is no Worker, so the SPA fallback answers with HTML.
-    if (response.status === 404 || !hasJsonBody(response)) {
-      return { status: 'unavailable' };
-    }
-    // 503 means the Worker is running but auth is not configured.
-    if (response.status === 503) {
-      return { status: 'unavailable' };
-    }
-    // Other failures (rate limiting, a transient 5xx) are not configuration
-    // problems, so keep offering the form instead of hiding the panel.
-    if (!response.ok) {
-      return { status: 'signed-out' };
-    }
+    if (response.status === 401) return { status: 'signed-out' };
+    if (!response.ok || !hasJsonBody(response)) return { status: 'unavailable' };
 
     const data = await response.json();
-    if (!data || !data.user) return { status: 'signed-out' };
+    if (data === null || (data && data.user === null)) return { status: 'signed-out' };
+    if (!data?.user) return { status: 'unavailable' };
 
     const user = normalizeUser(data.user as Record<string, unknown>);
-    return user ? { status: 'signed-in', user } : { status: 'signed-out' };
+    return user ? { status: 'signed-in', user } : { status: 'unavailable' };
   } catch {
     return { status: 'unavailable' };
   }
@@ -85,6 +94,7 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
       method: 'GET',
       credentials: 'same-origin',
       cache: 'no-store',
+      signal: AbortSignal.timeout?.(5000),
       headers: { Accept: 'application/json' }
     });
     if (!response.ok || !hasJsonBody(response)) {

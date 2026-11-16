@@ -4,18 +4,21 @@ import { AppSettings, DEFAULT_SETTINGS } from './types/settings';
 import { 
   getAllNotes, 
   saveNote, 
-  saveAllNotes,
   deleteNote, 
   getActiveNoteId, 
   setActiveNoteId,
-  setStorageNamespace
+  setStorageNamespace,
+  getStorageNamespace,
+  applyNoteChanges,
 } from './services/storage';
 import { 
   getSettings, 
   saveSettings, 
   syncVaultWithCloud 
 } from './services/syncService';
-import { fetchAuthConfig, fetchAuthSession, AuthUser } from './services/authService';
+import {
+  fetchAuthConfig, fetchAuthSession, AuthUser, readOfflineAccountId, rememberOfflineAccount
+} from './services/authService';
 import { AccountSyncError, syncAccountNotes } from './services/accountSyncService';
 import { watchAccountChanges, watchVaultChanges } from './services/liveSyncService';
 import { Header } from './components/Header';
@@ -29,9 +32,24 @@ import { SyncModal } from './components/SyncModal';
 import { SettingsModal } from './components/SettingsModal';
 import { getNoteTemplate } from './utils/templates';
 import { plainTextToNoteHtml, sanitizeNoteHtml } from './utils/noteHtml';
-
 import { notePages, removeNotePage, updateNotePage } from './utils/notePages';
 import { useKeyboardViewport } from './utils/useKeyboardViewport';
+
+function mergeSyncResult(
+  before: Note[], current: Note[], synced: Note[], deleted: ReadonlySet<string>
+): Note[] {
+  const started = new Map(before.map((note) => [note.id, note]));
+  const latest = new Map(current.map((note) => [note.id, note]));
+  const merged = new Map(synced.map((note) => [note.id, note]));
+  for (const id of started.keys()) {
+    if (!latest.has(id)) merged.delete(id);
+  }
+  for (const [id, note] of latest) {
+    if (started.get(id) !== note) merged.set(id, note);
+  }
+  for (const id of deleted) merged.delete(id);
+  return [...merged.values()];
+}
 
 export default function App() {
   const keyboardOpen = useKeyboardViewport();
@@ -52,8 +70,11 @@ export default function App() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [installPrompt, setInstallPrompt] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [account, setAccount] = useState<AuthUser | null>(null);
+  const [offlineChoice, setOfflineChoice] = useState<string | null>(null);
+  const [offlineAccountId, setOfflineAccountId] = useState<string | null>(null);
   // False when the auth routes are absent (plain `vite dev`) or the Worker has
   // no auth secret: the account panel then hides itself instead of offering a
   // form that cannot work.
@@ -63,12 +84,13 @@ export default function App() {
   const inkCanvasRef = useRef<InkCanvasRef>(null);
   const textEditorRef = useRef<TextEditorRef>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const saveTimeoutRef = useRef<any>(null);
-  const syncTimeoutRef = useRef<any>(null);
+  const pendingSaves = useRef(new Map<string, Promise<void>>());
+  const failedSaves = useRef(new Map<string, Note>());
+  const deletingNotes = useRef(new Set<string>());
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Mutable refs to prevent stale closure race conditions
   const notesRef = useRef<Note[]>(notes);
-  notesRef.current = notes;
 
   const settingsRef = useRef<AppSettings>(settings);
   settingsRef.current = settings;
@@ -81,6 +103,8 @@ export default function App() {
   accountRef.current = account;
 
   const isSyncingRef = useRef<boolean>(false);
+  const syncRequestedWhileBusy = useRef(false);
+  const retrySyncRef = useRef<() => void>(() => {});
   const lastLocalEditTimeRef = useRef<number>(0);
 
   // Capture beforeinstallprompt for PWA home screen install
@@ -99,7 +123,11 @@ export default function App() {
     currentNotes: Note[],
     currentSettings: AppSettings
   ) => {
-    if (!vaultKey || isSyncingRef.current) return;
+    if (!vaultKey || getStorageNamespace() || deletingNotes.current.size > 0) return;
+    if (isSyncingRef.current) {
+      syncRequestedWhileBusy.current = true;
+      return;
+    }
     isSyncingRef.current = true;
     setIsSyncing(true);
     setSyncError(null);
@@ -107,42 +135,14 @@ export default function App() {
     try {
       const res = await syncVaultWithCloud(vaultKey, currentNotes, currentSettings);
       
-      // Safety guard against overwriting local in-flight edits:
-      const latestLocal = notesRef.current;
-      const mergedResult = res.notes.map((remoteNote) => {
-        const local = latestLocal.find((n) => n.id === remoteNote.id);
-        if (!local) return remoteNote;
-
-        // If local note was edited more recently, keep local
-        if ((local.updatedAt || 0) > (remoteNote.updatedAt || 0)) {
-          return local;
-        }
-
-        // If equal timestamps, never let an empty/shorter stroke list erase drawn strokes
-        if ((local.updatedAt || 0) === (remoteNote.updatedAt || 0)) {
-          const localStrokes = local.inkStrokes?.length || 0;
-          const remoteStrokes = remoteNote.inkStrokes?.length || 0;
-          if (localStrokes > remoteStrokes) return local;
-        }
-
-        // If user was actively drawing or editing in the last 2.5 seconds, protect active local note
-        if (Date.now() - (lastLocalEditTimeRef.current || 0) < 2500 && local.id === activeNoteIdRef.current) {
-          return local;
-        }
-
-        return remoteNote;
-      });
-
-      // Keep any new local notes created while sync was in flight
-      for (const local of latestLocal) {
-        if (!mergedResult.some((n) => n.id === local.id)) {
-          mergedResult.unshift(local);
-        }
-      }
+      const deleted = new Set([...res.deletedIds, ...deletingNotes.current]);
+      const latest = notesRef.current;
+      const mergedResult = mergeSyncResult(currentNotes, latest, res.notes, deleted);
+      const unchanged = new Set(latest);
 
       setNotes(mergedResult);
       notesRef.current = mergedResult;
-      await saveAllNotes(mergedResult);
+      await applyNoteChanges(mergedResult.filter((note) => !unchanged.has(note)), deleted);
 
       // If the active note was deleted on another device, fall back gracefully.
       if (!mergedResult.some((n) => n.id === activeNoteIdRef.current)) {
@@ -170,6 +170,7 @@ export default function App() {
     } finally {
       isSyncingRef.current = false;
       setIsSyncing(false);
+      if (syncRequestedWhileBusy.current) retrySyncRef.current();
     }
   }, []);
 
@@ -179,33 +180,22 @@ export default function App() {
    * namespace are never uploaded.
    */
   const executeAccountSync = useCallback(async () => {
-    if (!accountRef.current || isSyncingRef.current) return;
+    if (!accountRef.current || accountRef.current.id !== getStorageNamespace()
+      || deletingNotes.current.size > 0) return;
+    if (isSyncingRef.current) {
+      syncRequestedWhileBusy.current = true;
+      return;
+    }
     isSyncingRef.current = true;
     setIsSyncing(true);
     setSyncError(null);
-    const syncStartedAt = Date.now();
+    const before = notesRef.current;
 
     try {
+      await Promise.all(pendingSaves.current.values());
+      if (failedSaves.current.size > 0) return;
       const res = await syncAccountNotes();
-      const latestLocal = notesRef.current;
-
-      // Keep anything edited locally while the sync was in flight.
-      const merged = res.notes.map((remoteNote) => {
-        const local = latestLocal.find((n) => n.id === remoteNote.id);
-        if (local && (local.updatedAt || 0) > (remoteNote.updatedAt || 0)) return local;
-        return remoteNote;
-      });
-
-      const remoteIds = new Set(res.notes.map((n) => n.id));
-      for (const local of latestLocal) {
-        if (remoteIds.has(local.id)) continue;
-        // Only rescue notes touched during this sync: notes deleted on another
-        // device must not come back to life.
-        if ((local.updatedAt || 0) > syncStartedAt) {
-          merged.unshift(local);
-          await saveNote(local);
-        }
-      }
+      const merged = mergeSyncResult(before, notesRef.current, res.notes, deletingNotes.current);
 
       setNotes(merged);
       notesRef.current = merged;
@@ -234,80 +224,114 @@ export default function App() {
     } finally {
       isSyncingRef.current = false;
       setIsSyncing(false);
+      if (syncRequestedWhileBusy.current) retrySyncRef.current();
     }
   }, []);
 
-  // Initialize and load notes + settings from local IndexedDB
+  const runAutoSync = useCallback(() => {
+    syncRequestedWhileBusy.current = false;
+    const prefs = settingsRef.current;
+    if (!prefs.autoSyncEnabled) return;
+    if (accountRef.current) {
+      void executeAccountSync();
+    } else if (!getStorageNamespace() && prefs.syncVaultKey) {
+      void executeSync(prefs.syncVaultKey, notesRef.current, prefs);
+    }
+  }, [executeAccountSync, executeSync]);
+  retrySyncRef.current = runAutoSync;
+
+  const openNotebook = useCallback(async (user: AuthUser | null, cachedId?: string) => {
+    setStorageNamespace(user?.id ?? cachedId ?? null);
+    const loadedSettings = await getSettings();
+    const querySyncKey = new URLSearchParams(window.location.search).get('sync')?.trim();
+    const prefs = querySyncKey ? await saveSettings({ syncVaultKey: querySyncKey }) : loadedSettings;
+    if (querySyncKey) window.history.replaceState({}, '', window.location.pathname);
+
+    const loadedNotes = await getAllNotes();
+    const lastActiveId = await getActiveNoteId();
+    const nextId = lastActiveId && loadedNotes.some((note) => note.id === lastActiveId)
+      ? lastActiveId
+      : loadedNotes[0]?.id ?? null;
+
+    document.documentElement.classList.toggle('dark', prefs.theme === 'dark');
+    settingsRef.current = prefs;
+    notesRef.current = loadedNotes;
+    activeNoteIdRef.current = nextId;
+    accountRef.current = user;
+    setSettings(prefs);
+    setNotes(loadedNotes);
+    setActiveNoteIdState(nextId);
+    setAccount(user);
+    setOfflineAccountId(cachedId ?? null);
+    setOfflineChoice(null);
+  }, []);
+
   useEffect(() => {
+    let cancelled = false;
     async function loadData() {
       try {
-        // 0. Identify the visitor first: signed-in notes live in their own
-        //    local namespace and in their Cloudflare account.
         const [session, authConfig] = await Promise.all([
           fetchAuthSession(),
           fetchAuthConfig()
         ]);
-        const user = session.status === 'signed-in' ? session.user : null;
-        accountRef.current = user;
-        setAccount(user);
+        if (cancelled) return;
         setAuthAvailable(authConfig.available);
         setGoogleEnabled(authConfig.google);
-        setStorageNamespace(user ? user.id : null);
-
-        // 1. Load settings
-        const loadedSettings = await getSettings();
-        setSettings(loadedSettings);
-        settingsRef.current = loadedSettings;
-
-        // Apply theme from settings
-        if (loadedSettings.theme === 'dark') {
-          document.documentElement.classList.add('dark');
-        } else {
-          document.documentElement.classList.remove('dark');
-        }
-
-        // 2. Check URL for 1-click sync link (?sync=KEY)
-        let activeVaultKey = loadedSettings.syncVaultKey;
-        const searchParams = new URLSearchParams(window.location.search);
-        const querySyncKey = searchParams.get('sync');
-        if (querySyncKey && querySyncKey.trim()) {
-          activeVaultKey = querySyncKey.trim();
-          const updated = await saveSettings({ syncVaultKey: activeVaultKey });
-          setSettings(updated);
-          settingsRef.current = updated;
-          // Clean URL query param without reload
-          window.history.replaceState({}, '', window.location.pathname);
-        }
-
-        // 3. Load notes
-        const loadedNotes = await getAllNotes();
-        setNotes(loadedNotes);
-        notesRef.current = loadedNotes;
-
-        const lastActiveId = await getActiveNoteId();
-        if (lastActiveId && loadedNotes.some((n) => n.id === lastActiveId)) {
-          setActiveNoteIdState(lastActiveId);
-        } else if (loadedNotes.length > 0) {
-          setActiveNoteIdState(loadedNotes[0].id);
-        }
-
-        // 4. Initial sync: account storage when signed in, otherwise the
-        //    anonymous vault key.
-        if (loadedSettings.autoSyncEnabled) {
-          if (user) {
-            await executeAccountSync();
-          } else if (activeVaultKey) {
-            executeSync(activeVaultKey, loadedNotes, loadedSettings);
+        if (session.status === 'unavailable') {
+          const cachedId = readOfflineAccountId();
+          if (cachedId) {
+            setOfflineChoice(cachedId);
+            return;
           }
+        } else {
+          rememberOfflineAccount(session.status === 'signed-in' ? session.user.id : null);
         }
+        await openNotebook(session.status === 'signed-in' ? session.user : null);
       } catch (err) {
         console.error('Error loading notes & settings:', err);
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     }
-    loadData();
-  }, [executeSync, executeAccountSync]);
+    void loadData();
+    return () => { cancelled = true; };
+  }, [openNotebook]);
+
+  useEffect(() => {
+    if (!isLoading && !offlineChoice && !offlineAccountId) runAutoSync();
+  }, [isLoading, offlineChoice, offlineAccountId, runAutoSync]);
+
+  useEffect(() => {
+    if (!offlineAccountId) return;
+    let cancelled = false;
+    let checking = false;
+    const recheck = async () => {
+      if (checking || navigator.onLine === false) return;
+      checking = true;
+      const session = await fetchAuthSession();
+      checking = false;
+      if (cancelled) return;
+      if (session.status === 'signed-in' && session.user.id === offlineAccountId) {
+        accountRef.current = session.user;
+        setAccount(session.user);
+        setAuthAvailable(true);
+        setOfflineAccountId(null);
+      } else if (session.status !== 'unavailable') {
+        rememberOfflineAccount(null);
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void recheck();
+    };
+    window.addEventListener('online', recheck);
+    document.addEventListener('visibilitychange', onVisible);
+    void recheck();
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', recheck);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [offlineAccountId]);
 
   // Sync when switching back to tab
   useEffect(() => {
@@ -318,16 +342,12 @@ export default function App() {
         !isSyncingRef.current &&
         Date.now() - (lastLocalEditTimeRef.current || 0) > 2500
       ) {
-        if (accountRef.current) {
-          executeAccountSync();
-        } else if (settingsRef.current.syncVaultKey) {
-          executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
-        }
+        runAutoSync();
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [executeSync, executeAccountSync]);
+  }, [runAutoSync]);
 
   /**
    * Live push channel: the Worker holds one request open per device and answers
@@ -337,7 +357,8 @@ export default function App() {
   useEffect(() => {
     const vaultKey = settings.syncVaultKey;
     const signedIn = !!account;
-    if (!settings.autoSyncEnabled || (!signedIn && !vaultKey)) return;
+    if (isLoading || offlineChoice || offlineAccountId || !settings.autoSyncEnabled
+      || (!signedIn && !vaultKey)) return;
 
     const controller = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -370,7 +391,7 @@ export default function App() {
       controller.abort();
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [account, settings.autoSyncEnabled, settings.syncVaultKey, executeSync, executeAccountSync]);
+  }, [account, isLoading, offlineChoice, offlineAccountId, settings.autoSyncEnabled, settings.syncVaultKey, executeSync, executeAccountSync]);
 
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
   const pages = activeNote ? notePages(activeNote) : [];
@@ -381,38 +402,32 @@ export default function App() {
     a.localeCompare(b)
   );
 
-  // Auto-save & background sync debouncer
-  const scheduleSave = useCallback((noteToSave: Note) => {
+  const persistLocalEdit = useCallback((note: Note) => {
+    if (deletingNotes.current.has(note.id)) return;
     setIsSaving(true);
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-    }
-
-    // Fast local save (150ms)
-    saveTimeoutRef.current = setTimeout(async () => {
-      try {
-        await saveNote(noteToSave);
-      } catch (err) {
+    const write = saveNote(note).then(
+      () => {
+        if (pendingSaves.current.get(note.id) === write) failedSaves.current.delete(note.id);
+      },
+      (err) => {
         console.error('Failed to auto-save note:', err);
-      } finally {
-        setIsSaving(false);
+        if (pendingSaves.current.get(note.id) === write) failedSaves.current.set(note.id, note);
       }
-    }, 150);
+    ).finally(() => {
+      if (pendingSaves.current.get(note.id) === write) pendingSaves.current.delete(note.id);
+      setIsSaving(pendingSaves.current.size > 0);
+      setSaveError(failedSaves.current.size > 0);
+    });
+    pendingSaves.current.set(note.id, write);
+    return write;
+  }, []);
 
-    // Fast background cloud push (600ms) with latest notesRef
-    const autoSyncEnabled = settingsRef.current.autoSyncEnabled;
-    const signedIn = !!accountRef.current;
-    if (autoSyncEnabled && (signedIn || settingsRef.current.syncVaultKey)) {
-      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-      syncTimeoutRef.current = setTimeout(() => {
-        if (accountRef.current) {
-          executeAccountSync();
-        } else if (settingsRef.current.syncVaultKey) {
-          executeSync(settingsRef.current.syncVaultKey, notesRef.current, settingsRef.current);
-        }
-      }, 600);
-    }
-  }, [executeSync, executeAccountSync]);
+  const scheduleSave = useCallback((note: Note) => {
+    void persistLocalEdit(note);
+    clearTimeout(syncTimeoutRef.current);
+    syncTimeoutRef.current = setTimeout(runAutoSync, 600);
+  }, [persistLocalEdit, runAutoSync]);
+  useEffect(() => () => clearTimeout(syncTimeoutRef.current), []);
 
   /**
    * Applies one edit to the active note from the latest committed state. Two
@@ -500,22 +515,17 @@ export default function App() {
     const updatedNotes = [newNote, ...notesRef.current];
     setNotes(updatedNotes);
     notesRef.current = updatedNotes;
+    activeNoteIdRef.current = newNote.id;
     setActiveNoteIdState(newNote.id);
+    await persistLocalEdit(newNote);
     await setActiveNoteId(newNote.id);
-    await saveNote(newNote);
-
-    if (settingsRef.current.autoSyncEnabled) {
-      if (accountRef.current) {
-        executeAccountSync();
-      } else if (settingsRef.current.syncVaultKey) {
-        executeSync(settingsRef.current.syncVaultKey, updatedNotes, settingsRef.current);
-      }
-    }
+    runAutoSync();
   };
 
   // Select Note
   const handleSelectNote = async (id: string) => {
     if (id !== activeNoteIdRef.current) setPageSelection(undefined);
+    activeNoteIdRef.current = id;
     setActiveNoteIdState(id);
     await setActiveNoteId(id);
     if (window.innerWidth < 768) {
@@ -525,38 +535,46 @@ export default function App() {
 
   // Delete Note
   const handleDeleteNote = async (id: string) => {
-    await deleteNote(id);
+    if (deletingNotes.current.has(id)) return;
+    const removed = notesRef.current.find((note) => note.id === id);
+    if (!removed) return;
+    deletingNotes.current.add(id);
     const remaining = notesRef.current.filter((n) => n.id !== id);
     setNotes(remaining);
     notesRef.current = remaining;
 
-    if (activeNoteId === id) {
-      const nextId = remaining.length > 0 ? remaining[0].id : null;
+    if (activeNoteIdRef.current === id) {
+      const nextId = remaining[0]?.id ?? null;
+      activeNoteIdRef.current = nextId;
       setActiveNoteIdState(nextId);
-      if (nextId) await setActiveNoteId(nextId);
+      if (nextId) void setActiveNoteId(nextId);
     }
 
-    if (settingsRef.current.autoSyncEnabled) {
-      if (accountRef.current) {
-        executeAccountSync();
-      } else if (settingsRef.current.syncVaultKey) {
-        executeSync(settingsRef.current.syncVaultKey, remaining, settingsRef.current);
-      }
+    try {
+      await pendingSaves.current.get(id);
+      await deleteNote(id);
+      failedSaves.current.delete(id);
+      setSaveError(failedSaves.current.size > 0);
+    } catch (err) {
+      console.error('Failed to delete note:', err);
+      notesRef.current = [removed, ...notesRef.current];
+      setNotes(notesRef.current);
+      setSaveError(true);
+    } finally {
+      deletingNotes.current.delete(id);
     }
+    runAutoSync();
   };
 
   // Toggle Pin Note
   const handleTogglePin = (id: string) => {
-    const target = notes.find((n) => n.id === id);
+    const target = notesRef.current.find((n) => n.id === id);
     if (!target) return;
     const now = Date.now();
     lastLocalEditTimeRef.current = now;
-    const updated = { ...target, pinned: !target.pinned, updatedAt: now };
-    setNotes((prev) => {
-      const next = prev.map((n) => (n.id === id ? updated : n));
-      notesRef.current = next;
-      return next;
-    });
+    const updated = { ...target, pinned: !target.pinned, updatedAt: Math.max(now, target.updatedAt + 1) };
+    notesRef.current = notesRef.current.map((note) => note.id === id ? updated : note);
+    setNotes(notesRef.current);
     scheduleSave(updated);
   };
 
@@ -600,33 +618,34 @@ export default function App() {
       await executeAccountSync();
       return;
     }
+    if (getStorageNamespace()) return;
     const updatedSettings = await saveSettings({ syncVaultKey: vaultKey });
     setSettings(updatedSettings);
     settingsRef.current = updatedSettings;
     await executeSync(vaultKey, notesRef.current, updatedSettings);
   };
 
-  // Signing out returns the app to the device's own (anonymous) namespace.
-  const handleAccountSignedOut = () => {
-    accountRef.current = null;
-    setAccount(null);
-    setStorageNamespace(null);
-    window.location.reload();
+  const reloadNotebook = async () => {
+    await Promise.all(pendingSaves.current.values());
+    if (failedSaves.current.size === 0) window.location.reload();
   };
 
-  // Signing in switches to a new namespace; a reload re-runs bootstrap with the
-  // session cookie that Better Auth just set.
-  const handleAccountSignedIn = () => {
-    window.location.reload();
+  const handleAccountSignedOut = async () => {
+    rememberOfflineAccount(null);
+    accountRef.current = null;
+    setAccount(null);
+    setOfflineAccountId(getStorageNamespace());
+    await reloadNotebook();
   };
 
   // Import backup vault
   const handleImportVault = async (importedNotes: Note[], importedSettings?: Partial<AppSettings>) => {
-    const current = notesRef.current;
-    const merged = [...importedNotes, ...current.filter((n) => !importedNotes.some((inN) => inN.id === n.id))];
-    setNotes(merged);
-    notesRef.current = merged;
-    await saveAllNotes(merged);
+    const before = notesRef.current;
+    const importedIds = new Set(importedNotes.map((note) => note.id));
+    const merged = [...importedNotes, ...before.filter((note) => !importedIds.has(note.id))];
+    await applyNoteChanges(importedNotes);
+    notesRef.current = mergeSyncResult(before, notesRef.current, merged, deletingNotes.current);
+    setNotes(notesRef.current);
 
     if (importedSettings) {
       await handleUpdateSettings(importedSettings);
@@ -666,6 +685,7 @@ export default function App() {
 
   // Global keyboard shortcuts
   useEffect(() => {
+    if (isLoading || offlineChoice) return;
     const focusSearch = () => {
       setIsSidebarOpen(true);
       saveSettings({ isSidebarOpen: true });
@@ -721,8 +741,7 @@ export default function App() {
         e.preventDefault();
         const current = notesRef.current.find((n) => n.id === activeNoteIdRef.current);
         if (current) {
-          setIsSaving(true);
-          saveNote(current).finally(() => setIsSaving(false));
+          scheduleSave(current);
         }
         return;
       }
@@ -744,9 +763,20 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-    // handleCreateNote is stable enough for a shortcut: it only reads refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isLoading, offlineChoice, scheduleSave]);
+
+  const chooseNotebook = async (cachedId?: string) => {
+    setIsLoading(true);
+    try {
+      await openNotebook(null, cachedId);
+    } catch (err) {
+      console.error('Error opening the notebook:', err);
+      setSaveError(true);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -756,6 +786,21 @@ export default function App() {
           <span className="text-sm font-medium tracking-tight">Opening Aura Notes Studio...</span>
         </div>
       </div>
+    );
+  }
+
+  if (offlineChoice) {
+    return (
+      <main className="h-full grid place-content-center gap-4 px-6 bg-canvas-light dark:bg-canvas-dark text-ink-light dark:text-ink-dark">
+        <h1 className="text-lg font-semibold">Account verification unavailable</h1>
+        <p className="max-w-sm text-sm">If this is your device, you can open the account notes saved here. Sync resumes when Aura Notes verifies your account.</p>
+        <button type="button" className="rounded-lg bg-violet-600 px-4 py-2 text-white" onClick={() => void chooseNotebook(offlineChoice)}>
+          Open cached account notes
+        </button>
+        <button type="button" className="rounded-lg border border-current px-4 py-2" onClick={() => void chooseNotebook()}>
+          Open device notes
+        </button>
+      </main>
     );
   }
 
@@ -804,6 +849,23 @@ export default function App() {
           syncVaultKey={settings.syncVaultKey}
           accountSyncActive={!!account}
         />
+
+        {offlineAccountId && (
+          <div role="status" className="flex flex-wrap items-center gap-x-3 px-4 py-2 text-sm bg-amber-100 text-amber-950">
+            <span>Showing cached account notes. Sync is paused until your account is verified.</span>
+            <button type="button" className="underline" onClick={() => void reloadNotebook()}>Check account</button>
+          </div>
+        )}
+        {saveError && (
+          <div role="alert" className="flex flex-wrap items-center gap-x-3 px-4 py-2 text-sm bg-rose-100 text-rose-950">
+            <span>A change could not be saved on this device.</span>
+            {failedSaves.current.size > 0 && (
+              <button type="button" className="underline" onClick={() => {
+                for (const note of failedSaves.current.values()) scheduleSave(note);
+              }}>Retry saving</button>
+            )}
+          </div>
+        )}
 
         {activeNote && activePage ? (
           <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden relative transition-all duration-300">
@@ -899,7 +961,7 @@ export default function App() {
         syncError={syncError}
         account={authAvailable ? account : undefined}
         googleEnabled={googleEnabled}
-        onAccountSignedIn={handleAccountSignedIn}
+        onAccountSignedIn={reloadNotebook}
         onAccountSignedOut={handleAccountSignedOut}
       />
 

@@ -1,6 +1,7 @@
 import { Note } from '../types/note';
-import { getAllNotes, saveNote, deleteNoteLocally } from './storage';
+import { applyAccountPull, getAllNotes, getStorageNamespace } from './storage';
 import { getDeletedNoteTombstones } from './syncService';
+import { parseNoteData } from '../utils/noteData';
 
 /**
  * Account sync: one signed-in visitor's notes stored in Cloudflare.
@@ -78,11 +79,13 @@ async function requestNotes(path: string, init?: RequestInit): Promise<Response>
     throw new AccountSyncError('You are offline. Notes stay on this device until you reconnect.', 'offline');
   }
   try {
+    const owner = getStorageNamespace();
     return await fetch(path, {
       ...init,
       credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
+        ...(owner ? { 'X-Aura-Account': owner } : {}),
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
         ...(init?.headers || {})
       }
@@ -106,7 +109,8 @@ export async function fetchAccountNote(id: string): Promise<Note | null> {
   if (!response.ok) throw await toSyncError(response);
 
   try {
-    return (await response.json()) as Note;
+    const note = parseNoteData(await response.json());
+    return note?.id === id ? note : null;
   } catch {
     return null;
   }
@@ -181,9 +185,10 @@ export async function syncAccountNotes(): Promise<AccountSyncResult> {
       continue;
     }
 
-    await deleteNoteLocally(meta.id);
-    resultById.delete(meta.id);
-    deleted += 1;
+    if (await applyAccountPull(meta.id, localNote, null)) {
+      resultById.delete(meta.id);
+      deleted += 1;
+    }
   }
 
   // 3. Upload notes the server has never seen or holds an older copy of.
@@ -219,9 +224,10 @@ export async function syncAccountNotes(): Promise<AccountSyncResult> {
 
     if (localNote && (localNote.updatedAt || 0) > (fetched.updatedAt || 0)) continue;
 
-    await saveNote(fetched);
-    resultById.set(fetched.id, fetched);
-    pulled += 1;
+    if (await applyAccountPull(fetched.id, localNote, fetched)) {
+      resultById.set(fetched.id, fetched);
+      pulled += 1;
+    }
   }
 
   const notes = Array.from(resultById.values()).sort((a, b) => {

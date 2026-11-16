@@ -1,7 +1,7 @@
-import { createStore, get, set, set as setDefault, del, entries, setMany, clear } from 'idb-keyval';
+import { createStore, get, set, set as setDefault, del, entries, clear, promisifyRequest } from 'idb-keyval';
 import { Note, Stroke } from '../types/note';
 import { notePages } from '../utils/notePages';
-import { recordDeletedNoteId } from './syncService';
+import { getDeletedNoteTombstones, recordDeletedNoteId } from './syncService';
 
 // Anonymous device storage. Signed-in visitors get their own namespace so an
 // account's notes never mix with the notes already on this device.
@@ -18,6 +18,7 @@ let metaStore = createStore(ANON_META_DB, 'meta');
 // Legacy single-blob key (pre-v2). Migrated on first load and then deleted.
 const LEGACY_NOTES_KEY = 'aura_notes_list';
 const MIGRATED_KEY = 'aura_notes_migrated_v2';
+const WELCOME_SHOWN_KEY = 'aura_welcome_shown';
 const ACTIVE_NOTE_ID_KEY = 'aura_active_note_id';
 
 /** Current storage owner: null for the signed-out device namespace. */
@@ -148,18 +149,58 @@ async function readAllNotes(): Promise<Note[]> {
 }
 
 async function writeAllNotes(notes: Note[]): Promise<void> {
+  const records = notes.map(compactNote);
   if (hasIndexedDB()) {
-    await clear(notesStore);
-    if (notes.length > 0) {
-      await setMany(notes.map((n) => [n.id, compactNote(n)] as [string, Note]), notesStore);
-    }
+    await notesStore('readwrite', (store) => {
+      store.clear();
+      for (const note of records) store.put(note, note.id);
+      return promisifyRequest(store.transaction);
+    });
     return;
   }
   const memory = memoryNamespace();
   memory.notes.clear();
-  for (const note of notes) {
-    memory.notes.set(note.id, compactNote(note));
+  for (const note of records) {
+    memory.notes.set(note.id, note);
   }
+}
+
+export async function applyNoteChanges(notes: Note[], deletedIds: ReadonlySet<string> = new Set()): Promise<void> {
+  const records = notes.map(compactNote);
+  if (hasIndexedDB()) {
+    await notesStore('readwrite', (store) => {
+      for (const id of deletedIds) store.delete(id);
+      for (const note of records) store.put(note, note.id);
+      return promisifyRequest(store.transaction);
+    });
+  } else {
+    const { notes: local } = memoryNamespace();
+    for (const id of deletedIds) local.delete(id);
+    for (const note of records) local.set(note.id, note);
+  }
+}
+
+/** Apply a pull only if the local revision still matches the sync snapshot. */
+export async function applyAccountPull(id: string, previous: Note | undefined, next: Note | null): Promise<boolean> {
+  const record = next ? compactNote(next) : null;
+  if (!hasIndexedDB()) {
+    const { notes } = memoryNamespace();
+    if (notes.get(id)?.updatedAt !== previous?.updatedAt) return false;
+    if (record) notes.set(id, record);
+    else notes.delete(id);
+    return true;
+  }
+  return notesStore('readwrite', (store) => {
+    let applied = false;
+    const request = store.get(id);
+    request.onsuccess = () => {
+      if (request.result?.updatedAt !== previous?.updatedAt) return;
+      if (record) store.put(record, id);
+      else store.delete(id);
+      applied = true;
+    };
+    return promisifyRequest(store.transaction).then(() => applied);
+  });
 }
 
 async function readMeta<T>(key: string): Promise<T | undefined> {
@@ -227,9 +268,15 @@ export async function getAllNotes(): Promise<Note[]> {
         if (migrated) notes = migrated;
       }
 
-      if (notes.length === 0) {
-        await saveNote(INITIAL_WELCOME_NOTE);
-        return [INITIAL_WELCOME_NOTE];
+      const hasWelcome = notes.some((note) => note.id === INITIAL_WELCOME_NOTE.id);
+      const shouldCheckWelcome = hasWelcome || notes.length === 0;
+      if (shouldCheckWelcome && !(await readMeta<boolean>(WELCOME_SHOWN_KEY))) {
+        const deleted = await getDeletedNoteTombstones();
+        if (!hasWelcome && !Object.hasOwn(deleted, INITIAL_WELCOME_NOTE.id)) {
+          await saveNote(INITIAL_WELCOME_NOTE);
+          notes = [INITIAL_WELCOME_NOTE];
+        }
+        await writeMeta(WELCOME_SHOWN_KEY, true);
       }
     }
 
@@ -280,34 +327,12 @@ export async function saveNote(note: Note): Promise<void> {
   }
 }
 
-export async function saveAllNotes(notes: Note[]): Promise<void> {
-  try {
-    await writeAllNotes(notes);
-  } catch (error) {
-    console.error('Failed to save notes list:', error);
-    throw error;
-  }
-}
-
 /**
  * Removes a note and records a tombstone so cloud syncs propagate the delete.
  */
 export async function deleteNote(id: string): Promise<void> {
   try {
     await recordDeletedNoteId(id);
-    await removeNoteRecord(id);
-  } catch (error) {
-    console.error('Failed to delete note from storage:', error);
-    throw error;
-  }
-}
-
-/**
- * Removes a note locally without recording a tombstone. Used when the server
- * already reports the note as deleted, so no delete needs to be pushed back.
- */
-export async function deleteNoteLocally(id: string): Promise<void> {
-  try {
     await removeNoteRecord(id);
   } catch (error) {
     console.error('Failed to delete note from storage:', error);

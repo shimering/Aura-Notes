@@ -245,6 +245,10 @@ async function requireAccount(
   if (!user) {
     return jsonResponse({ error: 'Sign in required', code: 'auth_required' }, 401, NO_STORE);
   }
+  const expectedUser = request.headers.get('X-Aura-Account');
+  if (expectedUser !== null && expectedUser !== user.id) {
+    return jsonResponse({ error: 'The signed-in account has changed. Reload to switch notebooks.', code: 'auth_required' }, 401, NO_STORE);
+  }
 
   return { user, db: env.DB, bucket: env.NOTES_BUCKET };
 }
