@@ -205,6 +205,7 @@ canvas.ink-canvas {
   --ribbon-hover: #e3ebf5;
   --ribbon-accent: #205eaa;
   --ribbon-active: #dceafa;
+  --ribbon-panel-height: 88px;
   background: var(--ribbon-base);
   color: var(--ribbon-text);
   border-bottom: 1px solid var(--ribbon-border);
@@ -272,7 +273,24 @@ canvas.ink-canvas {
   background: var(--ribbon-panel);
   border-top: 1px solid var(--ribbon-border);
   border-radius: 8px 8px 0 0;
-  min-height: 35px;
+  height: var(--ribbon-panel-height);
+}
+
+.note-ribbon[data-compact="true"] { --ribbon-panel-height: 53px; }
+
+.ribbon-panel > :is(.ribbon-groups, .ribbon-context-tools, .ribbon-selection-tools),
+.ribbon-panel .pen-toolbar-controls {
+  height: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ribbon-panel :is(.ribbon-group, .table-toolbar, .ribbon-selection-tools) {
+  flex-shrink: 0;
+  max-width: none;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .ribbon-groups {
@@ -355,7 +373,6 @@ canvas.ink-canvas {
 
 .note-ribbon[data-compact="true"] .ribbon-group {
   flex-direction: row;
-  flex-wrap: wrap;
   align-items: center;
   padding-inline: 6px;
 }
@@ -372,24 +389,13 @@ canvas.ink-canvas {
 }
 
 .ribbon-panel > [data-ink-ui="pen-toolbar"] {
-  justify-content: flex-start;
+  height: 100%;
   border: 0;
   border-radius: 0;
   box-shadow: none;
 }
 
-.note-ribbon[data-keyboard-open="true"] :is(.ribbon-groups, .ribbon-context-tools, .ribbon-selection-tools) {
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
-.note-ribbon[data-keyboard-open="true"] :is(.ribbon-group, .table-toolbar, .ribbon-selection-tools) {
-  flex: 0 0 auto;
-  max-width: none;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-}
+.ribbon-panel .pen-toolbar-controls { justify-content: flex-start; }
 
 .ribbon-popover {
   position: absolute;
@@ -444,7 +450,7 @@ canvas.ink-canvas {
   font-size: .75rem;
 }
 
-.ribbon-context-tools { display: flex; flex-wrap: wrap; }
+.ribbon-context-tools { display: flex; align-items: center; }
 .table-toolbar form, .table-toolbar label,
 .ribbon-selection-tools form, .ribbon-selection-tools label { display: flex; align-items: center; gap: .35rem; }
 .table-toolbar :is(input, button), .ribbon-selection-tools input {
@@ -500,7 +506,7 @@ canvas.ink-canvas {
   #root:not([data-keyboard-open="true"]) { height: 100dvh; }
   .note-page-bar {
     padding-bottom: 2px;
-    margin-bottom: env(safe-area-inset-bottom, 0px);
+    margin-bottom: min(env(safe-area-inset-bottom, 0px), env(safe-area-max-inset-bottom, 34px));
   }
 }
 

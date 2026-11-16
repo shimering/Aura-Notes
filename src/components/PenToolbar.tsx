@@ -257,140 +257,142 @@ export const PenToolbar: React.FC<PenToolbarProps> = ({
     <div
       ref={toolbarRef}
       data-ink-ui="pen-toolbar"
-      className="relative flex flex-wrap items-center justify-center gap-1 p-1.5 rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark select-none"
+      className="relative rounded-2xl glass-panel shadow-floating border border-surface-subtle-light dark:border-surface-subtle-dark select-none"
     >
-      {/* Active tool — the menu holds every tool and its options. */}
-      <button
-        type="button"
-        onClick={() => toggleMenu('tool')}
-        title={`Tool: ${activeToolOption.label}`}
-        aria-haspopup="menu"
-        aria-expanded={openMenu === 'tool'}
-        className={`flex h-10 w-12 shrink-0 items-center justify-center gap-1 rounded-xl px-2 transition active:scale-95 sm:w-36 sm:justify-start ${
-          openMenu === 'tool' ? 'ring-2 ring-violet-400/70' : ''
-        } ${activeToolOption.accent}`}
-      >
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-          {activeToolOption.icon}
-        </span>
-        <span className="hidden min-w-0 flex-1 truncate text-left text-xs font-semibold sm:inline">
-          {activeToolOption.label}
-        </span>
-        <ChevronDown className={`w-3 h-3 shrink-0 opacity-80 transition ${openMenu === 'tool' ? 'rotate-180' : ''}`} />
-      </button>
-
-      <span className={DIVIDER} aria-hidden="true" />
-
-      {/* Ink color */}
-      <button
-        type="button"
-        onClick={() => toggleMenu('color')}
-        title={`Ink color ${color}`}
-        aria-haspopup="menu"
-        aria-expanded={openMenu === 'color'}
-        className={triggerClass('color', 'w-12 gap-1')}
-      >
-        <span
-          className="w-4 h-4 rounded-full border border-black/20 dark:border-white/25"
-          style={{ backgroundColor: color }}
-        />
-        <ChevronDown className="w-3 h-3 opacity-60" />
-      </button>
-
-      {/* Pen / eraser size */}
-      <button
-        type="button"
-        onClick={() => toggleMenu('size')}
-        title={isEraser ? `Eraser size: ${currentEraserWidth}px` : `Pen width: ${width}px`}
-        aria-haspopup="menu"
-        aria-expanded={openMenu === 'size'}
-        className={triggerClass('size', 'w-12 gap-1')}
-      >
-        <span
-          className="rounded-full bg-current"
-          style={{ width: `${dotSize}px`, height: `${dotSize}px` }}
-        />
-        <ChevronDown className="w-3 h-3 opacity-60" />
-      </button>
-
-      <span className={DIVIDER} aria-hidden="true" />
-
-      {/* Stylus-only palm shield */}
-      <button
-        type="button"
-        onClick={onToggleStylusOnly}
-        title={
-          isStylusOnly
-            ? 'Ink input is limited to the stylus'
-            : 'Limit ink input to the stylus'
-        }
-        aria-pressed={isStylusOnly}
-        className={`${TRIGGER} w-10 ${
-          isStylusOnly
-            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
-            : 'text-ink-muted-light dark:text-ink-muted-dark'
-        }`}
-      >
-        {isStylusOnly ? <ShieldCheck className="w-4 h-4" /> : <ShieldAlert className="w-4 h-4 opacity-70" />}
-      </button>
-
-      {/* Scribble to text */}
-      <button
-        type="button"
-        onClick={onScribbleToText}
-        disabled={!hasStrokes}
-        title="Convert handwritten scribbles to text"
-        className={`${TRIGGER} w-10 ${
-          hasStrokes
-            ? 'bg-gradient-to-r from-violet-600 via-indigo-600 to-pink-600 text-white hover:opacity-90'
-            : 'disabled:opacity-30 disabled:cursor-not-allowed'
-        }`}
-      >
-        <Wand2 className="w-4 h-4" />
-      </button>
-
-      {onOpenSPenMenu && (
+      <div className="pen-toolbar-controls flex flex-wrap items-center justify-center gap-1 p-1.5">
+        {/* Active tool — the menu holds every tool and its options. */}
         <button
           type="button"
-          onClick={onOpenSPenMenu}
-          title="S Pen Quick Menu"
-          className={`${TRIGGER} w-10 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40`}
+          onClick={() => toggleMenu('tool')}
+          title={`Tool: ${activeToolOption.label}`}
+          aria-haspopup="menu"
+          aria-expanded={openMenu === 'tool'}
+          className={`flex h-10 w-12 shrink-0 items-center justify-center gap-1 rounded-xl px-2 transition active:scale-95 sm:w-36 sm:justify-start ${
+            openMenu === 'tool' ? 'ring-2 ring-violet-400/70' : ''
+          } ${activeToolOption.accent}`}
         >
-          <Sparkles className="w-4 h-4" />
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+            {activeToolOption.icon}
+          </span>
+          <span className="hidden min-w-0 flex-1 truncate text-left text-xs font-semibold sm:inline">
+            {activeToolOption.label}
+          </span>
+          <ChevronDown className={`w-3 h-3 shrink-0 opacity-80 transition ${openMenu === 'tool' ? 'rotate-180' : ''}`} />
         </button>
-      )}
 
-      <span className={DIVIDER} aria-hidden="true" />
+        <span className={DIVIDER} aria-hidden="true" />
 
-      {/* Undo, redo, clear */}
-      <div className="flex items-center gap-0.5 shrink-0">
+        {/* Ink color */}
         <button
           type="button"
-          onClick={onUndo}
-          disabled={!canUndo}
-          title="Undo stroke"
-          className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
+          onClick={() => toggleMenu('color')}
+          title={`Ink color ${color}`}
+          aria-haspopup="menu"
+          aria-expanded={openMenu === 'color'}
+          className={triggerClass('color', 'w-12 gap-1')}
         >
-          <Undo2 className="w-4 h-4" />
+          <span
+            className="w-4 h-4 rounded-full border border-black/20 dark:border-white/25"
+            style={{ backgroundColor: color }}
+          />
+          <ChevronDown className="w-3 h-3 opacity-60" />
         </button>
+
+        {/* Pen / eraser size */}
         <button
           type="button"
-          onClick={onRedo}
-          disabled={!canRedo}
-          title="Redo stroke"
-          className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
+          onClick={() => toggleMenu('size')}
+          title={isEraser ? `Eraser size: ${currentEraserWidth}px` : `Pen width: ${width}px`}
+          aria-haspopup="menu"
+          aria-expanded={openMenu === 'size'}
+          className={triggerClass('size', 'w-12 gap-1')}
         >
-          <Redo2 className="w-4 h-4" />
+          <span
+            className="rounded-full bg-current"
+            style={{ width: `${dotSize}px`, height: `${dotSize}px` }}
+          />
+          <ChevronDown className="w-3 h-3 opacity-60" />
         </button>
+
+        <span className={DIVIDER} aria-hidden="true" />
+
+        {/* Stylus-only palm shield */}
         <button
           type="button"
-          onClick={onClear}
+          onClick={onToggleStylusOnly}
+          title={
+            isStylusOnly
+              ? 'Ink input is limited to the stylus'
+              : 'Limit ink input to the stylus'
+          }
+          aria-pressed={isStylusOnly}
+          className={`${TRIGGER} w-10 ${
+            isStylusOnly
+              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
+              : 'text-ink-muted-light dark:text-ink-muted-dark'
+          }`}
+        >
+          {isStylusOnly ? <ShieldCheck className="w-4 h-4" /> : <ShieldAlert className="w-4 h-4 opacity-70" />}
+        </button>
+
+        {/* Scribble to text */}
+        <button
+          type="button"
+          onClick={onScribbleToText}
           disabled={!hasStrokes}
-          title="Clear all inking"
-          className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-muted-light transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30 disabled:opacity-30 disabled:cursor-not-allowed"
+          title="Convert handwritten scribbles to text"
+          className={`${TRIGGER} w-10 ${
+            hasStrokes
+              ? 'bg-gradient-to-r from-violet-600 via-indigo-600 to-pink-600 text-white hover:opacity-90'
+              : 'disabled:opacity-30 disabled:cursor-not-allowed'
+          }`}
         >
-          <Trash2 className="w-4 h-4" />
+          <Wand2 className="w-4 h-4" />
         </button>
+
+        {onOpenSPenMenu && (
+          <button
+            type="button"
+            onClick={onOpenSPenMenu}
+            title="S Pen Quick Menu"
+            className={`${TRIGGER} w-10 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40`}
+          >
+            <Sparkles className="w-4 h-4" />
+          </button>
+        )}
+
+        <span className={DIVIDER} aria-hidden="true" />
+
+        {/* Undo, redo, clear */}
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            type="button"
+            onClick={onUndo}
+            disabled={!canUndo}
+            title="Undo stroke"
+            className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <Undo2 className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="Redo stroke"
+            className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-light dark:text-ink-dark transition hover:bg-surface-subtle-light dark:hover:bg-surface-subtle-dark disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <Redo2 className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onClear}
+            disabled={!hasStrokes}
+            title="Clear all inking"
+            className="flex h-9 w-8 items-center justify-center rounded-xl text-ink-muted-light transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30 disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* ---------- Dropdown panels ---------- */}

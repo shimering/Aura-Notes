@@ -7,10 +7,12 @@ export function useKeyboardViewport() {
     const root = document.getElementById('root');
     const viewport = window.visualViewport;
     if (!root || !viewport) return;
+    const touchWebKit = navigator.maxTouchPoints > 0 && window.CSS?.supports('-webkit-touch-callout', 'none');
     let width = window.innerWidth;
     let fullHeight = Math.max(window.innerHeight, viewport.height);
     let open = false;
-    let frame = 0;
+    let viewportFrame = 0;
+    let layoutFrame = 0;
 
     const update = () => {
       const focused = document.activeElement;
@@ -32,6 +34,13 @@ export function useKeyboardViewport() {
         delete root.dataset.keyboardOpen;
         root.style.removeProperty('--app-height');
         root.style.removeProperty('--app-top');
+        if (touchWebKit) {
+          cancelAnimationFrame(layoutFrame);
+          layoutFrame = requestAnimationFrame(() => {
+            // iPadOS can leave the document shifted after the keyboard closes.
+            if (!open && document.scrollingElement) document.scrollingElement.scrollTop = 0;
+          });
+        }
       }
       if (open !== next) {
         open = next;
@@ -40,8 +49,8 @@ export function useKeyboardViewport() {
       if (!next || !(focused instanceof HTMLElement) || !focused.isContentEditable) return;
       const desk = focused.closest<HTMLElement>('.note-desk');
       if (!desk) return;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
+      cancelAnimationFrame(layoutFrame);
+      layoutFrame = requestAnimationFrame(() => {
         const selection = window.getSelection();
         if (document.activeElement !== focused || !selection?.rangeCount || !focused.contains(selection.anchorNode)) return;
         const caret = selection.getRangeAt(0).getBoundingClientRect();
@@ -51,17 +60,23 @@ export function useKeyboardViewport() {
       });
     };
 
-    window.addEventListener('resize', update);
-    viewport.addEventListener('resize', update);
-    viewport.addEventListener('scroll', update);
-    document.addEventListener('focusin', update);
+    // WebKit can dispatch the resize event before the new dimensions are readable.
+    const onViewportChange = touchWebKit ? () => {
+      cancelAnimationFrame(viewportFrame);
+      viewportFrame = requestAnimationFrame(update);
+    } : update;
+    window.addEventListener('resize', onViewportChange);
+    viewport.addEventListener('resize', onViewportChange);
+    viewport.addEventListener('scroll', onViewportChange);
+    document.addEventListener('focusin', onViewportChange);
     update();
     return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('resize', update);
-      viewport.removeEventListener('resize', update);
-      viewport.removeEventListener('scroll', update);
-      document.removeEventListener('focusin', update);
+      cancelAnimationFrame(viewportFrame);
+      cancelAnimationFrame(layoutFrame);
+      window.removeEventListener('resize', onViewportChange);
+      viewport.removeEventListener('resize', onViewportChange);
+      viewport.removeEventListener('scroll', onViewportChange);
+      document.removeEventListener('focusin', onViewportChange);
       delete root.dataset.keyboardOpen;
       root.style.removeProperty('--app-height');
       root.style.removeProperty('--app-top');
