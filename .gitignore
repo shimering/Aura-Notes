@@ -29,3 +29,6 @@ dist-ssr
 # Wrangler local state and dev vars
 .wrangler/
 .dev.vars
+
+# Dev server session markers
+*.pid
