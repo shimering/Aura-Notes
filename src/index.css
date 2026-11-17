@@ -6,12 +6,13 @@
   :root {
     --app-height: 100%;
     --app-safe-top: env(safe-area-inset-top, 0px);
+    --note-desk-color: #e8e8e5;
   }
+
+  :root.dark { --note-desk-color: #0d0d0f; }
 
   /* An installed iPad app draws underneath its translucent status bar. */
   @supports (-webkit-touch-callout: none) {
-    #root:not([data-keyboard-open="true"]) { height: 100dvh; }
-
     @media (display-mode: standalone) {
       :root {
         --app-safe-top: max(24px, env(safe-area-inset-top, 0px));
@@ -21,6 +22,8 @@
 
   #root {
     padding-top: var(--app-safe-top);
+    height: 100%;
+    height: 100dvh;
   }
 
   #root[data-keyboard-open="true"] {
@@ -122,7 +125,7 @@ canvas.ink-canvas {
 
 /* Page viewport: a quiet desk around the floating A4 sheet. */
 .note-desk {
-  background-color: #e8e8e5;
+  background-color: var(--note-desk-color);
   background-image: radial-gradient(rgba(15, 23, 42, 0.07) 1px, transparent 1px);
   background-size: 18px 18px;
   overscroll-behavior: contain;
@@ -132,7 +135,6 @@ canvas.ink-canvas {
 }
 
 .dark .note-desk {
-  background-color: #0d0d0f;
   background-image: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
 }
 
@@ -195,6 +197,12 @@ canvas.ink-canvas {
 }
 
 @media (max-width: 639px) {
+  /* Match the canvas desk where the mobile browser paints document insets. */
+  html:has(main:not([inert]) .note-desk),
+  body:has(main:not([inert]) .note-desk) {
+    background-color: var(--note-desk-color);
+  }
+
   .note-desk-inner[data-layout="canvas"] {
     --note-desk-gutter: 0px;
     padding-block: 0;
@@ -1072,8 +1080,11 @@ canvas.ink-canvas {
   margin-left: auto;
   border-radius: 999px;
   overflow: hidden;
+  background: rgb(249 246 255 / 48%);
+  backdrop-filter: blur(12px) saturate(130%);
   transition: width 240ms cubic-bezier(.2, .75, .25, 1);
 }
+.dark .phone-tool-capsule { background: rgb(37 30 50 / 56%); }
 .phone-tool-capsule[data-expanded="true"] { width: min(100%, 24rem); }
 .phone-tool-capsule .phone-capsule-trigger {
   width: 46px;
@@ -1092,6 +1103,20 @@ canvas.ink-canvas {
 .phone-ribbon .ribbon-tabs button { min-height: 44px; }
 .phone-zoom-actions { display: flex; }
 .phone-ribbon .ribbon-panel { border-radius: 0; background: transparent; }
+.phone-ribbon-panel > .ribbon-panel:only-child { border-top: 0; }
+.phone-ribbon .ribbon-panel > .ribbon-selection-tools {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 3px 8px;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  scrollbar-width: thin;
+  scrollbar-color: var(--notes-ui-line) transparent;
+}
+.phone-ribbon .ribbon-panel > .ribbon-selection-tools > * { flex: none; }
+.phone-ribbon .ribbon-selection-tools input[type="number"] { font-size: 16px; }
 .phone-ribbon .phone-insert-panel {
   height: auto;
   max-height: min(42dvh, 220px);
