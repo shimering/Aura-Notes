@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   A4_LANDSCAPE,
   A4_PORTRAIT,
-  CANVAS_BASE_SIZE,
   CANVAS_MAX_ZOOM,
   CANVAS_MIN_ZOOM,
   clampPageZoom,
+  getCanvasSize,
   getFitWidthZoom,
   getMaxPageZoom,
   getMinPageZoom,
@@ -24,10 +24,10 @@ describe('page layouts', () => {
     expect(A4_LANDSCAPE.height).toBe(A4_PORTRAIT.width);
   });
 
-  it('opens the endless canvas on a workspace larger than an A4 sheet', () => {
-    expect(getPageSize('canvas')).toEqual(CANVAS_BASE_SIZE);
-    expect(CANVAS_BASE_SIZE.width).toBeGreaterThan(A4_LANDSCAPE.width);
-    expect(CANVAS_BASE_SIZE.height).toBeGreaterThan(A4_LANDSCAPE.height);
+  it('keeps half a phone screen beyond the reference area or the last content', () => {
+    expect(getPageSize('canvas')).toEqual({ width: 585, height: 1266 });
+    expect(getCanvasSize(900.5, 200)).toEqual({ width: 1096, height: 1266 });
+    expect(getCanvasSize(300, 1400)).toEqual({ width: 585, height: 1822 });
     expect(isCanvasLayout('canvas')).toBe(true);
     expect(isCanvasLayout('portrait')).toBe(false);
   });
@@ -55,6 +55,6 @@ describe('page layouts', () => {
     // A viewport wider than the sheet never zooms past 100% when fitting.
     expect(getFitWidthZoom(1400, 794)).toBe(1);
     // Canvas fitting still respects the canvas minimum zoom.
-    expect(getFitWidthZoom(100, CANVAS_BASE_SIZE.width, 0, 'canvas')).toBe(CANVAS_MIN_ZOOM);
+    expect(getFitWidthZoom(100, getPageSize('canvas').width, 0, 'canvas')).toBe(CANVAS_MIN_ZOOM);
   });
 });

@@ -13,19 +13,20 @@ export interface PageSize {
 export const A4_PORTRAIT: PageSize = { width: 794, height: 1123 };
 export const A4_LANDSCAPE: PageSize = { width: 1123, height: 794 };
 
-/**
- * Opening workspace of the endless canvas. The sheet grows from here whenever
- * ink, text or panning reaches its right or bottom edge.
- */
-export const CANVAS_BASE_SIZE: PageSize = { width: 3200, height: 2200 };
-/** Width of the readable text column on the endless canvas. */
-export const CANVAS_TEXT_WIDTH = 794;
+/** Phone-sized reference area in page pixels, shared by every device. */
+export const CANVAS_SCREEN_SIZE: PageSize = { width: 390, height: 844 };
 /** Blank space between the canvas origin and the text column. */
 export const CANVAS_TEXT_INSET = 96;
-/** Blank workspace kept ahead of the content while growing the canvas. */
-export const CANVAS_CONTENT_MARGIN = 600;
 /** Hard cap on one ink bitmap side so a large canvas cannot exhaust memory. */
 export const CANVAS_MAX_BITMAP_SIZE = 3072;
+
+export function getCanvasSize(right = 0, bottom = 0): PageSize {
+  const { width, height } = CANVAS_SCREEN_SIZE;
+  return {
+    width: Math.ceil(Math.max(width, right) + width / 2),
+    height: Math.ceil(Math.max(height, bottom) + height / 2),
+  };
+}
 
 /** Zoom limits for the page viewport (pinch, trackpad and buttons). */
 export const MIN_PAGE_ZOOM = 0.25;
@@ -40,7 +41,7 @@ export function isCanvasLayout(layout: PageLayout = 'portrait'): boolean {
 }
 
 export function getPageSize(layout: PageLayout = 'portrait'): PageSize {
-  if (layout === 'canvas') return CANVAS_BASE_SIZE;
+  if (layout === 'canvas') return getCanvasSize();
   return layout === 'landscape' ? A4_LANDSCAPE : A4_PORTRAIT;
 }
 

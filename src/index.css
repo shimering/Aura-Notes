@@ -194,6 +194,13 @@ canvas.ink-canvas {
   .note-desk-inner { --note-desk-gutter: 1.5rem; }
 }
 
+@media (max-width: 639px) {
+  .note-desk-inner[data-layout="canvas"] {
+    --note-desk-gutter: 0px;
+    padding-block: 0;
+  }
+}
+
 .note-paper-scale {
   transform-origin: top left;
   will-change: transform;

@@ -3,9 +3,8 @@ import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { InkCanvas } from './InkCanvas';
-import type { NoteArrow } from '../types/note';
+import type { NoteArrow, Stroke } from '../types/note';
 import { TextEditor, type TextEditorRef } from './TextEditor';
-import { CANVAS_BASE_SIZE } from '../utils/pageLayout';
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -424,15 +423,63 @@ it.each(['clipboard API', 'iPad system Paste', 'blocked clipboard fallback'])('p
   }
 });
 
-it('opens the endless canvas on a workspace larger than the A4 sheet', () => {
-  act(() => root.render(<InkCanvas noteId="scratch" pageLayout="canvas" defaultTool="pen"
-    strokes={[]} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />));
+it('opens on a phone-sized canvas at 100% and resizes with ink instead of scrolling', () => {
+  const open = (strokes: Stroke[] = [], noteId = 'scratch') => act(() => root.render(
+    <InkCanvas noteId={noteId} pageLayout="canvas" defaultTool="pen"
+      strokes={strokes} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />,
+  ));
+  open();
 
   const paper = container.querySelector<HTMLElement>('.note-paper')!;
+  const scale = container.querySelector<HTMLElement>('.note-paper-scale')!;
+  const viewport = container.querySelector<HTMLElement>('.note-desk')!;
+  const size = () => [paper.style.width, paper.style.height];
   expect(paper.dataset.layout).toBe('canvas');
-  expect(paper.style.width).toBe(`${CANVAS_BASE_SIZE.width}px`);
-  expect(paper.style.minHeight).toBe(`${CANVAS_BASE_SIZE.height}px`);
+  expect(size()).toEqual(['585px', '1266px']);
+  expect(scale.style.transform).toBe('scale(1)');
   expect(container.querySelector('.note-page-footer')).toBeNull();
+
+  viewport.scrollTop = 900;
+  act(() => viewport.dispatchEvent(new Event('scroll')));
+  expect(size()).toEqual(['585px', '1266px']);
+
+  open([{ id: 'far-ink', tool: 'pen', width: 4, color: '#111', points: [{ x: 800, y: 1300, pressure: 0.5, time: 0 }] }]);
+  expect(size()).toEqual(['997px', '1724px']);
+  open();
+  expect(size()).toEqual(['585px', '1266px']);
+
+  act(() => viewport.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 100 })));
+  expect(scale.style.transform).not.toBe('scale(1)');
+  expect(size()).toEqual(['585px', '1266px']);
+  open([], 'another-page');
+  expect(scale.style.transform).toBe('scale(1)');
+  expect(viewport.scrollTop).toBe(0);
+});
+
+it('updates the canvas when positioned text moves or is removed', async () => {
+  act(() => root.render(
+    <InkCanvas noteId="scratch" pageLayout="canvas" defaultTool="pen" strokes={[]}
+      onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}}
+      textLayer={<div data-note-editor="true" />} />,
+  ));
+  const paper = container.querySelector<HTMLElement>('.note-paper')!;
+  const editor = container.querySelector('[data-note-editor]')!;
+  vi.spyOn(paper, 'getBoundingClientRect').mockReturnValue(new DOMRect(20, 40, 585, 1266));
+  const box = document.createElement('div');
+  box.dataset.notePositioned = 'true';
+  box.style.left = '800px';
+  vi.spyOn(box, 'getBoundingClientRect').mockImplementation(() =>
+    new DOMRect(20 + parseFloat(box.style.left), 1240, 240, 90));
+  const size = () => [paper.style.width, paper.style.height];
+
+  await act(async () => { editor.append(box); });
+  expect(size()).toEqual(['1235px', '1712px']);
+
+  await act(async () => { box.style.left = '100px'; });
+  expect(size()).toEqual(['585px', '1712px']);
+
+  await act(async () => { box.remove(); });
+  expect(size()).toEqual(['585px', '1266px']);
 });
 
 it('tints the page surface on every page layout', () => {
