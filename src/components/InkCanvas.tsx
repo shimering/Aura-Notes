@@ -321,7 +321,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
 
   const [selectedTool, setSelectedTool] = useState<PenTool>('text');
-  const [phonePanning, setPhonePanning] = useState(false);
   const [drawRequest, setDrawRequest] = useState(0);
   const [penColor, setPenColor] = useState<string>(defaultColor || (isDarkMode ? '#ffffff' : '#1e293b'));
   /** A tinted sheet stays pastel for dark ink and deepens for light ink. */
@@ -1849,7 +1848,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   }, [commitStrokes, getEditor, getPagePoint, getPictures, getTextBoxes, redraw, textEditor]);
 
   const enableText = () => {
-    setPhonePanning(false);
     if (selectedToolRef.current === 'text') return;
     flushSync(() => {
       setSelection([]);
@@ -1941,7 +1939,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   /** Arms the arrow tool from the Insert tab; the next drag draws one arrow. */
   const toggleArrowMode = (kind: ArrowKind) => {
-    setPhonePanning(false);
     const next = arrowModeRef.current === kind ? null : kind;
     arrowModeRef.current = next;
     setArrowMode(next);
@@ -2349,7 +2346,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
-    if (isPhone && isCanvas && phonePanning) return;
     const pen = e.pointerType === 'pen';
     if (pen && !spenTipDownRef.current) return;
     const target = e.target as Element;
@@ -2617,7 +2613,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handleManualToolSelect = (tool: PenTool) => {
-    setPhonePanning(false);
     setSelectedTool(tool);
     selectedToolRef.current = tool;
     // A pending arrow drag never survives a tool change.
@@ -2962,7 +2957,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             setPictureError(error instanceof Error ? error.message : 'Could not replace the image.');
           }
         }} />
-      <div className={`relative z-10 shrink-0 pointer-events-auto ${isPhone ? 'phone-toolbar-shell' : ''}`} data-ink-ui="toolbar-shell">
+      <div className={`relative z-10 shrink-0 pointer-events-auto ${isPhone && useRibbon ? 'phone-toolbar-shell' : ''}`} data-ink-ui="toolbar-shell">
         {textEditor && onChangeBackground ? (
           <NoteRibbon
             key={isPhone ? noteId : undefined}
@@ -2976,17 +2971,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             }}
             onFinishText={() => textEditor.current?.finishEditing()}
             onStartDrawing={() => {
-              if (phonePanning || activeTool === 'text' || activeTool === 'select' || arrowMode) handleManualToolSelect(lastWritingToolRef.current);
+              if (activeTool === 'text' || activeTool === 'select' || arrowMode) handleManualToolSelect(lastWritingToolRef.current);
             }}
-            phoneCanvasMode={isPhone && isCanvas ? (phonePanning && !arrowMode ? 'pan' : activeTool) : undefined}
-            onPhoneCanvasMode={(mode) => {
-              handleManualToolSelect('select');
-              setPhonePanning(mode === 'pan');
-              if (mode === 'pan') {
-                setSelection([]);
-                setSelectedArrowId(null);
-              }
-            }}
+            viewport={scrollRef}
             onFitWidth={fitPageWidth}
             onZoom={(direction) => zoomBy(direction === 'in' ? 1 + PAGE_ZOOM_STEP : 1 / (1 + PAGE_ZOOM_STEP))}
             onInsertTextBox={insertTextBox}

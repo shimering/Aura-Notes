@@ -482,6 +482,37 @@ it('updates the canvas when positioned text moves or is removed', async () => {
   expect(size()).toEqual(['585px', '1266px']);
 });
 
+it('starts mobile tools collapsed and closes them on a canvas touch', () => {
+  act(() => root.render(
+    <InkCanvas isPhone noteId="scratch" pageLayout="canvas" strokes={[]} textEditor={createRef<TextEditorRef>()}
+      onChangeBackground={() => {}} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />,
+  ));
+  const tools = container.querySelector<HTMLElement>('[aria-label="Editor tools"]')!;
+  const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Expand editor tools"]')!;
+  const paper = container.querySelector('.note-paper')!;
+  expect(tools.hasAttribute('inert')).toBe(true);
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(container.querySelector('[aria-label="Canvas interaction"]')).toBeNull();
+
+  act(() => toggle.click());
+  expect(tools.hasAttribute('inert')).toBe(false);
+  const insert = Array.from(tools.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Insert')!;
+  act(() => insert.click());
+  expect(container.querySelector('.phone-insert-panel')).not.toBeNull();
+
+  pointer(paper, 'pointerdown', 100, 100);
+  pointer(paper, 'pointerup', 100, 100);
+  expect(tools.hasAttribute('inert')).toBe(true);
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(container.querySelector('.phone-insert-panel')).toBeNull();
+  expect(container.querySelector('.note-insertion-point')).not.toBeNull();
+
+  act(() => toggle.click());
+  act(() => toggle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+  expect(tools.hasAttribute('inert')).toBe(true);
+  expect(document.activeElement).toBe(toggle);
+});
+
 it('tints the page surface on every page layout', () => {
   const render = (pageLayout: 'canvas' | 'portrait' | 'landscape') => act(() => root.render(
     <InkCanvas noteId="scratch" pageLayout={pageLayout} defaultTool="pen"
