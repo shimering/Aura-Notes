@@ -43,14 +43,19 @@ export function useKeyboardViewport() {
         if (reservedBottom) root.style.setProperty('--phone-toolbar-reserved-bottom', `${reservedBottom}px`);
         else root.style.removeProperty('--phone-toolbar-reserved-bottom');
       }
-      if (next) {
+      // A standalone WebKit view can report different CSS and visual viewport
+      // heights even with the keyboard closed. Use the measured drawable height.
+      if (next || (standaloneWebKit && unzoomed)) {
         root.style.setProperty('--app-height', `${viewport.height}px`);
+      } else if (open) {
+        root.style.removeProperty('--app-height');
+      }
+      if (next) {
         root.style.setProperty('--app-top', `${viewport.offsetTop}px`);
         root.style.setProperty('--app-bottom', `${Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)}px`);
         root.dataset.keyboardOpen = 'true';
       } else if (open) {
         delete root.dataset.keyboardOpen;
-        root.style.removeProperty('--app-height');
         root.style.removeProperty('--app-top');
         root.style.removeProperty('--app-bottom');
         if (touchWebKit) {

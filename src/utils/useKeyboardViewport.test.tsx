@@ -84,6 +84,7 @@ it.each([true, false])('adjusts the toolbar only for the Home Screen viewport ga
   try {
     act(() => root.render(<Editor />));
     expect(getReservedBottom()).toBe(standalone ? '62px' : '');
+    expect(container.style.getPropertyValue('--app-height')).toBe(standalone ? '812px' : '');
 
     act(() => {
       viewport.height = 530;
@@ -93,6 +94,7 @@ it.each([true, false])('adjusts the toolbar only for the Home Screen viewport ga
     });
     expect(container.dataset.keyboardOpen).toBe('true');
     expect(getReservedBottom()).toBe('');
+    expect(container.style.getPropertyValue('--app-height')).toBe('530px');
 
     act(() => {
       window.innerHeight = 874;
@@ -102,6 +104,7 @@ it.each([true, false])('adjusts the toolbar only for the Home Screen viewport ga
     });
     expect(container.dataset.keyboardOpen).toBeUndefined();
     expect(getReservedBottom()).toBe('');
+    expect(container.style.getPropertyValue('--app-height')).toBe(standalone ? '874px' : '');
   } finally {
     act(() => root.unmount());
     container.remove();

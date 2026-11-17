@@ -4,26 +4,16 @@
 
 @layer base {
   :root {
-    --app-height: 100%;
     --app-safe-top: env(safe-area-inset-top, 0px);
     --note-desk-color: #e8e8e5;
   }
 
   :root.dark { --note-desk-color: #0d0d0f; }
 
-  /* An installed iPad app draws underneath its translucent status bar. */
-  @supports (-webkit-touch-callout: none) {
-    @media (display-mode: standalone) {
-      :root {
-        --app-safe-top: max(24px, env(safe-area-inset-top, 0px));
-      }
-    }
-  }
-
   #root {
     padding-top: var(--app-safe-top);
     height: 100%;
-    height: 100dvh;
+    height: var(--app-height, 100dvh);
   }
 
   #root[data-keyboard-open="true"] {
@@ -1034,7 +1024,7 @@ canvas.ink-canvas {
 .phone-pages-content {
   display: flex;
   flex-direction: column;
-  max-height: min(68dvh, var(--app-height));
+  max-height: min(68dvh, var(--app-height, 100dvh));
   padding: 8px max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
 }
 .phone-pages :is(header, footer) { display: flex; align-items: center; justify-content: space-between; }
