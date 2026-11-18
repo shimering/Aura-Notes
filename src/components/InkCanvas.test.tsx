@@ -693,6 +693,44 @@ it('snaps directly to the edge of a PDF attachment inside a text box', async () 
     expect.stringContaining(`data-note-id="${attachment.dataset.noteId}"`)));
 });
 
+it('selects a text box on a press over its link and opens the link on a second press', () => {
+  const editorRef = createRef<TextEditorRef>();
+  const note = { id: 'scratch', title: 'Scratch',
+    content: '<p><a href="https://example.com">https://example.com</a></p>',
+    inkStrokes: [], tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  const open = vi.spyOn(window, 'open').mockReturnValue(null);
+  act(() => root.render(<InkCanvas noteId={note.id} defaultTool="select" strokes={[]}
+    onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} textEditor={editorRef}
+    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
+
+  act(() => container.querySelector<HTMLButtonElement>('button[title="Tool: Text"]')!.click());
+  act(() => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Tools"] button'))
+    .find((button) => button.textContent?.startsWith('Select'))!.click());
+
+  const box = container.querySelector<HTMLElement>('[data-note-positioned]')!;
+  Object.defineProperties(box, {
+    offsetWidth: { value: 100 }, offsetHeight: { value: 40 },
+    offsetLeft: { get: () => parseFloat(box.style.left) || 0 },
+    offsetTop: { get: () => parseFloat(box.style.top) || 0 },
+  });
+  const link = box.querySelector('a')!;
+  vi.spyOn(link, 'getClientRects').mockReturnValue([
+    { left: 10, top: 10, right: 90, bottom: 30 },
+  ] as unknown as DOMRectList);
+  const canvas = container.querySelector('.ink-canvas')!;
+  const press = () => {
+    pointer(canvas, 'pointerdown', 40, 20, 'touch');
+    pointer(canvas, 'pointerup', 40, 20, 'touch');
+  };
+
+  press();
+  expect(container.querySelector('[data-ink-ui="selection"]')).not.toBeNull();
+  expect(open).not.toHaveBeenCalled();
+
+  press();
+  expect(open).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener,noreferrer');
+});
+
 it('leaves a plain mouse wheel to scroll A4 pages', () => {
   act(() => root.render(<InkCanvas noteId="scratch" pageLayout="portrait" defaultTool="pen"
     strokes={[]} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />));

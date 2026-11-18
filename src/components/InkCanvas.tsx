@@ -2344,8 +2344,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     touchTap.current = tap;
   };
 
-  /** Guards the double click of a second press landing on the same link. */
-  const lastLinkOpenRef = useRef<{ href: string; time: number } | null>(null);
+  /** A first press selects the text box; a second press on the same link opens it. */
+  const lastLinkPressRef = useRef<{ href: string; time: number } | null>(null);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
@@ -2355,16 +2355,21 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (isInkUiTarget(target) || (!pen && !arrowModeRef.current && target.closest('a[download]'))) return;
 
     // Typed text ignores pointers unless the text tool is active, so links are
-    // hit-tested by their boxes: a press on one opens it instead of drawing.
+    // hit-tested by their boxes. The first press on a link selects its text box
+    // like a press anywhere else on it, and a second press on the same link
+    // opens it, so grabbing the box never means aiming beside the link.
     if (!pen && selectedToolRef.current !== 'text' && !arrowModeRef.current) {
       const link = textEditor?.current?.linkAt(e.clientX, e.clientY);
-      const href = link?.getAttribute('href') ?? '';
-      const last = lastLinkOpenRef.current;
-      if (link && (!last || last.href !== href || Date.now() - last.time > 600)) {
-        lastLinkOpenRef.current = { href, time: Date.now() };
-        e.preventDefault();
-        textEditor?.current?.openLink(link);
-        return;
+      if (link) {
+        const href = link.getAttribute('href') ?? '';
+        const last = lastLinkPressRef.current;
+        if (last && last.href === href && Date.now() - last.time <= 600) {
+          lastLinkPressRef.current = null;
+          e.preventDefault();
+          textEditor?.current?.openLink(link);
+          return;
+        }
+        lastLinkPressRef.current = { href, time: Date.now() };
       }
     }
 
@@ -2612,6 +2617,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const target = e.target as Element;
     if (isInkUiTarget(target) || target.closest('[contenteditable="true"], a[download]')) return;
     const client = { x: e.clientX, y: e.clientY };
+    // A double press on a link opens it, so it must not also start editing text.
+    if (selectedToolRef.current !== 'text' && textEditor?.current?.linkAt(client.x, client.y)) return;
     const hit = pickObjects(getPagePoint(client.x, client.y), client, 0).find(({ box }) => box);
     if (hit?.box) {
       e.preventDefault();
