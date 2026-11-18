@@ -1,5 +1,6 @@
 import createDOMPurify from 'dompurify';
 import { pictureWraps } from './pageObjects';
+import { noteLinkHref } from './noteLinks';
 
 const tags = [
   'p', 'div', 'br', 'hr', 'span', 'font', 'b', 'strong', 'i', 'em', 'u', 's',
@@ -45,7 +46,8 @@ export function sanitizeNoteHtml(html: string): string {
       if (attribute.attrName === 'src') {
         attribute.keepAttr = node.nodeName === 'IMG' && imageData.test(attribute.attrValue);
       } else if (attribute.attrName === 'href') {
-        attribute.keepAttr = node.nodeName === 'A' && pdfData.test(attribute.attrValue);
+        attribute.keepAttr = node.nodeName === 'A' &&
+          (pdfData.test(attribute.attrValue) || noteLinkHref.test(attribute.attrValue));
       } else if (attribute.attrName === 'align') {
         attribute.keepAttr = /^(left|right|center|justify)$/.test(attribute.attrValue);
       } else if (attribute.attrName === 'size') {

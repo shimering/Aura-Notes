@@ -2344,12 +2344,29 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     touchTap.current = tap;
   };
 
+  /** Guards the double click of a second press landing on the same link. */
+  const lastLinkOpenRef = useRef<{ href: string; time: number } | null>(null);
+
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
     const pen = e.pointerType === 'pen';
     if (pen && !spenTipDownRef.current) return;
     const target = e.target as Element;
     if (isInkUiTarget(target) || (!pen && !arrowModeRef.current && target.closest('a[download]'))) return;
+
+    // Typed text ignores pointers unless the text tool is active, so links are
+    // hit-tested by their boxes: a press on one opens it instead of drawing.
+    if (!pen && selectedToolRef.current !== 'text' && !arrowModeRef.current) {
+      const link = textEditor?.current?.linkAt(e.clientX, e.clientY);
+      const href = link?.getAttribute('href') ?? '';
+      const last = lastLinkOpenRef.current;
+      if (link && (!last || last.href !== href || Date.now() - last.time > 600)) {
+        lastLinkOpenRef.current = { href, time: Date.now() };
+        e.preventDefault();
+        textEditor?.current?.openLink(link);
+        return;
+      }
+    }
 
     const client = { x: e.clientX, y: e.clientY };
     const point = getPagePoint(client.x, client.y);

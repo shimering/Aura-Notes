@@ -2,6 +2,7 @@ import React, { forwardRef, useImperativeHandle, useRef, useEffect, useLayoutEff
 import type { NotePage } from '../types/note';
 import { FormatToolbar } from './FormatToolbar';
 import { pdfData, sanitizeNoteHtml } from '../utils/noteHtml';
+import { endsWord, findNoteLinks, isNoteLink } from '../utils/noteLinks';
 import type { Point } from '../utils/inkSelection';
 import { boxSelector, offsetWithin, placePicture } from '../utils/pageObjects';
 import { createNoteTable, ensureTableColumns, recalculateTable, tableBoxSelector } from '../utils/noteTable';
@@ -20,6 +21,9 @@ export interface TextEditorRef {
   applyFormat: (command: string, value?: string) => Promise<void>;
   insertTable: (rows: number, columns: number, position: InsertionPosition) => HTMLElement | undefined;
   insertPdf: (file: File) => Promise<void>;
+  /** The link under a client point, so a tap opens it outside edit mode. */
+  linkAt: (x: number, y: number) => HTMLAnchorElement | null;
+  openLink: (link: HTMLAnchorElement) => void;
 }
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -122,6 +126,74 @@ function centerBox(box: HTMLElement, point: Point) {
 
 function boxHasContent(box: HTMLElement) {
   return !!box.textContent?.trim() || !!box.querySelector('a, table, hr');
+}
+
+/** Puts the caret back after a text node has been split into link and text nodes. */
+function restoreCaret(parts: Node[], offset: number) {
+  const selection = window.getSelection();
+  if (!selection) return;
+  let remaining = offset;
+  let target: Node | undefined = parts[parts.length - 1];
+  let targetOffset = target?.textContent?.length ?? 0;
+  for (const part of parts) {
+    const length = part.textContent?.length ?? 0;
+    if (remaining <= length) {
+      target = part;
+      targetOffset = remaining;
+      break;
+    }
+    remaining -= length;
+  }
+  if (!target) return;
+  const range = document.createRange();
+  range.setStart(target, Math.min(targetOffset, target.textContent?.length ?? 0));
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/**
+ * Turns bare web and email addresses into real links. The caret is carried
+ * across the rewritten text node and a link being typed is left alone. Only
+ * word boundaries call this: a space, Enter, paste, leaving the box or load.
+ */
+function linkifyText(root: HTMLElement) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => {
+      const text = node as Text;
+      const parent = text.parentElement;
+      return !text.data.trim() || !parent || parent.closest('a')
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+  let changed = false;
+  for (const node of nodes) {
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const caret = range?.startContainer === node ? range.startOffset : null;
+    const links = findNoteLinks(node.data).filter((link) =>
+      caret === null || caret <= link.index || caret > link.index + link.text.length);
+    if (!links.length) continue;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const link of links) {
+      if (link.index > cursor) fragment.append(node.data.slice(cursor, link.index));
+      const anchor = document.createElement('a');
+      anchor.href = link.href;
+      anchor.textContent = link.text;
+      fragment.append(anchor);
+      cursor = link.index + link.text.length;
+    }
+    if (cursor < node.data.length) fragment.append(node.data.slice(cursor));
+    const parts = Array.from(fragment.childNodes);
+    node.replaceWith(fragment);
+    changed = true;
+    if (caret !== null) restoreCaret(parts, caret);
+  }
+  return changed;
 }
 
 /** Bring legacy flow content onto the object canvas while keeping its rich markup. */
@@ -245,6 +317,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     savedRange.current = null;
     lastBox.current = null;
     loadPageObjects(editor, note.content);
+    if (linkifyText(editor)) handleInput();
   }, [note.id, note.content]);
 
   useLayoutEffect(() => {
@@ -291,6 +364,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     onEditingChange?.(false);
     host?.blur();
     host?.removeAttribute('contenteditable');
+    if (linkifyText(box)) handleInput();
     if (!keepEmpty && !boxHasContent(box)) box.remove();
     savedRange.current = null;
   };
@@ -328,6 +402,30 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     internalUpdateRef.current = { noteId: note.id, content };
     onChangeContent(content);
     return content;
+  };
+
+  const openLink = (anchor: HTMLAnchorElement) => {
+    const href = anchor.getAttribute('href') ?? '';
+    if (pdfData.test(href)) {
+      const download = document.createElement('a');
+      download.href = href;
+      download.download = anchor.getAttribute('download') ?? anchor.textContent ?? 'file.pdf';
+      download.click();
+      return;
+    }
+    if (!isNoteLink(href)) return;
+    window.open(href, '_blank', 'noopener,noreferrer');
+  };
+
+  const linkAt = (x: number, y: number) => {
+    for (const anchor of Array.from(editorRef.current?.querySelectorAll<HTMLAnchorElement>('a[href]') ?? [])) {
+      const href = anchor.getAttribute('href') ?? '';
+      if (!isNoteLink(href) && !pdfData.test(href)) continue;
+      for (const rect of Array.from(anchor.getClientRects())) {
+        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return anchor;
+      }
+    }
+    return null;
   };
 
   const editBox = (box: HTMLElement, cell?: HTMLTableCellElement) => {
@@ -520,6 +618,8 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       return box;
     },
     insertPdf,
+    linkAt,
+    openLink,
   }));
 
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -528,6 +628,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     e.preventDefault();
     const text = e.clipboardData.getData('text/plain');
     document.execCommand('insertText', false, text);
+    if (linkifyText(activeHost.current ?? box)) handleInput();
   };
 
   // Tab indents a list item instead of moving focus out of the note.
@@ -575,13 +676,16 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
   const sheet = (
     <div
       ref={editorRef}
-      onInput={() => {
+      onInput={(event) => {
         const cell = activeHost.current;
         if (cell instanceof HTMLTableCellElement) {
           delete cell.dataset.cellFormula;
           const table = cell.closest('table');
           if (table) recalculateTable(table);
         }
+        // Autolink once a word is finished, so typing and undo stay untouched.
+        const native = event.nativeEvent as InputEvent;
+        if (cell && !native.isComposing && endsWord(native.inputType, native.data)) linkifyText(cell);
         handleInput();
       }}
       onDoubleClick={(event) => {
@@ -599,13 +703,15 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       onPaste={handlePaste}
       onClick={(event) => {
         if (!(event.target instanceof Element)) return;
-        const attachment = event.target.closest<HTMLAnchorElement>('a[download]');
-        if (!attachment || !pdfData.test(attachment.getAttribute('href') ?? '')) return;
+        const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
+        if (!anchor) return;
+        const href = anchor.getAttribute('href') ?? '';
+        if (!pdfData.test(href) && !isNoteLink(href)) return;
+        // While the caret is inside text, plain clicks place it as usual;
+        // Ctrl/Cmd+click opens the link without leaving edit mode.
+        if (anchor.closest('[contenteditable="true"]') && !event.ctrlKey && !event.metaKey) return;
         event.preventDefault();
-        const link = document.createElement('a');
-        link.href = attachment.href;
-        link.download = attachment.download;
-        link.click();
+        openLink(anchor);
       }}
       onDrop={(event) => event.preventDefault()}
       onKeyDown={handleKeyDown}
