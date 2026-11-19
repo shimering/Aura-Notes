@@ -32,6 +32,9 @@ type DragMode = 'move' | 'start' | 'end' | 'bend';
 
 const DRAFT_ID = 'arrow-draft';
 
+/** Hold a touch this long to select an arrow, like every other page object. */
+const ARROW_SELECT_HOLD_MS = 1000;
+
 /**
  * Arrows and their editing handles, drawn above the typed objects so a map
  * chart's connectors always stay on top. Everything is SVG in page units, so
@@ -58,10 +61,40 @@ export const NoteArrowLayer: React.FC<NoteArrowLayerProps> = ({
   // Controls live in the zoomed page, so scale them back to screen pixels.
   const uiScale = 1 / Math.max(0.05, zoom || 1);
 
+  /** A one-second touch selects the arrow without moving it. */
+  const holdToSelect = (event: React.PointerEvent, arrow: NoteArrow) => {
+    const pointerId = event.pointerId;
+    const start = { x: event.clientX, y: event.clientY };
+    let timer = 0;
+    function cleanup() {
+      window.clearTimeout(timer);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+    }
+    function onMove(moveEvent: PointerEvent) {
+      if (moveEvent.pointerId !== pointerId) return;
+      if (Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) * zoom < 8) return;
+      cleanup();
+    }
+    timer = window.setTimeout(() => {
+      cleanup();
+      onSelect(arrow.id);
+    }, ARROW_SELECT_HOLD_MS);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', cleanup);
+    window.addEventListener('pointercancel', cleanup);
+  };
+
   const beginDrag = (event: React.PointerEvent, arrow: NoteArrow, mode: DragMode) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    // A plain touch leaves an unselected arrow alone; holding selects it.
+    if (event.pointerType === 'touch' && mode === 'move' && selectedId !== arrow.id) {
+      holdToSelect(event, arrow);
+      return;
+    }
     onSelect(arrow.id);
     onDragChangeRef.current?.(true);
     const geometry = arrowGeometry(arrow, targets);

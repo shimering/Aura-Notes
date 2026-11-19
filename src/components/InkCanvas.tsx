@@ -182,6 +182,8 @@ type SpenLogEntry = {
 type SpenLogSample = Omit<SpenLogEntry, 't' | 'kind' | 'tool'>;
 
 const OBJECT_HOLD_MS = 480;
+/** Hold a touch this long to select a text box, picture, table, ink or arrow. */
+const OBJECT_SELECT_HOLD_MS = 1000;
 const SNAP_DISTANCE = 10;
 
 type ObjectHit = {
@@ -374,7 +376,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     hoveredObjectRef.current = object;
     setHoveredObject(object);
   }, []);
-  const editingTap = useRef<{ box: HTMLElement; point: Point; time: number } | null>(null);
   const touchTap = useRef<TouchTap | null>(null);
   const [insertionPoint, setInsertionPoint] = useState<Point | null>(null);
   // ---- Arrow tool: draft drawing, selection and object snapping ------------
@@ -543,7 +544,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       scrollRef.current.scrollLeft = 0;
     }
     selectionNoteId.current = noteId;
-    editingTap.current = null;
     clearTouchTap();
     setPasteMenu(null);
     setInsertionPoint(null);
@@ -939,7 +939,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const abortActiveCanvasDrag = useCallback(() => {
     selectionPointerRef.current = null;
     clearTouchTap();
-    editingTap.current = null;
     currentStrokeRef.current = null;
     isEraserDrawingRef.current = false;
     previewStrokesRef.current = null;
@@ -1330,7 +1329,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         if (!single.scrolling && Math.hypot(point.x - single.start.x, point.y - single.start.y) < SELECTION_TAP_SLOP) return;
         event.preventDefault();
         clearTouchTap();
-        editingTap.current = null;
         const now = performance.now();
         const elapsed = Math.max(8, now - single.time);
         const left = node.scrollLeft;
@@ -2099,20 +2097,13 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setInsertionPoint(null);
     const selected = hit && isSelectedObject(hit);
     const mouse = e.pointerType === 'mouse';
-    if (hit && !selected) {
-      if (mouse) setHover(hit);
-      else selectObject(hit);
-    }
+    if (hit && !selected && mouse) setHover(hit);
+    // A finger selects with a one-second press (see handleTouchDown); pressing
+    // or dragging never changes the selection on its own.
     beginTransform('move', null, e, {
       tap: () => {
         if (mouse && hit && !selected && !selectedArrowId) selectObject(hit);
-        else if (selected && !mouse) setSelection([]);
       },
-      hold: !mouse && hit ? () => {
-        selectObject(hit);
-        if (hit.box) editSelectedText(hit.box, hit.cell ?? null);
-        else setEditActions(true);
-      } : undefined,
     }, mouse && !selected ? hit : undefined);
   };
 
@@ -2299,37 +2290,41 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const hits = editingBox ? [] : pickObjects(point, client, 10 / zoomRef.current);
     const hit = hits.find(isSelectedObject) ?? hits[0];
     if (hit && !editing) {
-      beginObjectMove(e, hit);
+      if (isSelectedObject(hit)) {
+        beginObjectMove(e, hit);
+        return;
+      }
+      // Holding a finger on an object selects it after a second. A plain tap
+      // leaves it alone, so reading and writing never grab an object.
+      clearTouchTap();
+      e.preventDefault();
+      touchTap.current = {
+        pointer: e.pointerId,
+        client,
+        run: () => {},
+        hold: window.setTimeout(() => {
+          if (touchTap.current?.pointer !== e.pointerId) return;
+          setInsertionPoint(null);
+          selectObject(hit);
+        }, OBJECT_SELECT_HOLD_MS),
+      };
       return;
     }
 
     clearTouchTap();
     const tap: TouchTap = {
       pointer: e.pointerId, client, run: () => {
+        // A tap inside the box being edited leaves the caret where it lands.
         if (editingBox) {
-          const previous = editingTap.current;
-          const time = performance.now();
-          if (previous?.box === editingBox && time - previous.time <= 350 &&
-            Math.hypot(client.x - previous.point.x, client.y - previous.point.y) <= 24) {
-            editingTap.current = null;
-            textEditor?.current?.finishEditing(true);
-            textEditor?.current?.savePageObjects();
-            setSelection([], [editingBox]);
-            if (cell) setTableCell(cell);
-          } else {
-            editingTap.current = { box: editingBox, point: client, time };
-            if (cell && !cell.isContentEditable) textEditor?.current?.editBox(editingBox, cell);
-          }
+          if (cell && !cell.isContentEditable) textEditor?.current?.editBox(editingBox, cell);
           return;
         }
-        editingTap.current = null;
         if (editing) {
           textEditor?.current?.finishEditing();
           textEditor?.current?.savePageObjects();
         }
         if (hit) {
           setInsertionPoint(null);
-          selectObject(hit);
         } else {
           setSelectedArrowId(null);
           setSelection([]);
@@ -2355,12 +2350,18 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (isInkUiTarget(target) || (!pen && !arrowModeRef.current && target.closest('a[download]'))) return;
 
     // Typed text ignores pointers unless the text tool is active, so links are
-    // hit-tested by their boxes. The first press on a link selects its text box
-    // like a press anywhere else on it, and a second press on the same link
-    // opens it, so grabbing the box never means aiming beside the link.
-    if (!pen && selectedToolRef.current !== 'text' && !arrowModeRef.current) {
+    // hit-tested by their boxes. A plain touch on a link opens it in the
+    // browser, the one tap a note answers without a long press.
+    if (!pen && !arrowModeRef.current) {
       const link = textEditor?.current?.linkAt(e.clientX, e.clientY);
-      if (link) {
+      if (link && e.pointerType === 'touch' && !link.closest('[contenteditable="true"]')) {
+        e.preventDefault();
+        textEditor?.current?.openLink(link);
+        return;
+      }
+      // A mouse press selects its text box first so grabbing the box never
+      // means aiming beside the link, then opens it on a second press.
+      if (link && selectedToolRef.current !== 'text') {
         const href = link.getAttribute('href') ?? '';
         const last = lastLinkPressRef.current;
         if (last && last.href === href && Date.now() - last.time <= 600) {
@@ -2401,7 +2402,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         setTableCell(cell);
         return;
       }
-      editingTap.current = null;
       textEditor?.current?.finishEditing();
     }
 
@@ -2464,7 +2464,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       const tap = touchTap.current;
       if (tap?.pointer === e.pointerId && Math.hypot(e.clientX - tap.client.x, e.clientY - tap.client.y) >= SELECTION_TAP_SLOP) {
         clearTouchTap();
-        editingTap.current = null;
       }
       return;
     }
@@ -2597,7 +2596,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handlePointerCancel = (e: React.PointerEvent) => {
-    editingTap.current = null;
     if (arrowDraftRef.current) {
       arrowDraftRef.current = null;
       setArrowDraft(null);

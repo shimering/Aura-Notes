@@ -163,14 +163,22 @@ it('opens Insert and places a new box only when requested at the marked canvas c
   expect(container.querySelectorAll('[data-note-positioned]')).toHaveLength(2);
 
   Object.defineProperties(edited, { offsetWidth: { value: 96 }, offsetHeight: { value: 35 } });
-  pointer('pointerdown', 45, 15);
-  pointer('pointerup', 45, 15);
-  expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
+  // A plain touch leaves the box alone; a one-second press selects it.
   pointer('pointerdown', 45, 15);
   pointer('pointerup', 45, 15);
   expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
-  pointer('pointerdown', 45, 15);
-  pointer('pointerup', 45, 15);
+  vi.useFakeTimers();
+  try {
+    pointer('pointerdown', 45, 15);
+    act(() => vi.advanceTimersByTime(999));
+    expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    pointer('pointerup', 45, 15);
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
+  // A tap on blank paper clears the selection and marks the insertion point.
   pointer('pointerdown');
   pointer('pointerup');
   expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
@@ -190,19 +198,27 @@ it('opens Insert and places a new box only when requested at the marked canvas c
   expect(inserted.style.top).toBe('81px');
   expect(container.querySelector('.note-insertion-point')).toBeNull();
 
-  for (let tap = 0; tap < 2; tap++) {
-    for (const type of ['pointerdown', 'pointerup']) {
-      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 140, clientY: 130 });
-      Object.assign(event, { pointerId: 2, pointerType: 'touch', isPrimary: true, width: 10, height: 10 });
-      act(() => inserted.dispatchEvent(event));
-    }
-  }
-  expect(inserted.hasAttribute('contenteditable')).toBe(false);
-  expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
+  // A tap inside the box being edited keeps the caret instead of selecting.
+  const tapInserted = (type: string) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 140, clientY: 130 });
+    Object.assign(event, { pointerId: 2, pointerType: 'touch', isPrimary: true, width: 10, height: 10 });
+    act(() => inserted.dispatchEvent(event));
+  };
+  tapInserted('pointerdown');
+  tapInserted('pointerup');
+  expect(inserted.hasAttribute('contenteditable')).toBe(true);
+  expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
   act(() => inserted.remove());
 
-  pointer('pointerdown', 45, 55);
-  pointer('pointerup', 45, 55);
+  // The removed box is gone; a one-second press still selects the other one.
+  vi.useFakeTimers();
+  try {
+    pointer('pointerdown', 45, 55);
+    act(() => vi.advanceTimersByTime(1000));
+    pointer('pointerup', 45, 55);
+  } finally {
+    vi.useRealTimers();
+  }
   expect(inserted.isConnected).toBe(false);
   expect(container.querySelector('[data-ink-ui="selection"]')?.textContent).toContain('Edit text');
 
@@ -693,7 +709,7 @@ it('snaps directly to the edge of a PDF attachment inside a text box', async () 
     expect.stringContaining(`data-note-id="${attachment.dataset.noteId}"`)));
 });
 
-it('selects a text box on a press over its link and opens the link on a second press', () => {
+it('opens a link on a plain touch without selecting its text box', () => {
   const editorRef = createRef<TextEditorRef>();
   const note = { id: 'scratch', title: 'Scratch',
     content: '<p><a href="https://example.com">https://example.com</a></p>',
@@ -724,11 +740,8 @@ it('selects a text box on a press over its link and opens the link on a second p
   };
 
   press();
-  expect(container.querySelector('[data-ink-ui="selection"]')).not.toBeNull();
-  expect(open).not.toHaveBeenCalled();
-
-  press();
   expect(open).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener,noreferrer');
+  expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
 });
 
 it('leaves a plain mouse wheel to scroll A4 pages', () => {
