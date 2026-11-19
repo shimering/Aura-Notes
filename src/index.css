@@ -51,8 +51,12 @@ canvas.ink-canvas {
 .editable-note-content {
   position: relative;
   display: flow-root;
-  user-select: text;
-  -webkit-user-select: text;
+  /* Page text is an object, not a document: a long press selects its box
+     instead of letting iOS/Android highlight the words. Editing a box
+     re-enables text selection (see [contenteditable="true"] below). */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   outline: none;
 }
 
@@ -1193,6 +1197,7 @@ canvas.ink-canvas {
   outline: none;
   user-select: text;
   -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 .editable-note-content table { margin-block: .6em; width: 100%; table-layout: fixed; }
 .editable-note-content > [data-note-table="true"] {

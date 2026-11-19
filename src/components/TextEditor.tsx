@@ -404,17 +404,34 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     return content;
   };
 
+  /**
+   * Opens a link the note holds. A real anchor click is used instead of
+   * window.open because iOS Safari treats window.open from a touch handler as
+   * a blocked popup, while a tapped anchor navigates normally.
+   */
+  const lastOpenRef = useRef<{ href: string; time: number }>({ href: '', time: 0 });
+
   const openLink = (anchor: HTMLAnchorElement) => {
     const href = anchor.getAttribute('href') ?? '';
-    if (pdfData.test(href)) {
-      const download = document.createElement('a');
-      download.href = href;
-      download.download = anchor.getAttribute('download') ?? anchor.textContent ?? 'file.pdf';
-      download.click();
-      return;
-    }
-    if (!isNoteLink(href)) return;
-    window.open(href, '_blank', 'noopener,noreferrer');
+    const pdf = pdfData.test(href);
+    if (!pdf && !isNoteLink(href)) return;
+    // A tap can reach both the canvas handler and this editor's click handler;
+    // open the same link once.
+    const now = Date.now();
+    if (lastOpenRef.current.href === href && now - lastOpenRef.current.time < 600) return;
+    lastOpenRef.current = { href, time: now };
+    const target = document.createElement('a');
+    target.href = href;
+    target.rel = 'noopener noreferrer';
+    if (pdf) target.download = anchor.getAttribute('download') ?? anchor.textContent ?? 'file.pdf';
+    else target.target = '_blank';
+    // Off-screen rather than display:none: iOS ignores taps on hidden anchors.
+    target.style.position = 'fixed';
+    target.style.left = '-9999px';
+    target.style.top = '0';
+    document.body.appendChild(target);
+    target.click();
+    target.remove();
   };
 
   const linkAt = (x: number, y: number) => {

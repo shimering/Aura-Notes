@@ -714,7 +714,10 @@ it('opens a link on a plain touch without selecting its text box', () => {
   const note = { id: 'scratch', title: 'Scratch',
     content: '<p><a href="https://example.com">https://example.com</a></p>',
     inkStrokes: [], tags: [], color: '', createdAt: 0, updatedAt: 0 };
-  const open = vi.spyOn(window, 'open').mockReturnValue(null);
+  const opened: HTMLAnchorElement[] = [];
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    opened.push(this);
+  });
   act(() => root.render(<InkCanvas noteId={note.id} defaultTool="select" strokes={[]}
     onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} textEditor={editorRef}
     textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
@@ -740,8 +743,11 @@ it('opens a link on a plain touch without selecting its text box', () => {
   };
 
   press();
-  expect(open).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener,noreferrer');
+  const openedLink = opened.find((anchor) => anchor.getAttribute('href') === 'https://example.com');
+  expect(openedLink?.target).toBe('_blank');
+  expect(openedLink?.rel).toBe('noopener noreferrer');
   expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
+  click.mockRestore();
 });
 
 it('leaves a plain mouse wheel to scroll A4 pages', () => {
