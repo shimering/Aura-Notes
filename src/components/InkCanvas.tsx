@@ -377,8 +377,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setHoveredObject(object);
   }, []);
   const touchTap = useRef<TouchTap | null>(null);
-  /** Link a press started on, opened when the pointer lifts without dragging. */
-  const linkPressRef = useRef<{ link: HTMLAnchorElement; x: number; y: number; pointer: number } | null>(null);
   const [insertionPoint, setInsertionPoint] = useState<Point | null>(null);
   // ---- Arrow tool: draft drawing, selection and object snapping ------------
   const [arrowMode, setArrowMode] = useState<ArrowKind | null>(null);
@@ -546,7 +544,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       scrollRef.current.scrollLeft = 0;
     }
     selectionNoteId.current = noteId;
-    linkPressRef.current = null;
     clearTouchTap();
     setPasteMenu(null);
     setInsertionPoint(null);
@@ -941,7 +938,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    */
   const abortActiveCanvasDrag = useCallback(() => {
     selectionPointerRef.current = null;
-    linkPressRef.current = null;
     clearTouchTap();
     currentStrokeRef.current = null;
     isEraserDrawingRef.current = false;
@@ -2348,20 +2344,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const pen = e.pointerType === 'pen';
     if (pen && !spenTipDownRef.current) return;
     const target = e.target as Element;
-    if (isInkUiTarget(target) || (!pen && !arrowModeRef.current && target.closest('a[download]'))) return;
-    linkPressRef.current = null;
-
-    // Typed text ignores pointers unless the text tool is active, so links are
-    // hit-tested by their boxes. The link opens when the pointer lifts: a tap
-    // or click navigates, while a drag across the link stays a selection.
-    if (!pen && !arrowModeRef.current) {
-      const link = textEditor?.current?.linkAt(e.clientX, e.clientY);
-      if (link) {
-        e.preventDefault();
-        linkPressRef.current = { link, x: e.clientX, y: e.clientY, pointer: e.pointerId };
-        return;
-      }
-    }
+    if (isInkUiTarget(target) || (!pen && !arrowModeRef.current && target.closest('a[href]'))) return;
 
     const client = { x: e.clientX, y: e.clientY };
     const point = getPagePoint(client.x, client.y);
@@ -2565,14 +2548,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       finishArrowDraft(true);
       return;
     }
-    const linkPress = linkPressRef.current;
-    if (linkPress && linkPress.pointer === e.pointerId) {
-      linkPressRef.current = null;
-      if (Math.hypot(e.clientX - linkPress.x, e.clientY - linkPress.y) <= SELECTION_TAP_SLOP) {
-        textEditor?.current?.openLink(linkPress.link);
-      }
-      return;
-    }
     if (isPinchingRef.current) return;
     if (e.pointerType === 'touch') {
       const tap = touchTap.current;
@@ -2593,7 +2568,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handlePointerCancel = (e: React.PointerEvent) => {
-    if (linkPressRef.current?.pointer === e.pointerId) linkPressRef.current = null;
     if (arrowDraftRef.current) {
       arrowDraftRef.current = null;
       setArrowDraft(null);
@@ -2611,10 +2585,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const handleDoubleClick = (e: React.MouseEvent) => {
     const target = e.target as Element;
-    if (isInkUiTarget(target) || target.closest('[contenteditable="true"], a[download]')) return;
+    if (isInkUiTarget(target) || target.closest('[contenteditable="true"], a[href]')) return;
     const client = { x: e.clientX, y: e.clientY };
-    // A double press on a link opens it, so it must not also start editing text.
-    if (selectedToolRef.current !== 'text' && textEditor?.current?.linkAt(client.x, client.y)) return;
     const hit = pickObjects(getPagePoint(client.x, client.y), client, 0).find(({ box }) => box);
     if (hit?.box) {
       e.preventDefault();
@@ -3073,6 +3045,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                   data-page-tone={tintTone}
                   style={{
                     width: `${sheetWidth}px`,
+                    cursor: activeTool === 'text' || activeTool === 'select' ? undefined : 'crosshair',
                     ...(isCanvas ? { height: `${sheetHeight}px` } : { minHeight: `${pageSize.height}px` }),
                     ...(pageColor ? { '--page-color': pageColor } as React.CSSProperties : {})
                   }}
@@ -3109,17 +3082,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                     ref={textLayerRef}
                     className={`relative z-20 ${activeTool === 'text' ? '' : 'pointer-events-none'}`}
                     style={textLayerStyle}
+                    data-arrow-mode={arrowMode ? '' : undefined}
                   >
                     {textLayer}
                   </div>
 
                   <canvas
                     ref={canvasRef}
-                    className={`ink-canvas absolute inset-0 z-30 block ${activeTool === 'text' ? 'pointer-events-none' : ''}`}
-                    style={{
-                      cursor: activeTool === 'select' ? 'default' : 'crosshair',
-                      touchAction: 'none'
-                    }}
+                    className="ink-canvas pointer-events-none absolute inset-0 z-30 block"
                   />
 
                   {arrowMode && (

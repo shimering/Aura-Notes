@@ -22,8 +22,6 @@ export interface TextEditorRef {
   insertTable: (rows: number, columns: number, position: InsertionPosition) => HTMLElement | undefined;
   insertPdf: (file: File) => Promise<void>;
   /** The link under a client point, so a tap opens it outside edit mode. */
-  linkAt: (x: number, y: number) => HTMLAnchorElement | null;
-  openLink: (link: HTMLAnchorElement) => void;
 }
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -157,7 +155,13 @@ function restoreCaret(parts: Node[], offset: number) {
  * across the rewritten text node and a link being typed is left alone. Only
  * word boundaries call this: a space, Enter, paste, leaving the box or load.
  */
-function linkifyText(root: HTMLElement) {
+function setLinkTarget(anchor: HTMLAnchorElement) {
+  if (!isNoteLink(anchor.getAttribute('href') ?? '')) return;
+  anchor.target = '_blank';
+  anchor.rel = 'noopener noreferrer';
+}
+
+function linkifyText(root: HTMLElement, keepTyping = false) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode: (node) => {
       const text = node as Text;
@@ -175,7 +179,7 @@ function linkifyText(root: HTMLElement) {
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
     const caret = range?.startContainer === node ? range.startOffset : null;
     const links = findNoteLinks(node.data).filter((link) =>
-      caret === null || caret <= link.index || caret > link.index + link.text.length);
+      !keepTyping || caret === null || caret <= link.index || caret > link.index + link.text.length);
     if (!links.length) continue;
     const fragment = document.createDocumentFragment();
     let cursor = 0;
@@ -184,6 +188,7 @@ function linkifyText(root: HTMLElement) {
       const anchor = document.createElement('a');
       anchor.href = link.href;
       anchor.textContent = link.text;
+      setLinkTarget(anchor);
       fragment.append(anchor);
       cursor = link.index + link.text.length;
     }
@@ -239,6 +244,7 @@ function loadPageObjects(editor: HTMLElement, html: string) {
   }
 
   editor.replaceChildren(template.content);
+  editor.querySelectorAll<HTMLAnchorElement>('a[href]').forEach(setLinkTarget);
   const images = Array.from(editor.querySelectorAll('img')).filter((image) => image.parentElement !== editor);
   const placements = images.map((image) => {
     const point = offsetWithin(image, editor);
@@ -404,50 +410,13 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     return content;
   };
 
-  /**
-   * Opens a link the note holds. A real anchor click is used instead of
-   * window.open because iOS Safari treats window.open from a touch handler as
-   * a blocked popup, while a tapped anchor navigates normally. Callers run it
-   * straight from the tap's own pointer event, so the browser sees a gesture.
-   */
-  const lastOpenRef = useRef<{ href: string; time: number }>({ href: '', time: 0 });
-  /** The link a pointer went down on, so a tap opens it but a drag does not. */
-  const pressedLink = useRef<{ link: HTMLAnchorElement; x: number; y: number; pointer: number } | null>(null);
+  const pressedLink = useRef<{ pointer: number; x: number; y: number; canceled: boolean } | null>(null);
 
-  const isOpenable = (href: string) => pdfData.test(href) || isNoteLink(href);
-
-  const openLink = (anchor: HTMLAnchorElement) => {
-    const href = anchor.getAttribute('href') ?? '';
-    const pdf = pdfData.test(href);
-    if (!pdf && !isNoteLink(href)) return;
-    // A tap can reach both the canvas handler and this editor's handler;
-    // open the same link once.
-    const now = Date.now();
-    if (lastOpenRef.current.href === href && now - lastOpenRef.current.time < 600) return;
-    lastOpenRef.current = { href, time: now };
-    const target = document.createElement('a');
-    target.href = href;
-    target.rel = 'noopener noreferrer';
-    if (pdf) target.download = anchor.getAttribute('download') ?? anchor.textContent ?? 'file.pdf';
-    else target.target = '_blank';
-    // Off-screen rather than display:none: iOS ignores taps on hidden anchors.
-    target.style.position = 'fixed';
-    target.style.left = '-9999px';
-    target.style.top = '0';
-    document.body.appendChild(target);
-    target.click();
-    // iOS starts the navigation asynchronously, so the anchor outlives the tap.
-    window.setTimeout(() => target.remove(), 1000);
-  };
-
-  const linkAt = (x: number, y: number) => {
-    for (const anchor of Array.from(editorRef.current?.querySelectorAll<HTMLAnchorElement>('a[href]') ?? [])) {
-      if (!isOpenable(anchor.getAttribute('href') ?? '')) continue;
-      for (const rect of Array.from(anchor.getClientRects())) {
-        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return anchor;
-      }
+  const cancelMovedLinkPress = (event: React.PointerEvent) => {
+    const press = pressedLink.current;
+    if (press?.pointer === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) >= 7) {
+      press.canceled = true;
     }
-    return null;
   };
 
   const editBox = (box: HTMLElement, cell?: HTMLTableCellElement) => {
@@ -640,8 +609,6 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       return box;
     },
     insertPdf,
-    linkAt,
-    openLink,
   }));
 
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -707,11 +674,11 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
         }
         // Autolink once a word is finished, so typing and undo stay untouched.
         const native = event.nativeEvent as InputEvent;
-        if (cell && !native.isComposing && endsWord(native.inputType, native.data)) linkifyText(cell);
+        if (cell && !native.isComposing && endsWord(native.inputType, native.data)) linkifyText(cell, true);
         handleInput();
       }}
       onDoubleClick={(event) => {
-        if (embedded || !(event.target instanceof Element)) return;
+        if (embedded || !(event.target instanceof Element) || event.target.closest('a[href]')) return;
         const box = event.target.closest<HTMLElement>(boxSelector);
         if (box) editBox(box);
         else {
@@ -725,32 +692,34 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       onPaste={handlePaste}
       onPointerDown={(event) => {
         pressedLink.current = null;
-        if (!(event.target instanceof Element)) return;
-        const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
-        if (!anchor || !isOpenable(anchor.getAttribute('href') ?? '')) return;
-        // A press on a link navigates on lift, so it must not start a caret
-        // placement or a text selection. This also gives iOS a real gesture.
-        event.preventDefault();
-        pressedLink.current = { link: anchor, x: event.clientX, y: event.clientY, pointer: event.pointerId };
+        if (!(event.target instanceof Element) || !event.target.closest('a[href]')) return;
+        pressedLink.current = {
+          pointer: event.pointerId, x: event.clientX, y: event.clientY,
+          canceled: event.pointerType === 'pen' || !event.isPrimary,
+        };
       }}
-      onPointerUp={(event) => {
+      onPointerMove={cancelMovedLinkPress}
+      onPointerUp={cancelMovedLinkPress}
+      onPointerCancel={(event) => {
         const press = pressedLink.current;
-        pressedLink.current = null;
-        if (!press || press.pointer !== event.pointerId) return;
-        // Dragging off the link is a selection gesture, not a tap.
-        if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) return;
-        event.preventDefault();
-        openLink(press.link);
-      }}
-      onPointerCancel={() => {
-        pressedLink.current = null;
+        if (press?.pointer === event.pointerId) press.canceled = true;
       }}
       onClick={(event) => {
         if (!(event.target instanceof Element)) return;
         const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
-        if (!anchor || !isOpenable(anchor.getAttribute('href') ?? '')) return;
-        event.preventDefault();
-        openLink(anchor);
+        if (!anchor) return;
+        const press = pressedLink.current;
+        pressedLink.current = null;
+        if (event.detail > 0 && press?.canceled) {
+          event.preventDefault();
+          return;
+        }
+        // Browsers treat a click inside editable text as caret placement.
+        // Open web links during the original click while it can open a tab.
+        if (activeHost.current?.contains(anchor) && isNoteLink(anchor.getAttribute('href') ?? '')) {
+          event.preventDefault();
+          window.open(anchor.href, '_blank', 'noopener,noreferrer');
+        }
       }}
       onDrop={(event) => event.preventDefault()}
       onKeyDown={handleKeyDown}

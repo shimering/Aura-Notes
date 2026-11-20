@@ -712,12 +712,8 @@ it('snaps directly to the edge of a PDF attachment inside a text box', async () 
 it('opens a link on a plain touch without selecting its text box', () => {
   const editorRef = createRef<TextEditorRef>();
   const note = { id: 'scratch', title: 'Scratch',
-    content: '<p><a href="https://example.com">https://example.com</a></p>',
+    content: '<p>Visit https://example.com/path?item=one&amp;page=two.</p>',
     inkStrokes: [], tags: [], color: '', createdAt: 0, updatedAt: 0 };
-  const opened: HTMLAnchorElement[] = [];
-  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
-    opened.push(this);
-  });
   act(() => root.render(<InkCanvas noteId={note.id} defaultTool="select" strokes={[]}
     onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} textEditor={editorRef}
     textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
@@ -726,28 +722,25 @@ it('opens a link on a plain touch without selecting its text box', () => {
   act(() => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Tools"] button'))
     .find((button) => button.textContent?.startsWith('Select'))!.click());
 
-  const box = container.querySelector<HTMLElement>('[data-note-positioned]')!;
-  Object.defineProperties(box, {
-    offsetWidth: { value: 100 }, offsetHeight: { value: 40 },
-    offsetLeft: { get: () => parseFloat(box.style.left) || 0 },
-    offsetTop: { get: () => parseFloat(box.style.top) || 0 },
-  });
-  const link = box.querySelector('a')!;
-  vi.spyOn(link, 'getClientRects').mockReturnValue([
-    { left: 10, top: 10, right: 90, bottom: 30 },
-  ] as unknown as DOMRectList);
-  const canvas = container.querySelector('.ink-canvas')!;
-  const press = () => {
-    pointer(canvas, 'pointerdown', 40, 20, 'touch');
-    pointer(canvas, 'pointerup', 40, 20, 'touch');
+  const link = container.querySelector<HTMLAnchorElement>('[data-note-positioned] a')!;
+  expect(link.href).toBe('https://example.com/path?item=one&page=two');
+  expect(link.target).toBe('_blank');
+  expect(link.rel).toBe('noopener noreferrer');
+  const clickLink = () => {
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+    act(() => link.dispatchEvent(click));
+    return click;
   };
 
-  press();
-  const openedLink = opened.find((anchor) => anchor.getAttribute('href') === 'https://example.com');
-  expect(openedLink?.target).toBe('_blank');
-  expect(openedLink?.rel).toBe('noopener noreferrer');
+  pointer(link, 'pointerdown', 40, 20);
+  pointer(link, 'pointerup', 40, 20);
+  expect(clickLink().defaultPrevented).toBe(false);
   expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
-  click.mockRestore();
+
+  pointer(link, 'pointerdown', 40, 20);
+  pointer(link, 'pointermove', 75, 20);
+  pointer(link, 'pointerup', 40, 20);
+  expect(clickLink().defaultPrevented).toBe(true);
 });
 
 it('opens a link when a mouse clicks it inside the editable text layer', () => {
@@ -755,21 +748,23 @@ it('opens a link when a mouse clicks it inside the editable text layer', () => {
   const note = { id: 'scratch', title: 'Scratch',
     content: '<p><a href="https://example.com">https://example.com</a></p>',
     inkStrokes: [], tags: [], color: '', createdAt: 0, updatedAt: 0 };
-  const opened: HTMLAnchorElement[] = [];
-  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
-    opened.push(this);
-  });
+  const open = vi.spyOn(window, 'open').mockImplementation(() => null);
   act(() => root.render(<InkCanvas noteId={note.id} defaultTool="text" strokes={[]}
     onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} textEditor={editorRef}
     textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
 
   const link = container.querySelector<HTMLAnchorElement>('a[href="https://example.com"]')!;
+  const box = link.closest<HTMLElement>('[data-note-positioned]')!;
+  act(() => editorRef.current!.editBox(box));
+  expect(link.target).toBe('_blank');
   pointer(link, 'pointerdown', 20, 20, 'mouse', 1);
   pointer(link, 'pointerup', 20, 20, 'mouse');
 
-  const openedLink = opened.find((anchor) => anchor.getAttribute('href') === 'https://example.com');
-  expect(openedLink?.target).toBe('_blank');
-  click.mockRestore();
+  expect(open).not.toHaveBeenCalled();
+  const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+  act(() => link.dispatchEvent(click));
+  expect(click.defaultPrevented).toBe(true);
+  expect(open).toHaveBeenCalledExactlyOnceWith('https://example.com/', '_blank', 'noopener,noreferrer');
 });
 
 it('leaves a plain mouse wheel to scroll A4 pages', () => {

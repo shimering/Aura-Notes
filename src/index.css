@@ -1208,6 +1208,14 @@ canvas.ink-canvas {
 .editable-note-content > [data-note-table="true"] table { margin: 0; }
 .editable-note-content [data-current-cell] { outline: 2px solid #8b5cf6; outline-offset: -2px; }
 .editable-note-content :is(td, th) { border: 1px solid #94a3b8; padding: 4px 6px; }
+.editable-note-content a[href] {
+  pointer-events: auto;
+}
+
+[data-arrow-mode] .editable-note-content a[href] {
+  pointer-events: none;
+}
+
 .editable-note-content a[href]:not([download]) {
   color: #6d28d9;
   text-decoration: underline;
