@@ -40,7 +40,7 @@ function readDataUrl(file: File): Promise<string> {
 interface TextEditorProps {
   note: NotePage;
   onChangeContent: (content: string) => void;
-  onEditingChange?: (active: boolean) => void;
+  onEditingChange?: (box: HTMLElement | null) => void;
   getNoteSize?: (content: string) => number;
   /** Renders only the editable sheet: the unified note page supplies the toolbar. */
   embedded?: boolean;
@@ -319,7 +319,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     if (internalUpdate?.noteId === note.id && internalUpdate.content === note.content) return;
     if (sanitizeNoteHtml(editor.innerHTML) === note.content && !activeBox.current) return;
     activeBox.current = activeHost.current = null;
-    onEditingChange?.(false);
+    onEditingChange?.(null);
     savedRange.current = null;
     lastBox.current = null;
     loadPageObjects(editor, note.content);
@@ -367,7 +367,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     if (!box) return;
     const host = activeHost.current;
     activeBox.current = activeHost.current = null;
-    onEditingChange?.(false);
+    onEditingChange?.(null);
     host?.blur();
     host?.removeAttribute('contenteditable');
     if (linkifyText(box)) handleInput();
@@ -426,7 +426,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     host.setAttribute('contenteditable', 'true');
     activeBox.current = lastBox.current = box;
     activeHost.current = host;
-    onEditingChange?.(true);
+    onEditingChange?.(box);
     focusRange(host, getEditorRange(host));
   };
 

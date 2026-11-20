@@ -24,7 +24,7 @@ import {
   transformTextBlockPoint,
   unionBounds
 } from '../utils/inkSelection';
-import { SelectionOverlay, ResizeCorner } from './SelectionOverlay';
+import { SelectionOverlay, TextWidthHandle, ResizeCorner } from './SelectionOverlay';
 import { isSpenHardwareKeyEvent } from '../utils/spenDetection';
 import { createSpenGesture } from '../utils/spenGesture';
 import { PenToolbar } from './PenToolbar';
@@ -85,7 +85,7 @@ export interface InkCanvasRef {
 interface InkCanvasProps {
   noteId: string;
   keyboardOpen?: boolean;
-  textEditing?: boolean;
+  editingBox?: HTMLElement | null;
   strokes: Stroke[];
   onChangeStrokes: (strokes: Stroke[]) => void;
   onScribbleToText: () => void;
@@ -255,7 +255,7 @@ function findInkUiControl(target: EventTarget | null): HTMLElement | null {
 export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   noteId,
   keyboardOpen,
-  textEditing,
+  editingBox,
   strokes,
   onChangeStrokes,
   onScribbleToText,
@@ -402,6 +402,9 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   const getEditor = useCallback(() =>
     textLayerRef.current?.querySelector<HTMLElement>('[data-note-editor]') ?? null, []);
+
+  const editingTextBox = editingBox?.matches('[contenteditable="true"]') && getEditor()?.contains(editingBox) &&
+    !editingBox.matches(tableBoxSelector) ? editingBox : null;
 
   const getTextBoxes = useCallback(() => Array.from(
     getEditor()?.querySelectorAll<HTMLElement>(`:scope > ${boxSelector}`) ?? [],
@@ -581,7 +584,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
 
   useEffect(() => {
     const editor = getEditor();
-    if (!editor || (!selectedBoxes.length && !selectedPictures.length && !tableCell && !arrows.length)) return;
+    if (!editor || (!selectedBoxes.length && !selectedPictures.length && !editingTextBox && !tableCell && !arrows.length)) return;
     const remeasure = () => {
       const boxes = selectedBoxesRef.current.filter((box) => editor.contains(box));
       const pictures = selectedPicturesRef.current.filter((image) => editor.contains(image));
@@ -595,6 +598,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     const editingTable = tableCell?.closest(tableBoxSelector);
     const objects = new Set([...selectedBoxes, ...selectedPictures]);
     if (editingTable instanceof HTMLElement) objects.add(editingTable);
+    if (editingTextBox) objects.add(editingTextBox);
     const observeObjects = () => {
       observer?.disconnect();
       if (arrows.length) {
@@ -614,7 +618,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       mutations.disconnect();
       editor.removeEventListener('load', remeasure, true);
     };
-  }, [arrows.length, getEditor, selectedBoxes, selectedPictures, setSelection, tableCell]);
+  }, [arrows.length, editingTextBox, getEditor, selectedBoxes, selectedPictures, setSelection, tableCell]);
 
   const previousDefaultTool = useRef(defaultTool);
   useEffect(() => {
@@ -1723,6 +1727,11 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     ].filter((box): box is Bounds => !!box);
     let neighbors: Bounds[] | undefined;
     const pointerId = e.pointerId;
+    // Keep width drags on the handle as the box reflows under the pointer.
+    const widthGrip = resizeBox ? e.currentTarget : null;
+    if (widthGrip) {
+      try { widthGrip.setPointerCapture(pointerId); } catch { /* Window listeners still track the drag. */ }
+    }
     const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
     const anchor = {
       x: corner === 'nw' || corner === 'sw' ? bounds.x + bounds.width : bounds.x,
@@ -1764,7 +1773,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
         const { box, pagePlacement, width } = resizeBox;
         const local = pointInTextLayer(point, pagePlacement);
         const localStart = pointInTextLayer(start, pagePlacement);
-        const limit = (editor?.clientWidth ?? 8192) - box.offsetLeft;
+        const limit = isCanvas ? 8192 : (editor?.clientWidth ?? 8192) - box.offsetLeft;
         const nextWidth = Math.max(48, Math.min(8192, Math.max(width, limit), Math.round(width + local.x - localStart.x)));
         box.style.width = `${nextWidth}px`;
         setObjectSizeVersion((version) => version + 1);
@@ -1793,6 +1802,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       transformingHover.current = false;
 
       if (resizeBox) {
+        if (widthGrip?.hasPointerCapture?.(pointerId)) widthGrip.releasePointerCapture(pointerId);
         const { box, previousWidth } = resizeBox;
         if (commit && moved && editor?.contains(box)) textEditor?.current?.savePageObjects();
         else box.style.width = previousWidth;
@@ -1843,7 +1853,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       finish(false);
       click.hold?.();
     }, OBJECT_HOLD_MS);
-  }, [commitStrokes, getEditor, getPagePoint, getPictures, getTextBoxes, redraw, textEditor]);
+  }, [commitStrokes, getEditor, getPagePoint, getPictures, getTextBoxes, isCanvas, redraw, textEditor]);
 
   const enableText = () => {
     if (selectedToolRef.current === 'text') return;
@@ -2110,7 +2120,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const handleHover = (e: React.PointerEvent) => {
     if (transformDragRef.current || e.buttons || pasteMenu || arrowModeRef.current) return;
     const target = e.target as Element;
-    if (target.closest('[data-ink-ui="selection"], .table-resize-handle')) return;
+    if (target.closest('[data-ink-ui="selection"], [data-ink-ui="text-width"], .table-resize-handle')) return;
     if (target.closest('[contenteditable="true"]')) {
       setHover(null);
       return;
@@ -2653,13 +2663,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   const tableBox = selectedTable?.closest<HTMLElement>(tableBoxSelector);
   const layer = textLayerRef.current;
   const tablePlacement = tableBox && layer ? pageBoxPlacement(tableBox, layer, textBlockLayout) : null;
-  const textWidthHandle = (box: HTMLElement | null, bounds: Bounds | null) => {
-    if (!box || !layer || !bounds || box.matches(tableBoxSelector)) return null;
+  const textWidthHandle = (box: HTMLElement | null, origin: Point = { x: 0, y: 0 }) => {
+    if (!box || !layer || box.matches(tableBoxSelector)) return null;
     const placement = pageBoxPlacement(box, layer, textBlockLayout);
     const edge = transformTextBlockPoint({ x: box.offsetWidth, y: box.offsetHeight / 2 }, placement);
-    return { x: edge.x - bounds.x, y: edge.y - bounds.y };
+    return { x: edge.x - origin.x, y: edge.y - origin.y };
   };
-  const widthHandle = textWidthHandle(soleTextBox, selectionBounds);
+  const widthHandle = selectionBounds && soleTextBox !== editingTextBox
+    ? textWidthHandle(soleTextBox, selectionBounds) : null;
+  const editingWidthHandle = textWidthHandle(editingTextBox);
   const hoverElement = hoveredObject?.box ?? hoveredObject?.picture;
   const hoverBounds = hoverElement && layer?.contains(hoverElement)
     ? measureBox(hoverElement, layer, textBlockLayout) : hoverElement ? null : hoveredObject?.bounds ?? null;
@@ -2986,7 +2998,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
             onPageColorChange={(color) => onPageColorChange?.(color)}
             selection={selectionTools}
             keyboardOpen={keyboardOpen}
-            textEditing={textEditing}
+            textEditing={!!editingBox}
           />
         ) : (
           <div className="flex justify-center items-center gap-2 px-4 py-2">{drawingTools}</div>
@@ -3125,7 +3137,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                       count={0}
                       onStartResize={hoverElement?.matches(tableBoxSelector) ? undefined
                         : (corner, event) => beginTransform('resize', corner, event, undefined, { ...hoveredObject, bounds: hoverBounds })}
-                      widthHandle={textWidthHandle(hoveredObject.box ?? null, hoverBounds)}
+                      widthHandle={hoveredObject.box === editingTextBox ? null : textWidthHandle(hoveredObject.box ?? null, hoverBounds)}
                       onStartWidth={(event) => beginTransform('width', null, event, undefined, { ...hoveredObject, bounds: hoverBounds })}
                       onStartRotate={(event) => beginTransform('rotate', null, event, undefined, { ...hoveredObject, bounds: hoverBounds })}
                     />
@@ -3153,6 +3165,15 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
                       onBringToFront={bringSelectionToFront}
                       onSendToBack={sendSelectionToBack}
                       onDelete={deleteSelection}
+                    />
+                  )}
+                  {editingTextBox && editingWidthHandle && layer && (
+                    <TextWidthHandle
+                      point={editingWidthHandle}
+                      onPointerDown={(event) => beginTransform('width', null, event, undefined, {
+                        key: editingTextBox, ids: [], box: editingTextBox,
+                        bounds: measureBox(editingTextBox, layer, textBlockLayout),
+                      })}
                     />
                   )}
                   {selectedTable && tableBox && tablePlacement && !liveTransform && (

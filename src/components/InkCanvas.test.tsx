@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createRef } from 'react';
+import { act, createRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { InkCanvas } from './InkCanvas';
@@ -765,6 +765,51 @@ it('opens a link when a mouse clicks it inside the editable text layer', () => {
   act(() => link.dispatchEvent(click));
   expect(click.defaultPrevented).toBe(true);
   expect(open).toHaveBeenCalledExactlyOnceWith('https://example.com/', '_blank', 'noopener,noreferrer');
+});
+
+it('can drag a canvas text box past the default column while selected and while editing', async () => {
+  const editorRef = createRef<TextEditorRef>();
+  const onSave = vi.fn();
+  const note = { id: 'scratch', title: 'Scratch', content: '<p>Text to rewrap</p>',
+    inkStrokes: [], tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  function TestCanvas() {
+    const [editingBox, setEditingBox] = useState<HTMLElement | null>(null);
+    return <InkCanvas noteId={note.id} pageLayout="canvas" strokes={[]}
+      onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} textEditor={editorRef} editingBox={editingBox}
+      textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={onSave}
+        onEditingChange={setEditingBox} embedded />} />;
+  }
+  act(() => root.render(<TestCanvas />));
+  const editor = container.querySelector<HTMLElement>('[data-note-editor]')!;
+  const box = editor.querySelector<HTMLElement>('[data-note-positioned]')!;
+  Object.defineProperty(editor, 'clientWidth', { value: 294 });
+  Object.defineProperties(box, {
+    offsetWidth: { get: () => parseFloat(box.style.width) || 294 },
+    offsetHeight: { value: 40 },
+  });
+  const getGrip = () => container.querySelector<HTMLButtonElement>('[aria-label="Resize text box width"]');
+  const drag = async (from: number, to: number) => {
+    expect(getGrip()).not.toBeNull();
+    await act(async () => {
+      pointer(getGrip()!, 'pointerdown', from, 20, 'mouse', 1);
+      pointer(box, 'pointermove', to, 20, 'mouse', 1);
+      pointer(box, 'pointerup', to, 20, 'mouse');
+    });
+  };
+
+  pointer(box, 'pointerdown', 40, 20, 'mouse', 1);
+  pointer(box, 'pointerup', 40, 20, 'mouse');
+  expect(getGrip()?.closest('[data-ink-ui="selection"]:not([data-ink-hover])')).not.toBeNull();
+  await drag(294, 394);
+  expect(box.style.width).toBe('394px');
+
+  act(() => box.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 40, clientY: 20 })));
+  expect(document.activeElement).toBe(box);
+  expect(container.querySelector('[data-ink-ui="selection"]')).toBeNull();
+  await drag(394, 344);
+  expect(box.style.width).toBe('344px');
+  expect(document.activeElement).toBe(box);
+  expect(onSave).toHaveBeenLastCalledWith(expect.stringContaining('width: 344px'));
 });
 
 it('leaves a plain mouse wheel to scroll A4 pages', () => {

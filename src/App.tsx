@@ -61,7 +61,7 @@ export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNoteId, setActiveNoteIdState] = useState<string | null>(null);
   const [pageSelection, setPageSelection] = useState<{ noteId: string; pageId: string }>();
-  const [textEditing, setTextEditing] = useState(false);
+  const [editingBox, setEditingBox] = useState<HTMLElement | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   
   // Mirror the canvas tool so the text sheet can enable the caret in Text mode.
@@ -933,7 +933,7 @@ export default function App() {
               ref={inkCanvasRef}
               isPhone={isPhone}
               keyboardOpen={keyboardOpen}
-              textEditing={textEditing}
+              editingBox={editingBox}
               noteId={surfaceId}
               strokes={activePage.inkStrokes || []}
               onChangeStrokes={handleUpdateStrokes}
@@ -947,7 +947,7 @@ export default function App() {
                   ref={textEditorRef}
                   note={{ ...activePage, id: surfaceId }}
                   onChangeContent={handleUpdateContent}
-                  onEditingChange={setTextEditing}
+                  onEditingChange={setEditingBox}
                   getNoteSize={(content) => {
                     const current = notesRef.current.find((note) => note.id === activeNote.id) ?? activeNote;
                     return new Blob([JSON.stringify(updateNotePage(current, activePage.id, { content }))]).size;

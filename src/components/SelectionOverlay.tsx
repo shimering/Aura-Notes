@@ -38,6 +38,26 @@ const CORNERS: { corner: ResizeCorner; className: string; cursor: string }[] = [
   { corner: 'se', className: '-bottom-3 -right-3', cursor: 'cursor-nwse-resize' }
 ];
 
+export function TextWidthHandle({ point, onPointerDown }: {
+  point: Point;
+  onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onPointerDown={onPointerDown}
+      title="Resize text box width"
+      aria-label="Resize text box width"
+      data-ink-ui="text-width"
+      tabIndex={-1}
+      style={{ left: point.x, top: point.y }}
+      className="absolute z-[41] flex h-11 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center pointer-events-auto cursor-ew-resize touch-none select-none"
+    >
+      <span className="pointer-events-none h-5 w-2 rounded-full bg-violet-600 ring-2 ring-white" />
+    </button>
+  );
+}
+
 /**
  * Dotted frame, resize corners, rotation grip and the z-order / delete actions
  * for the objects currently selected on the note page.
@@ -94,19 +114,7 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
       aria-hidden={false}
     >
       <div className="absolute inset-0 rounded-[3px] border-2 border-dashed border-violet-500 bg-violet-500/5" />
-      {widthHandle && (
-        <button
-          type="button"
-          onPointerDown={onStartWidth}
-          title="Resize text box width"
-          aria-label="Resize text box width"
-          tabIndex={-1}
-          style={{ left: widthHandle.x, top: widthHandle.y }}
-          className="absolute w-7 h-9 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-auto cursor-ew-resize touch-none"
-        >
-          <span className="w-2 h-5 rounded-full bg-violet-600 ring-2 ring-white" />
-        </button>
-      )}
+      {widthHandle && onStartWidth && <TextWidthHandle point={widthHandle} onPointerDown={onStartWidth} />}
 
       {/* Rotation grip above the frame. */}
       <button
