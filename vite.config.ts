@@ -1,4 +1,4 @@
-import { defineConfig, Plugin } from 'vite';
+import { defineConfig, Plugin, ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
@@ -197,8 +197,34 @@ function devSyncApiPlugin(): Plugin {
   };
 }
 
+/**
+ * Sends a request to the local Worker while keeping the browser's Host, so
+ * Better Auth derives its cookie, callback and Google redirect URLs from the
+ * page the user is on (localhost:5173) instead of the proxy's target.
+ */
+function workerProxy(): ProxyOptions {
+  return {
+    target: 'http://127.0.0.1:8787',
+    configure: (proxy) => {
+      proxy.on('proxyReq', (proxyReq, req) => {
+        if (req.headers.host) proxyReq.setHeader('host', req.headers.host);
+      });
+    }
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
+  server: {
+    // This server emulates only the vault API above; accounts need the real
+    // Worker. Forward its routes to `npm run dev:worker` (localhost:8787) so
+    // sign-in works in the dev preview too.
+    proxy: {
+      '/api/auth-config': workerProxy(),
+      '/api/auth': workerProxy(),
+      '/api/notes': workerProxy()
+    }
+  },
   plugins: [
     devSyncApiPlugin(),
     react(),
