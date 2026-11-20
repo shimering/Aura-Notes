@@ -750,6 +750,28 @@ it('opens a link on a plain touch without selecting its text box', () => {
   click.mockRestore();
 });
 
+it('opens a link when a mouse clicks it inside the editable text layer', () => {
+  const editorRef = createRef<TextEditorRef>();
+  const note = { id: 'scratch', title: 'Scratch',
+    content: '<p><a href="https://example.com">https://example.com</a></p>',
+    inkStrokes: [], tags: [], color: '', createdAt: 0, updatedAt: 0 };
+  const opened: HTMLAnchorElement[] = [];
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    opened.push(this);
+  });
+  act(() => root.render(<InkCanvas noteId={note.id} defaultTool="text" strokes={[]}
+    onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} textEditor={editorRef}
+    textLayer={<TextEditor ref={editorRef} note={note} onChangeContent={() => {}} embedded />} />));
+
+  const link = container.querySelector<HTMLAnchorElement>('a[href="https://example.com"]')!;
+  pointer(link, 'pointerdown', 20, 20, 'mouse', 1);
+  pointer(link, 'pointerup', 20, 20, 'mouse');
+
+  const openedLink = opened.find((anchor) => anchor.getAttribute('href') === 'https://example.com');
+  expect(openedLink?.target).toBe('_blank');
+  click.mockRestore();
+});
+
 it('leaves a plain mouse wheel to scroll A4 pages', () => {
   act(() => root.render(<InkCanvas noteId="scratch" pageLayout="portrait" defaultTool="pen"
     strokes={[]} onChangeStrokes={onChangeStrokes} onScribbleToText={() => {}} />));

@@ -377,6 +377,8 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     setHoveredObject(object);
   }, []);
   const touchTap = useRef<TouchTap | null>(null);
+  /** Link a press started on, opened when the pointer lifts without dragging. */
+  const linkPressRef = useRef<{ link: HTMLAnchorElement; x: number; y: number; pointer: number } | null>(null);
   const [insertionPoint, setInsertionPoint] = useState<Point | null>(null);
   // ---- Arrow tool: draft drawing, selection and object snapping ------------
   const [arrowMode, setArrowMode] = useState<ArrowKind | null>(null);
@@ -544,6 +546,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       scrollRef.current.scrollLeft = 0;
     }
     selectionNoteId.current = noteId;
+    linkPressRef.current = null;
     clearTouchTap();
     setPasteMenu(null);
     setInsertionPoint(null);
@@ -938,6 +941,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
    */
   const abortActiveCanvasDrag = useCallback(() => {
     selectionPointerRef.current = null;
+    linkPressRef.current = null;
     clearTouchTap();
     currentStrokeRef.current = null;
     isEraserDrawingRef.current = false;
@@ -2345,15 +2349,16 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (pen && !spenTipDownRef.current) return;
     const target = e.target as Element;
     if (isInkUiTarget(target) || (!pen && !arrowModeRef.current && target.closest('a[download]'))) return;
+    linkPressRef.current = null;
 
     // Typed text ignores pointers unless the text tool is active, so links are
-    // hit-tested by their boxes. A plain tap or click on a link opens it in the
-    // browser, the one tap a note answers without a long press or a modifier.
+    // hit-tested by their boxes. The link opens when the pointer lifts: a tap
+    // or click navigates, while a drag across the link stays a selection.
     if (!pen && !arrowModeRef.current) {
       const link = textEditor?.current?.linkAt(e.clientX, e.clientY);
-      if (link && !link.closest('[contenteditable="true"]')) {
+      if (link) {
         e.preventDefault();
-        textEditor?.current?.openLink(link);
+        linkPressRef.current = { link, x: e.clientX, y: e.clientY, pointer: e.pointerId };
         return;
       }
     }
@@ -2560,6 +2565,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
       finishArrowDraft(true);
       return;
     }
+    const linkPress = linkPressRef.current;
+    if (linkPress && linkPress.pointer === e.pointerId) {
+      linkPressRef.current = null;
+      if (Math.hypot(e.clientX - linkPress.x, e.clientY - linkPress.y) <= SELECTION_TAP_SLOP) {
+        textEditor?.current?.openLink(linkPress.link);
+      }
+      return;
+    }
     if (isPinchingRef.current) return;
     if (e.pointerType === 'touch') {
       const tap = touchTap.current;
@@ -2580,6 +2593,7 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
   };
 
   const handlePointerCancel = (e: React.PointerEvent) => {
+    if (linkPressRef.current?.pointer === e.pointerId) linkPressRef.current = null;
     if (arrowDraftRef.current) {
       arrowDraftRef.current = null;
       setArrowDraft(null);

@@ -407,17 +407,20 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
   /**
    * Opens a link the note holds. A real anchor click is used instead of
    * window.open because iOS Safari treats window.open from a touch handler as
-   * a blocked popup, while a tapped anchor navigates normally.
+   * a blocked popup, while a tapped anchor navigates normally. Callers run it
+   * straight from the tap's own pointer event, so the browser sees a gesture.
    */
   const lastOpenRef = useRef<{ href: string; time: number }>({ href: '', time: 0 });
-  /** Type of the pointer behind the next click, so a finger tap counts as a tap. */
-  const pressPointerType = useRef('mouse');
+  /** The link a pointer went down on, so a tap opens it but a drag does not. */
+  const pressedLink = useRef<{ link: HTMLAnchorElement; x: number; y: number; pointer: number } | null>(null);
+
+  const isOpenable = (href: string) => pdfData.test(href) || isNoteLink(href);
 
   const openLink = (anchor: HTMLAnchorElement) => {
     const href = anchor.getAttribute('href') ?? '';
     const pdf = pdfData.test(href);
     if (!pdf && !isNoteLink(href)) return;
-    // A tap can reach both the canvas handler and this editor's click handler;
+    // A tap can reach both the canvas handler and this editor's handler;
     // open the same link once.
     const now = Date.now();
     if (lastOpenRef.current.href === href && now - lastOpenRef.current.time < 600) return;
@@ -439,8 +442,7 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
 
   const linkAt = (x: number, y: number) => {
     for (const anchor of Array.from(editorRef.current?.querySelectorAll<HTMLAnchorElement>('a[href]') ?? [])) {
-      const href = anchor.getAttribute('href') ?? '';
-      if (!isNoteLink(href) && !pdfData.test(href)) continue;
+      if (!isOpenable(anchor.getAttribute('href') ?? '')) continue;
       for (const rect of Array.from(anchor.getClientRects())) {
         if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return anchor;
       }
@@ -722,19 +724,31 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
       }}
       onPaste={handlePaste}
       onPointerDown={(event) => {
-        pressPointerType.current = event.pointerType || 'mouse';
+        pressedLink.current = null;
+        if (!(event.target instanceof Element)) return;
+        const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
+        if (!anchor || !isOpenable(anchor.getAttribute('href') ?? '')) return;
+        // A press on a link navigates on lift, so it must not start a caret
+        // placement or a text selection. This also gives iOS a real gesture.
+        event.preventDefault();
+        pressedLink.current = { link: anchor, x: event.clientX, y: event.clientY, pointer: event.pointerId };
+      }}
+      onPointerUp={(event) => {
+        const press = pressedLink.current;
+        pressedLink.current = null;
+        if (!press || press.pointer !== event.pointerId) return;
+        // Dragging off the link is a selection gesture, not a tap.
+        if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) return;
+        event.preventDefault();
+        openLink(press.link);
+      }}
+      onPointerCancel={() => {
+        pressedLink.current = null;
       }}
       onClick={(event) => {
         if (!(event.target instanceof Element)) return;
         const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
-        if (!anchor) return;
-        const href = anchor.getAttribute('href') ?? '';
-        if (!pdfData.test(href) && !isNoteLink(href)) return;
-        // A tap opens the link everywhere: phones and tablets have no modifier
-        // key to press instead. A mouse press while the caret is inside the
-        // text still places it, so Ctrl/Cmd+click opens without leaving edit mode.
-        const editing = !!anchor.closest('[contenteditable="true"]');
-        if (editing && pressPointerType.current === 'mouse' && !event.ctrlKey && !event.metaKey) return;
+        if (!anchor || !isOpenable(anchor.getAttribute('href') ?? '')) return;
         event.preventDefault();
         openLink(anchor);
       }}
