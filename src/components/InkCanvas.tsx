@@ -2339,9 +2339,6 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     touchTap.current = tap;
   };
 
-  /** A first press selects the text box; a second press on the same link opens it. */
-  const lastLinkPressRef = useRef<{ href: string; time: number } | null>(null);
-
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 || isPinchingRef.current || transformDragRef.current || selectionPointerRef.current !== null) return;
     const pen = e.pointerType === 'pen';
@@ -2350,27 +2347,14 @@ export const InkCanvas = forwardRef<InkCanvasRef, InkCanvasProps>(({
     if (isInkUiTarget(target) || (!pen && !arrowModeRef.current && target.closest('a[download]'))) return;
 
     // Typed text ignores pointers unless the text tool is active, so links are
-    // hit-tested by their boxes. A plain touch on a link opens it in the
-    // browser, the one tap a note answers without a long press.
+    // hit-tested by their boxes. A plain tap or click on a link opens it in the
+    // browser, the one tap a note answers without a long press or a modifier.
     if (!pen && !arrowModeRef.current) {
       const link = textEditor?.current?.linkAt(e.clientX, e.clientY);
-      if (link && e.pointerType === 'touch' && !link.closest('[contenteditable="true"]')) {
+      if (link && !link.closest('[contenteditable="true"]')) {
         e.preventDefault();
         textEditor?.current?.openLink(link);
         return;
-      }
-      // A mouse press selects its text box first so grabbing the box never
-      // means aiming beside the link, then opens it on a second press.
-      if (link && selectedToolRef.current !== 'text') {
-        const href = link.getAttribute('href') ?? '';
-        const last = lastLinkPressRef.current;
-        if (last && last.href === href && Date.now() - last.time <= 600) {
-          lastLinkPressRef.current = null;
-          e.preventDefault();
-          textEditor?.current?.openLink(link);
-          return;
-        }
-        lastLinkPressRef.current = { href, time: Date.now() };
       }
     }
 

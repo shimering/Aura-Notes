@@ -410,6 +410,8 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
    * a blocked popup, while a tapped anchor navigates normally.
    */
   const lastOpenRef = useRef<{ href: string; time: number }>({ href: '', time: 0 });
+  /** Type of the pointer behind the next click, so a finger tap counts as a tap. */
+  const pressPointerType = useRef('mouse');
 
   const openLink = (anchor: HTMLAnchorElement) => {
     const href = anchor.getAttribute('href') ?? '';
@@ -431,7 +433,8 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
     target.style.top = '0';
     document.body.appendChild(target);
     target.click();
-    target.remove();
+    // iOS starts the navigation asynchronously, so the anchor outlives the tap.
+    window.setTimeout(() => target.remove(), 1000);
   };
 
   const linkAt = (x: number, y: number) => {
@@ -718,15 +721,20 @@ export const TextEditor = forwardRef<TextEditorRef, TextEditorProps>((
         if (event.target instanceof HTMLImageElement) event.preventDefault();
       }}
       onPaste={handlePaste}
+      onPointerDown={(event) => {
+        pressPointerType.current = event.pointerType || 'mouse';
+      }}
       onClick={(event) => {
         if (!(event.target instanceof Element)) return;
         const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
         if (!anchor) return;
         const href = anchor.getAttribute('href') ?? '';
         if (!pdfData.test(href) && !isNoteLink(href)) return;
-        // While the caret is inside text, plain clicks place it as usual;
-        // Ctrl/Cmd+click opens the link without leaving edit mode.
-        if (anchor.closest('[contenteditable="true"]') && !event.ctrlKey && !event.metaKey) return;
+        // A tap opens the link everywhere: phones and tablets have no modifier
+        // key to press instead. A mouse press while the caret is inside the
+        // text still places it, so Ctrl/Cmd+click opens without leaving edit mode.
+        const editing = !!anchor.closest('[contenteditable="true"]');
+        if (editing && pressPointerType.current === 'mouse' && !event.ctrlKey && !event.metaKey) return;
         event.preventDefault();
         openLink(anchor);
       }}
